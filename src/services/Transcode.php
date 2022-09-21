@@ -57,6 +57,8 @@ class Transcode extends Component
         'sharpen',
         'synchronous',
         'stripMetadata',
+        'watermarkingEnabled',
+        'watermarkPosition',	    
     ];
 
     // Mappings for getFileInfo() summary values
