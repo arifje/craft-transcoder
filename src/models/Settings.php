@@ -231,6 +231,46 @@ class Settings extends Model
         'videoCodecOptions' => '',
     ];
 
+     /**
+     * Enable of disable watermarking
+     *
+     * @var bool
+     */
+    public bool $watermarkingEnabled = true;
+
+    /**
+     * Watermark images
+     *
+     * @var string
+     */
+     
+	public array $watermarkImages = [
+		'240p' => '@nfsPath' . '/website/images/240.png',
+		'360p' => '@nfsPath' . '/website/images/360.png',
+		'480p' => '@nfsPath' . '/website/images/480.png',
+		'720p' => '@nfsPath' . '/website/images/720.png',
+		'1080p' => '@nfsPath' . '/website/images/1080.png'		
+	];
+
+    /**
+     * Watermark position
+     *
+     * @var string; topRight topLeft bottomLeft bottomRight
+     */
+     	
+	public string $watermarkPosition = 'topRight';
+	
+    /**
+     * Watermark offsets
+     *
+     * @var string
+     */
+     	
+	public array $watermarkOffsets = [
+		'x' => 0,
+		'y' => 20
+	];
+    
     /**
      * @inheritdoc
      */
