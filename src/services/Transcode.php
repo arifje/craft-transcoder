@@ -97,33 +97,71 @@ class Transcode extends Component
      * @return string       URL of the transcoded video or ""
      * @throws InvalidConfigException
      */
-    public function getVideoUrl(string|Asset $filePath, array $videoOptions, bool $generate = true): string
+    public function getVideoUrl(string|Asset $filePath, array $videoOptions, bool $generate = true, array $encodingOptions = []): string
     {
         $result = '';
         $settings = Transcoder::$plugin->getSettings();
         $subfolder = '';
-
-        // sub folder check
-        if (($filePath instanceof Asset) && $settings['createSubfolders']) {
+        $devMode = Craft::$app->config->getGeneral()->devMode;
+         
+        // Sub folder check
+        if (is_object($filePath) && ($filePath instanceof Asset) && $settings['createSubfolders']) {          
             $subfolder = $filePath->folderPath;
+        } else {        
+            // Grab segment from URL
+            $segments = explode("/", $filePath);
+            $subfolder = $segments[count($segments)-2] . '/';
         }
+        
+        // Video options
+        $videoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
+    
+        // Get the video encoder presets to use
+        $videoEncoders = $settings['videoEncoders'];
+        $thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
+        $videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+                    
+        // Destination video file
+        $destVideoFile = $this->getFilename($filePath, $videoOptions);
+                   
+        // Generate video 
+        if($generate) {
+  
+            // Encoded video URL
+            $url = $settings['transcoderUrls']['video'] . $subfolder ?? $settings['transcoderUrls']['default'];
+            $encodedUrl = Craft::parseEnv($url) . $destVideoFile;                    
+          
+            // Remote url is passed, check if it exists
+            if (!is_object($filePath) && filter_var($filePath, FILTER_VALIDATE_URL)) {
+                                
+                // curl request
+                $ch = curl_init($encodedUrl);
+                curl_setopt($ch, CURLOPT_NOBODY, true);
+                curl_exec($ch);
+                $retcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
 
-        // file path
-        $filePath = $this->getAssetPath($filePath);
+                if($retcode=="200") {
+                    return $encodedUrl;                      
+                }         
+            } 
 
-        if (!empty($filePath)) {
+            // Check paths 
+            $transcoderPath = $settings["transcoderPaths"]["video"];
+            $transcoderPath = Craft::getAlias($transcoderPath);
+                
+            $filePath = $this->getAssetPath($filePath);
+            
+            if (!file_exists($transcoderPath) || empty($filePath)) {
+                return "path_error";
+            }           
+  
+            // Video destination path and options
             $destVideoPath = $settings['transcoderPaths']['video'] . $subfolder ?? $settings['transcoderPaths']['default'];
-            $destVideoPath = App::parseEnv($destVideoPath);
-            $videoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
-
-            // Get the video encoder presets to use
-            $videoEncoders = $settings['videoEncoders'];
-            $thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
-
-            $videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+            $destVideoPath = Craft::parseEnv($destVideoPath);
 
             // Build the basic command for ffmpeg
-            $ffmpegCmd = $settings['ffmpegPath']
+            $ffmpegCmd = 'nice -n 15 ' . $settings['ffmpegPath']
                 . ' -i ' . escapeshellarg($filePath)
                 . ' -vcodec ' . $thisEncoder['videoCodec']
                 . ' ' . $thisEncoder['videoCodecOptions']
@@ -137,7 +175,8 @@ class Transcode extends Component
 
             // Set the bitrate if desired
             if (!empty($videoOptions['videoBitRate'])) {
-                $ffmpegCmd .= ' -b:v ' . $videoOptions['videoBitRate'] . ' -maxrate ' . $videoOptions['videoBitRate'];
+                // Disabled for best/auto quality
+                //$ffmpegCmd .= ' -b:v ' . $videoOptions['videoBitRate'] . ' -maxrate ' . $videoOptions['videoBitRate'];
             }
 
             // Adjust the scaling if desired
@@ -168,6 +207,105 @@ class Transcode extends Component
                 $ffmpegCmd .= ' ' . $thisEncoder['audioCodecOptions'];
             }
 
+            // Watermarking
+            $watermarked = ($settings["watermarkingEnabled"] && isset($encodingOptions['watermark']) && $encodingOptions['watermark'] == true) ? true : false;
+    
+            // Watermark parameters
+            if ($watermarked) {
+
+                // Offset
+                $offsetX = $settings["watermarkOffsets"]["x"];
+                $offsetY = $settings["watermarkOffsets"]["y"];
+
+                // get watermark, based on video size
+                $fileInfo = $this->getFileInfo($filePath, false);
+                
+                if(isset($fileInfo["streams"][0]["width"])) {
+                    $videoWidth = $fileInfo["streams"][0]["width"];
+                } elseif(isset($fileInfo["streams"][1]["width"])) {
+                    $videoWidth = $fileInfo["streams"][1]["width"];          
+                } else {
+                    $videoWidth = false;
+                }
+                                           
+                if ($videoWidth) {
+
+                    if ($videoWidth >= 1900) {
+                        $wSize = "1080p";
+                        $offsetX *= 5;
+                    } elseif ($videoWidth >= 1100) {
+                        $wSize = "720p";
+                        $offsetX *= 3.5;
+                    } elseif ($videoWidth >= 800) {
+                        $wSize = "480p";
+                        $offsetX *= 2.5;
+                    } elseif ($videoWidth >= 600) {
+                        $wSize = "360p";
+                        $offsetX *= 2;
+                    } elseif ($videoWidth >= 350) {
+                        $wSize = "240p";
+                        $offsetX *= 1;
+                    } else {
+                        $wSize = "240p";
+                        $offsetX *= 1;
+                    }
+
+                    // grab position, first from passed params, else from config
+                    $position = isset($videoOptions["watermarkPosition"])
+                        ? $videoOptions["watermarkPosition"]
+                        : $settings["watermarkPosition"];
+
+                    // position params
+                    $positionParams = "";
+
+                    if ($position == "topRight") {
+                        $positionParams =
+                            " overlay=main_w-overlay_w-" .
+                            $offsetX .
+                            ":" .
+                            $offsetY;
+                    } elseif ($position == "topLeft") {
+                        $positionParams =
+                            " overlay=" . $offsetX . ":" . $offsetY;
+                    } elseif ($position == "bottomLeft") {
+                        $positionParams =
+                            " overlay=" .
+                            $offsetX .
+                            ":main_h-overlay_h-" .
+                            $offsetY;
+                    } elseif ($position == "bottomRight") {
+                        $positionParams =
+                            " overlay=main_w-overlay_w-" .
+                            $offsetX .
+                            ":main_h-overlay_h-" .
+                            $offsetY;
+                    }
+
+                    // final watermark path
+                    $watermarkPath = Craft::getAlias(
+                        $settings["watermarkImages"][$wSize]
+                    );
+
+                    // update ffmpeg command
+                    $ffmpegCmd .=
+                        ' -vf "movie=' .
+                        $watermarkPath .
+                        " [watermark]; [in][watermark] " .
+                        $positionParams;
+                } 
+            }
+
+            // max width
+            if ($watermarked) {
+                
+                $ffmpegCmd .=
+                    ', scale=\'min(1280,iw)\':\'trunc(ow/a/2)*2\' [out]" ';
+            } else {
+                
+                $ffmpegCmd .=
+                    ' -vf scale="\'min(1280,iw)\':\'trunc(ow/a/2)*2\'" ';
+            }
+                        
             // Create the directory if it isn't there already
             if (!is_dir($destVideoPath)) {
                 try {
@@ -177,8 +315,6 @@ class Transcode extends Component
                 }
             }
 
-            $destVideoFile = $this->getFilename($filePath, $videoOptions);
-
             // File to store the video encoding progress in
             $progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
 
@@ -187,11 +323,13 @@ class Transcode extends Component
             $ffmpegCmd .= ' -f '
                 . $thisEncoder['fileFormat']
                 . ' -y ' . escapeshellarg($destVideoPath)
-                . ' 1> ' . $progressFile . ' 2>&1 & echo $!';
+                . ' 1> ' . $progressFile . ' 2>&1 & echo $! ';
 
+            
             // Make sure there isn't a lockfile for this video already
             $lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock';
             $oldPid = @file_get_contents($lockFile);
+			
             if ($oldPid !== false) {
                 // See if the process is running, and empty result means the process is still running
                 // ref: https://stackoverflow.com/questions/3043978/how-to-check-if-a-process-id-pid-exists
@@ -204,23 +342,74 @@ class Transcode extends Component
                 @unlink($progressFile);
             }
 
-            // If the video file already exists and hasn't been modified, return it.  Otherwise, start it transcoding
+            if($devMode) {
+                echo "<div class='uk-alert'>";
+                echo "<div class='uk-padding-small'><h3 class='uk-margin-remove'>FFmpeg command</h3>" . $ffmpegCmd . "</div>";
+                echo "</div>";
+            }
+            
+            // If file already exists, serve it, or start encoding
             if (file_exists($destVideoPath) && (@filemtime($destVideoPath) >= @filemtime($filePath))) {
+                 
+               // echo "222222";
+                      
                 $url = $settings['transcoderUrls']['video'] . $subfolder ?? $settings['transcoderUrls']['default'];
-                $result = App::parseEnv($url) . $destVideoFile;
-                // skip encoding
-            } elseif (!$generate) {
-                $result = '';
+                $result = Craft::parseEnv($url) . $destVideoFile;
+
+            // Start encoding    
             } else {
+                  
                 // Kick off the transcoding
                 $pid = $this->executeShellCommand($ffmpegCmd);
                 Craft::info($ffmpegCmd . "\nffmpeg PID: " . $pid, __METHOD__);
 
                 // Create a lockfile in tmp
                 file_put_contents($lockFile, $pid);
+                
+                if($devMode) {
+                    echo "<div class='uk-alert'>";
+                    echo "<div class='uk-padding-small'>Kick off encoding, PID: " . $pid . "</div>";
+                    echo "</div>";
+                }                  
+            }
+            
+        // Don't generate the video, check for existing encoded video, show original if there's not an encoded video            
+        } else {
+  
+            // Encoded video URL
+            $url = $settings['transcoderUrls']['video'] . $subfolder ?? $settings['transcoderUrls']['default'];
+            $encodedUrl = Craft::parseEnv($url) . $destVideoFile;
+            
+            // Validator  
+            $validator = new UrlValidator();
+            $error = '';
+                        
+            if ($validator->validate($encodedUrl, $error)) {
+    
+                // curl request
+                $ch = curl_init($encodedUrl);
+                curl_setopt($ch, CURLOPT_NOBODY, true);
+                curl_exec($ch);
+                $retcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                                
+                if($retcode=="200") {
+                                        
+                    $result = $encodedUrl;
+                                        
+                } else {
+                    
+                    if($devMode) {
+                        echo "<div class='uk-alert'>";
+                        echo "<div class='uk-padding-small'>Can't find remote encoded URL:<br><br>$encodedUrl <br><br>Showing original video asset</div>";
+                        echo "</div>";                        
+                    }
+                    
+                    $result = "";
+                }
             }
         }
-
+        
         return $result;
     }
 
