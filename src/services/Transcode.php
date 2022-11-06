@@ -934,7 +934,7 @@ class Transcode extends Component
 
         // Add our options to the file name
         foreach ($options as $key => $value) {
-            if (isset($value)) {
+            if (!empty($value)) {
                 $suffix = '';
                 if (!empty(self::SUFFIX_MAP[$key])) {
                     $suffix = self::SUFFIX_MAP[$key];
