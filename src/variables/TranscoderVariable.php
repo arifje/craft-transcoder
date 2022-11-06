@@ -40,9 +40,9 @@ class TranscoderVariable implements ViteVariableInterface
      * @bool $generate
      *
      */
-    public function getVideoUrl($filePath, $videoOptions, bool $generate = true): string
+    public function getVideoUrl($filePath, $videoOptions, bool $generate = true, array $encodingOptions = []): string
     {
-        return Transcoder::$plugin->transcode->getVideoUrl($filePath, $videoOptions, $generate);
+        return Transcoder::$plugin->transcode->getVideoUrl($filePath, $videoOptions, $generate, $encodingOptions);
     }
 
     /**
