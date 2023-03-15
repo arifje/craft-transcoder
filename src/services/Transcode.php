@@ -822,7 +822,7 @@ class Transcode extends Component
      * @throws InvalidConfigException
      */
 
-    public function getGifUrl(Asset|string $filePath, array $gifOptions): string|false|null
+   public function getGifUrl(Asset|string $filePath, array $gifOptions, bool $generate = true): string|false|null
     {
         $result = '';
         $settings = Transcoder::$plugin->getSettings();
@@ -831,25 +831,62 @@ class Transcode extends Component
         // sub folder check
         if (($filePath instanceof Asset) && $settings['createSubfolders']) {
             $subfolder = $filePath->folderPath;
-        }
+        } else {
+			// Grab segment from URL
+			$segments = explode("/", $filePath);
+			$subfolder = $segments[count($segments)-2] . '/';
+		}
 
-        $filePath = $this->getAssetPath($filePath);
+        // Gif Options
+        $gifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
 
-        if (!empty($filePath)) {
-            // Dest path
+        // Get the video encoder presets to use
+        $videoEncoders = $settings['videoEncoders'];
+        $thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
+        $gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+
+        // Destination video file
+        $destVideoFile = $this->getFilename($filePath, $gifOptions);
+
+        // Generate asset
+        if($generate) {
+    		
+            // Encoded gif URL
+			$url = $settings['transcoderUrls']['gif'] . $subfolder ?? $settings['transcoderUrls']['default'];
+			$encodedUrl = Craft::parseEnv($url) . $destVideoFile;                    
+	  	
+			// Remote url is passed, check if it exists
+			if (!is_object($filePath) && filter_var($filePath, FILTER_VALIDATE_URL)) {
+								
+				// curl request
+				$ch = curl_init($encodedUrl);
+				curl_setopt($ch, CURLOPT_NOBODY, true);
+				curl_exec($ch);
+				$retcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+				curl_close($ch);
+		
+				if($retcode=="200") {
+					return $encodedUrl;                      
+				}         
+			} 
+
+            // Check paths 
+			$transcoderPath = $settings["transcoderPaths"]["gif"];
+			$transcoderPath = Craft::getAlias($transcoderPath);
+				
+            $filePath = $this->getAssetPath($filePath);
+			
+            // Path error
+			if (!file_exists($transcoderPath) || empty($filePath)) {
+				return "path_error";
+			}       
+            
+             // Dest path
             $destVideoPath = $settings['transcoderPaths']['gif'] . $subfolder ?? $settings['transcoderPaths']['default'];
             $destVideoPath = App::parseEnv($destVideoPath);
 
-            // Options
-            $gifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
-
-            // Get the video encoder presets to use
-            $videoEncoders = $settings['videoEncoders'];
-            $thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
-            $gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
-
             // Build the basic command for ffmpeg
-            $ffmpegCmd = $settings['ffmpegPath']
+            $ffmpegCmd = 'nice -n 15 ' . $settings['ffmpegPath']
                 . ' -f gif'
                 . ' -i ' . escapeshellarg($filePath)
                 . ' -vcodec ' . $thisEncoder['videoCodec']
@@ -864,8 +901,6 @@ class Transcode extends Component
                     Craft::error($e->getMessage(), __METHOD__);
                 }
             }
-
-            $destVideoFile = $this->getFilename($filePath, $gifOptions);
 
             // File to store the video encoding progress in
             $progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
@@ -903,6 +938,41 @@ class Transcode extends Component
                 // Create a lockfile in tmp
                 file_put_contents($lockFile, $pid);
             }
+        } else {
+     
+            // Encoded gif URL
+            $url = $settings['transcoderUrls']['gif'] . $subfolder ?? $settings['transcoderUrls']['default'];
+            $encodedUrl = Craft::parseEnv($url) . $destVideoFile;
+            
+            // Validator  
+            $validator = new UrlValidator();
+            $error = '';
+                        
+            if ($validator->validate($encodedUrl, $error)) {
+        
+                // curl request
+                $ch = curl_init($encodedUrl);
+                curl_setopt($ch, CURLOPT_NOBODY, true);
+                curl_exec($ch);
+                $retcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                                
+                if($retcode=="200") {
+                                        
+                    $result = $encodedUrl;
+                                        
+                } else {
+                    
+                    if($devMode) {
+                        echo "<div class='uk-alert'>";
+                        echo "<div class='uk-padding-small'>Can't find remote encoded URL:<br><br>$encodedUrl <br><br>Showing original GIF asset</div>";
+                        echo "</div>";                        
+                    }
+                    
+                    $result = "";
+                }
+            }  
+
         }
 
         return $result;
