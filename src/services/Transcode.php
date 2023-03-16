@@ -158,7 +158,7 @@ class Transcode extends Component
                 return "path_error";
             }           
   
-            // Video destination path and options
+            // Video destination path
             $destVideoPath = $settings['transcoderPaths']['video'] . $subfolder ?? $settings['transcoderPaths']['default'];
             $destVideoPath = Craft::parseEnv($destVideoPath);
 
@@ -352,9 +352,7 @@ class Transcode extends Component
             
             // If file already exists, serve it, or start encoding
             if (file_exists($destVideoPath) && (@filemtime($destVideoPath) >= @filemtime($filePath))) {
-                 
-               // echo "222222";
-                      
+                                       
                 $url = $settings['transcoderUrls']['video'] . $subfolder ?? $settings['transcoderUrls']['default'];
                 $result = Craft::parseEnv($url) . $destVideoFile;
 
@@ -432,19 +430,63 @@ class Transcode extends Component
         $result = null;
         $settings = Transcoder::$plugin->getSettings();
         $subfolder = '';
+		$devMode = Craft::$app->config->getGeneral()->devMode;
 
-        // sub folder check
-        if (($filePath instanceof Asset) && $settings['createSubfolders']) {
-            $subfolder = $filePath->folderPath;
-        }
+		// Sub folder check
+		if (is_object($filePath) && ($filePath instanceof Asset) && $settings['createSubfolders']) {
+			
+			$subfolder = $filePath->folderPath;
+			
+		} else {
+			
+			// Grab segment from URL
+			$segments = explode("/", $filePath);
+			$subfolder = $segments[count($segments)-2] . '/';
+		}
 
-        $filePath = $this->getAssetPath($filePath);
+		// Thumbnail options
+        $thumbnailOptions = $this->coalesceOptions('defaultThumbnailOptions', $thumbnailOptions);
+	
+		// Destination thumbnail
+        $destThumbnailFile = $this->getFilename($filePath, $thumbnailOptions);
+	
+		// Generate thumbnail 
+		if($generate) {
+		
+			// Encoded thumbnail URL
+			$url = $settings['transcoderUrls']['thumbnail'] . $subfolder ?? $settings['transcoderUrls']['default'];
+			$encodedUrl = Craft::parseEnv($url) . $destThumbnailFile;                    
 
-        if (!empty($filePath)) {
+			// Remote url is passed, return it when available
+			if (!is_object($filePath) && filter_var($filePath, FILTER_VALIDATE_URL)) {
+								
+				// curl request
+				$ch = curl_init($encodedUrl);
+				curl_setopt($ch, CURLOPT_NOBODY, true);
+				curl_exec($ch);
+				$retcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+				curl_close($ch);
+		
+				if($retcode == "200") {
+					return $encodedUrl;                      
+				}         
+			} 
+
+			// Continue encoding 
+			// Check paths
+            $transcoderPath = $settings["transcoderPaths"]["thumbnail"];
+            $transcoderPath = Craft::getAlias($transcoderPath);
+
+			$filePath = $this->getAssetPath($filePath);
+
+			// Path error, can't create destination file
+			if (!file_exists($transcoderPath) || empty($filePath)) {
+				return "path_error";
+			}    
+
+			// Thumbnail destination path
             $destThumbnailPath = $settings['transcoderPaths']['thumbnail'] . $subfolder ?? $settings['transcoderPaths']['default'];
             $destThumbnailPath = App::parseEnv($destThumbnailPath);
-
-            $thumbnailOptions = $this->coalesceOptions('defaultThumbnailOptions', $thumbnailOptions);
 
             // Build the basic command for ffmpeg
             $ffmpegCmd = $settings['ffmpegPath']
@@ -473,37 +515,67 @@ class Transcode extends Component
                 }
             }
 
-            $destThumbnailFile = $this->getFilename($filePath, $thumbnailOptions);
-
             // Assemble the destination path and final ffmpeg command
             $destThumbnailPath .= $destThumbnailFile;
             $ffmpegCmd .= ' -f image2 -y ' . escapeshellarg($destThumbnailPath) . ' >/dev/null 2>/dev/null &';
-
+			
             // If the thumbnail file already exists, return it.  Otherwise, generate it and return it
-            if (!file_exists($destThumbnailPath)) {
-                if ($generate) {
-                    /** @noinspection PhpUnusedLocalVariableInspection */
-                    $shellOutput = $this->executeShellCommand($ffmpegCmd);
-                    Craft::info($ffmpegCmd, __METHOD__);
+            if (file_exists($destThumbnailPath)) {
+			
+            	// Return either a path or a URL
+            	if ($asPath) {
+                	$result = $destThumbnailPath;
+            	} else {
+                	$url = $settings['transcoderUrls']['thumbnail'] . $subfolder ?? $settings['transcoderUrls']['default'];
+                	$result = App::parseEnv($url) . $destThumbnailFile;
+            	}
+			// Encode
+			} else {
+                /** @noinspection PhpUnusedLocalVariableInspection */
+                $shellOutput = $this->executeShellCommand($ffmpegCmd);
+                Craft::info($ffmpegCmd, __METHOD__);
 
-                    // if ffmpeg fails which we can't check because the process is ran in the background
-                    // don't return the future path of the image or else we can't check this in the front end
+                if($devMode) {
+                    echo "<div class='uk-alert'>";
+                    echo "<div class='uk-padding-small'>Kick off thumbnail encoding.</div>";
+                    echo "</div>";
+                }      
+            }
+        } else {
 
+            // Encoded video URL
+            $url = $settings['transcoderUrls']['thumbnail'] . $subfolder ?? $settings['transcoderUrls']['default'];
+            $encodedUrl = Craft::parseEnv($url) . $destThumbnailFile;
+            
+            // Validator  
+            $validator = new UrlValidator();
+            $error = '';
+                        
+            if ($validator->validate($encodedUrl, $error)) {
+    
+                // curl request
+                $ch = curl_init($encodedUrl);
+                curl_setopt($ch, CURLOPT_NOBODY, true);
+                curl_exec($ch);
+                $retcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                                
+                if($retcode == "200") {
+                                       
+                    $result = $encodedUrl;
+                                        
                 } else {
-                    Craft::info('Thumbnail does not exist, but not asked to generate it: ' . $filePath, __METHOD__);
-
-                    // The file doesn't exist, and we weren't asked to generate it
+                    
+                    if($devMode) {
+                        echo "<div class='uk-alert'>";
+                        echo "<div class='uk-padding-small'>Can't find generated thumbnail URL:<br><br>$encodedUrl <br><br>Showing article thumbnail</div>";
+                        echo "</div>";                        
+                    }
+                    
+                    $result = "";
                 }
-                return false;
-            }
-            // Return either a path or a URL
-            if ($asPath) {
-                $result = $destThumbnailPath;
-            } else {
-                $url = $settings['transcoderUrls']['thumbnail'] . $subfolder ?? $settings['transcoderUrls']['default'];
-                $result = App::parseEnv($url) . $destThumbnailFile;
-            }
-        }
+			}
+		}
 
         return $result;
     }
@@ -827,6 +899,7 @@ class Transcode extends Component
         $result = '';
         $settings = Transcoder::$plugin->getSettings();
         $subfolder = '';
+        $devMode = Craft::$app->config->getGeneral()->devMode;
 
         // sub folder check
         if (($filePath instanceof Asset) && $settings['createSubfolders']) {
@@ -855,7 +928,7 @@ class Transcode extends Component
 			$url = $settings['transcoderUrls']['gif'] . $subfolder ?? $settings['transcoderUrls']['default'];
 			$encodedUrl = Craft::parseEnv($url) . $destVideoFile;                    
 	  	
-			// Remote url is passed, check if it exists
+			// Remote url is passed, check if it exists and return it
 			if (!is_object($filePath) && filter_var($filePath, FILTER_VALIDATE_URL)) {
 								
 				// curl request
@@ -870,6 +943,7 @@ class Transcode extends Component
 				}         
 			} 
 
+			// File doesn't exist, needs possible encoding
             // Check paths 
 			$transcoderPath = $settings["transcoderPaths"]["gif"];
 			$transcoderPath = Craft::getAlias($transcoderPath);
@@ -926,17 +1000,30 @@ class Transcode extends Component
                 @unlink($progressFile);
             }
 
+            if($devMode) {
+                echo "<div class='uk-alert'>";
+                echo "<div class='uk-padding-small'><h3 class='uk-margin-remove'>FFmpeg command</h3>" . $ffmpegCmd . "</div>";
+                echo "</div>";
+            }
+
             // If the video file already exists and hasn't been modified, return it.  Otherwise, start it transcoding
             if (file_exists($destVideoPath) && (@filemtime($destVideoPath) >= @filemtime($filePath))) {
                 $url = $settings['transcoderUrls']['gif'] . $subfolder ?? $settings['transcoderUrls']['default'];
                 $result = App::parseEnv($url) . $destVideoFile;
             } else {
+
                 // Kick off the transcoding
                 $pid = $this->executeShellCommand($ffmpegCmd);
                 Craft::info($ffmpegCmd . "\nffmpeg PID: " . $pid, __METHOD__);
 
                 // Create a lockfile in tmp
                 file_put_contents($lockFile, $pid);
+
+                if($devMode) {
+                    echo "<div class='uk-alert'>";
+                    echo "<div class='uk-padding-small'>Kick off encoding for GIF, PID: " . $pid . "</div>";
+                    echo "</div>";
+                }    
             }
         } else {
      
@@ -972,7 +1059,6 @@ class Transcode extends Component
                     $result = "";
                 }
             }  
-
         }
 
         return $result;
