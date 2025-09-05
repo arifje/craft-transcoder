@@ -554,7 +554,7 @@ class Transcode extends Component
 			$ffmpegCmd = $settings['ffmpegPath']
 				. ' -i ' . escapeshellarg($filePathResolved)
 				. ' -vcodec mjpeg'
-				. ' -vframes 1'
+				. ' -vframes 1';
 
 			// Adjust scaling
 			$ffmpegCmd = $this->addScalingFfmpegArgs($thumbnailOptions, $ffmpegCmd);
