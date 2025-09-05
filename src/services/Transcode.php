@@ -117,6 +117,9 @@ class Transcode extends Component
 		$settings = Transcoder::$plugin->getSettings();
 		$subfolder = $this->getSubfolderFromPath($filePath);
 	
+		// Environment check
+		$isDev = App::env('CRAFT_ENVIRONMENT') === 'development';
+	
 		// --- Normalize input ---
 		$normalized = $this->normalizeFilePath($filePath);
 		$originalExists = false;
@@ -128,6 +131,12 @@ class Transcode extends Component
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
+		}
+	
+		if ($isDev) {
+			Craft::info("Normalized filePath: " . json_encode($normalized)), __METHOD__);
+			Craft::info("Resolved filePath: " . $filePathResolved, __METHOD__);
+			Craft::info("Original exists? " . ($originalExists ? 'yes' : 'no'), __METHOD__);
 		}
 	
 		// Destination path & URL
@@ -143,6 +152,11 @@ class Transcode extends Component
 			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
 		}
 	
+		if ($isDev) {
+			Craft::info("Destination path: $destVideoPath", __METHOD__);
+			Craft::info("Base URL: $urlBase", __METHOD__);
+		}
+	
 		$videoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
 		$videoEncoders = $settings['videoEncoders'];
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
@@ -155,17 +169,25 @@ class Transcode extends Component
 		$lockFile     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock';
 		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
 	
+		if ($isDev) {
+			Craft::info("Lock file: $lockFile", __METHOD__);
+			Craft::info("Progress file: $progressFile", __METHOD__);
+		}
+	
 		// --- Case 1: encoded already exists (and finished) ---
 		if (is_file($encodedFile) && filesize($encodedFile) > 0 && !is_file($lockFile)) {
-			
-			// Clean up stale lock/progress files
-			if (is_file($lockFile)) {
-				@unlink($lockFile);
+			if ($isDev) {
+				Craft::info("Encoded file already exists: $encodedFile", __METHOD__);
 			}
-			if (is_file($progressFile)) {
-				@unlink($progressFile);
+	
+			// Always cleanup stale lock/progress files
+			@unlink($lockFile);
+			@unlink($progressFile);
+	
+			if ($isDev) {
+				Craft::info("Removed lock/progress files if present", __METHOD__);
 			}
-			
+	
 			$response = [
 				'status' => 'ok',
 				'url' => $publicUrl,
@@ -183,8 +205,21 @@ class Transcode extends Component
 			if ($pid !== '' && ctype_digit($pid)) {
 				exec("kill -0 $pid 2>&1", $processState);
 	
-				// If process is dead → ffmpeg crashed (segfault or killed)
+				// If process is dead → ffmpeg crashed
 				if (count($processState) > 0) {
+					// Double-check if encoded file exists → maybe finished
+					if (is_file($encodedFile) && filesize($encodedFile) > 0) {
+						@unlink($lockFile);
+						@unlink($progressFile);
+						if ($isDev) {
+							Craft::info("Encoding finished, cleaned up lock/progress files", __METHOD__);
+						}
+						return JsonHelper::encode([
+							'status' => 'ok',
+							'url' => $publicUrl,
+						]);
+					}
+	
 					@unlink($lockFile);
 					Craft::error("Transcoder: ffmpeg process $pid died unexpectedly for $filePathResolved", __METHOD__);
 					return JsonHelper::encode([
@@ -197,7 +232,7 @@ class Transcode extends Component
 				// Optional: detect stalled progress
 				if (file_exists($progressFile)) {
 					$lastUpdate = filemtime($progressFile);
-					if ($lastUpdate && (time() - $lastUpdate > 60)) { // stalled for >60s
+					if ($lastUpdate && (time() - $lastUpdate > 60)) {
 						@unlink($lockFile);
 						Craft::error("Transcoder: ffmpeg stalled for $filePathResolved", __METHOD__);
 						return JsonHelper::encode([
@@ -208,14 +243,19 @@ class Transcode extends Component
 					}
 				}
 	
-				// Otherwise still encoding
+				if ($isDev) {
+					Craft::info("Status: encoding", __METHOD__);
+				}
+	
 				return JsonHelper::encode([
 					'status' => 'encoding',
 					'url' => '',
 					'info' => 'Encoding in progress',
 				]);
 			} else {
-				// Lockfile exists but PID not yet written → just report encoding
+				if ($isDev) {
+					Craft::info("Status: encoding (PID not yet available)", __METHOD__);
+				}
 				return JsonHelper::encode([
 					'status' => 'encoding',
 					'url' => '',
@@ -239,6 +279,9 @@ class Transcode extends Component
 		if (!is_dir($destVideoPath)) {
 			try {
 				FileHelper::createDirectory($destVideoPath);
+				if ($isDev) {
+					Craft::info("Created destination directory: $destVideoPath", __METHOD__);
+				}
 			} catch (\Exception $e) {
 				Craft::error($e->getMessage(), __METHOD__);
 			}
@@ -257,7 +300,8 @@ class Transcode extends Component
 	
 		// Disabled bitrate setting (as in original)
 		// if (!empty($videoOptions['videoBitRate'])) {
-		//     $ffmpegCmd .= ' -b:v ' . $videoOptions['videoBitRate'] . ' -maxrate ' . $videoOptions['videoBitRate'];
+		//     $ffmpegCmd .= ' -b:v ' . $videoOptions['videoBitRate']
+		//         . ' -maxrate ' . $videoOptions['videoBitRate'];
 		// }
 	
 		$ffmpegCmd = $this->addScalingFfmpegArgs($videoOptions, $ffmpegCmd);
@@ -282,15 +326,28 @@ class Transcode extends Component
 			. ' -y ' . escapeshellarg($encodedFile)
 			. ' 1> ' . $progressFile . ' 2>&1 & echo $!';
 	
+		if ($isDev) {
+			Craft::info("Final ffmpeg command: $ffmpegCmd", __METHOD__);
+		}
+	
 		if ($generate) {
 			$pid = $this->executeShellCommand($ffmpegCmd);
 			file_put_contents($lockFile, $pid);
+	
+			if ($isDev) {
+				Craft::info("Created lock file with PID $pid", __METHOD__);
+			}
+	
 			Craft::info("Started ffmpeg PID $pid: $ffmpegCmd", __METHOD__);
 			return JsonHelper::encode([
 				'status' => 'encoding',
 				'url' => '',
 				'info' => 'Encoding started',
 			]);
+		}
+	
+		if ($isDev) {
+			Craft::error("Encoding not possible, no url", __METHOD__);
 		}
 	
 		return JsonHelper::encode([
@@ -942,16 +999,7 @@ class Transcode extends Component
 				$result = App::parseEnv($url) . $destVideoFile;
 			} elseif (!$generate) {         
 				$result = '';
-			} else {
-				
-				// Debugging
-				if(Craft::$app->config->general->devMode) {
-					echo '<h4>Transcoder ffmpeg cmd</h4>';
-					echo "<div class='uk-alert'>";
-					echo $ffmpegCmd;
-					echo "</div>";
-				}
-								
+			} else {							
 				// Kick off the transcoding
 				$pid = $this->executeShellCommand($ffmpegCmd);
 				Craft::info($ffmpegCmd . "\nffmpeg PID: " . $pid, __METHOD__);
