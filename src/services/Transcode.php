@@ -99,7 +99,7 @@ class Transcode extends Component
 	 * @return string       URL of the transcoded video or ""
 	 * @throws InvalidConfigException
 	 */
-	
+
 	/**
 	 * Returns a URL to the transcoded video or "" if it doesn't exist (at
 	 * which time it will create it).
@@ -111,20 +111,20 @@ class Transcode extends Component
 	 * @return string URL of the transcoded video or ""
 	 * @throws InvalidConfigException
 	 */
-		
+
 	public function getVideoUrl(string|Asset $filePath, array $videoOptions, bool $generate = true): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
 		$subfolder = $this->getSubfolderFromPath($filePath);
-	
+
 		// Environment check
 		$isDev = App::env('CRAFT_ENVIRONMENT') === 'development';
-	
+
 		// --- Normalize input ---
 		$normalized = $this->normalizeFilePath($filePath);
 		$originalExists = false;
 		$filePathResolved = null;
-	
+
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
 			$originalExists = $this->doesRemoteFileExist($filePathResolved);
@@ -132,13 +132,13 @@ class Transcode extends Component
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
 		}
-	
+
 		if ($isDev) {
-			Craft::info("Normalized filePath: " . json_encode($normalized)), __METHOD__);
+			Craft::info("Normalized filePath: " . json_encode($normalized), __METHOD__);
 			Craft::info("Resolved filePath: " . $filePathResolved, __METHOD__);
 			Craft::info("Original exists? " . ($originalExists ? 'yes' : 'no'), __METHOD__);
 		}
-	
+
 		// Destination path & URL
 		if (!empty($subfolder)) {
 			$destVideoPath = rtrim(App::parseEnv($settings['transcoderPaths']['video']), DIRECTORY_SEPARATOR)
@@ -151,43 +151,43 @@ class Transcode extends Component
 			$destVideoPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
 			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
 		}
-	
+
 		if ($isDev) {
 			Craft::info("Destination path: $destVideoPath", __METHOD__);
 			Craft::info("Base URL: $urlBase", __METHOD__);
 		}
-	
+
 		$videoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
 		$videoEncoders = $settings['videoEncoders'];
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
-	
+
 		$destVideoFile = $this->getFilename($filePathResolved ?? '', $videoOptions);
 		$encodedFile   = $destVideoPath . $destVideoFile;
 		$publicUrl     = $urlBase . '/' . $destVideoFile;
-	
+
 		$lockFile     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock';
 		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
-	
+
 		if ($isDev) {
 			Craft::info("Lock file: $lockFile", __METHOD__);
 			Craft::info("Progress file: $progressFile", __METHOD__);
 		}
-	
+
 		// --- Case 1: encoded already exists (and finished) ---
 		if (is_file($encodedFile) && filesize($encodedFile) > 0 && !is_file($lockFile)) {
 			if ($isDev) {
 				Craft::info("Encoded file already exists: $encodedFile", __METHOD__);
 			}
-	
+
 			// Always cleanup stale lock/progress files
 			@unlink($lockFile);
 			@unlink($progressFile);
-	
+
 			if ($isDev) {
 				Craft::info("Removed lock/progress files if present", __METHOD__);
 			}
-	
+
 			$response = [
 				'status' => 'ok',
 				'url' => $publicUrl,
@@ -197,14 +197,14 @@ class Transcode extends Component
 			}
 			return JsonHelper::encode($response);
 		}
-	
+
 		// --- Case 2: check for stalled/crashed encoding ---
 		if (is_file($lockFile)) {
 			$pid = trim((string) @file_get_contents($lockFile));
-	
+
 			if ($pid !== '' && ctype_digit($pid)) {
 				exec("kill -0 $pid 2>&1", $processState);
-	
+
 				// If process is dead → ffmpeg crashed
 				if (count($processState) > 0) {
 					// Double-check if encoded file exists → maybe finished
@@ -219,7 +219,7 @@ class Transcode extends Component
 							'url' => $publicUrl,
 						]);
 					}
-	
+
 					@unlink($lockFile);
 					Craft::error("Transcoder: ffmpeg process $pid died unexpectedly for $filePathResolved", __METHOD__);
 					return JsonHelper::encode([
@@ -228,7 +228,7 @@ class Transcode extends Component
 						'error' => 'Encoding failed due to a server error (process crashed, ffmpeg error)',
 					]);
 				}
-	
+
 				// Optional: detect stalled progress
 				if (file_exists($progressFile)) {
 					$lastUpdate = filemtime($progressFile);
@@ -242,11 +242,11 @@ class Transcode extends Component
 						]);
 					}
 				}
-	
+
 				if ($isDev) {
 					Craft::info("Status: encoding", __METHOD__);
 				}
-	
+
 				return JsonHelper::encode([
 					'status' => 'encoding',
 					'url' => '',
@@ -263,7 +263,7 @@ class Transcode extends Component
 				]);
 			}
 		}
-	
+
 		// --- Case 3: original missing, encoded missing ---
 		if (!$originalExists) {
 			$msg = "Transcoder: original video not found at " . ($filePathResolved ?? 'unknown');
@@ -274,7 +274,7 @@ class Transcode extends Component
 				'error' => $msg,
 			]);
 		}
-	
+
 		// --- Case 4: encode new file ---
 		if (!is_dir($destVideoPath)) {
 			try {
@@ -286,26 +286,26 @@ class Transcode extends Component
 				Craft::error($e->getMessage(), __METHOD__);
 			}
 		}
-	
+
 		$ffmpegCmd = $settings['ffmpegPath']
 			. ' -i ' . escapeshellarg($filePathResolved)
 			. ' -vcodec ' . $thisEncoder['videoCodec']
 			. ' ' . $thisEncoder['videoCodecOptions']
 			. ' -bufsize 1000k'
 			. ' -threads ' . $thisEncoder['threads'];
-	
+
 		if (!empty($videoOptions['videoFrameRate'])) {
 			$ffmpegCmd .= ' -r ' . $videoOptions['videoFrameRate'];
 		}
-	
+
 		// Disabled bitrate setting (as in original)
 		// if (!empty($videoOptions['videoBitRate'])) {
 		//     $ffmpegCmd .= ' -b:v ' . $videoOptions['videoBitRate']
 		//         . ' -maxrate ' . $videoOptions['videoBitRate'];
 		// }
-	
+
 		$ffmpegCmd = $this->addScalingFfmpegArgs($videoOptions, $ffmpegCmd);
-	
+
 		if (empty($videoOptions['audioBitRate']) && empty($videoOptions['audioSampleRate']) && empty($videoOptions['audioChannels'])) {
 			$ffmpegCmd .= ' -c:a copy';
 		} else {
@@ -321,23 +321,23 @@ class Transcode extends Component
 			}
 			$ffmpegCmd .= ' ' . $thisEncoder['audioCodecOptions'];
 		}
-	
+
 		$ffmpegCmd .= ' -f ' . $thisEncoder['fileFormat']
 			. ' -y ' . escapeshellarg($encodedFile)
 			. ' 1> ' . $progressFile . ' 2>&1 & echo $!';
-	
+
 		if ($isDev) {
 			Craft::info("Final ffmpeg command: $ffmpegCmd", __METHOD__);
 		}
-	
+
 		if ($generate) {
 			$pid = $this->executeShellCommand($ffmpegCmd);
 			file_put_contents($lockFile, $pid);
-	
+
 			if ($isDev) {
 				Craft::info("Created lock file with PID $pid", __METHOD__);
 			}
-	
+
 			Craft::info("Started ffmpeg PID $pid: $ffmpegCmd", __METHOD__);
 			return JsonHelper::encode([
 				'status' => 'encoding',
@@ -345,11 +345,11 @@ class Transcode extends Component
 				'info' => 'Encoding started',
 			]);
 		}
-	
+
 		if ($isDev) {
 			Craft::error("Encoding not possible, no url", __METHOD__);
 		}
-	
+
 		return JsonHelper::encode([
 			'status' => 'error',
 			'url' => '',
@@ -357,7 +357,7 @@ class Transcode extends Component
 		]);
 	}
 
-	
+
 	/**
 	 * Normalize asset or path into either a usable URL or local path.
 	 */
@@ -371,20 +371,20 @@ class Transcode extends Component
 			}
 			return ['url' => $url];
 		}
-	
+
 		if ($this->isUrl($input)) {
 			return ['url' => $input];
 		}
-	
+
 		if (str_starts_with($input, '/')) {
 			$siteUrl = Craft::$app->getSites()->getCurrentSite()->getBaseUrl();
 			return ['url' => rtrim($siteUrl, '/') . $input];
 		}
-	
+
 		return ['path' => $input];
 	}
 
-	
+
 	/**
 	 * Returns true if a string is a valid URL
 	 *
@@ -393,7 +393,7 @@ class Transcode extends Component
 	{
 		return filter_var($url, FILTER_VALIDATE_URL) !== false;
 	}
-	
+
 	/**
 	 * Returns a subfolder name based on the provided file path and settings.
 	 *
@@ -411,21 +411,21 @@ class Transcode extends Component
 	function getSubfolderFromPath(string|Asset $filePath): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
-			
+
 		// Case: filePath is an Asset and subfolders are enabled
 		if (($filePath instanceof Asset) && !empty($settings['createSubfolders'])) {
 			return $filePath->folderPath ?? '';
 		}
-	
+
 		// Case: extract subfolder from URL segment
 		if (!empty($settings['subfolderUrlSegment']) && is_string($filePath)) {
 			$urlPath = parse_url($filePath, PHP_URL_PATH); // Extract the path part
 			$segments = array_values(array_filter(explode('/', $urlPath))); // Clean up and reindex
-	
+
 			$index = $settings['subfolderUrlSegment'] - 1; // Convert to zero-based index
 			return isset($segments[$index]) ? $segments[$index] . '/' : '';
 		}
-	
+
 		return '';
 	}
 
@@ -441,16 +441,16 @@ class Transcode extends Component
 		if (!filter_var($url, FILTER_VALIDATE_URL)) {
 			return false;
 		}
-		
+
 		// Add custom params to the url
 		$url = $this->addCustomParams($url);
-	
+
 		// Check if the remote file exists
 		$headers = @get_headers($url);
-		
+
 		return $headers && strpos($headers[0], '200') !== false;
 	}
-	
+
 	/**
 	 * Adds direct=1 param to url, so secure url check on nginx server is skipped
 	 * Also add nocache=1, so cloudflare does not cache it // you have to setup this rule on cloudflare for your domain
@@ -461,31 +461,31 @@ class Transcode extends Component
 	private function addCustomParams(string $url): string
 	{
 		$parsedUrl = parse_url($url);
-		
+
 		// Parse existing query parameters
 		parse_str($parsedUrl['query'] ?? '', $queryParams);
-	
+
 		// Add or update `is_skoften=true`
 		$queryParams['direct'] = '1';
 		$queryParams['nocache'] = '1';
-		
+
 		// Build the new query string
 		$newQueryString = http_build_query($queryParams);
-	
+
 		// Reconstruct the full URL
 		$newUrl = $parsedUrl['scheme'] . '://' . $parsedUrl['host'];
-	
+
 		if (isset($parsedUrl['port'])) {
 			$newUrl .= ':' . $parsedUrl['port'];
 		}
-	
+
 		$newUrl .= $parsedUrl['path'];
 		$newUrl .= '?' . $newQueryString;
-	
+
 		if (isset($parsedUrl['fragment'])) {
 			$newUrl .= '#' . $parsedUrl['fragment'];
 		}
-	
+
 		return $newUrl;
 	}
 
@@ -506,11 +506,11 @@ class Transcode extends Component
 		$result = null;
 		$settings = Transcoder::$plugin->getSettings();
 		$subfolder = $this->getSubfolderFromPath($filePath);
-	
+
 		// --- Normalize input (same as getVideoUrl) ---
 		$normalized = $this->normalizeFilePath($filePath);
 		$filePathResolved = null;
-	
+
 		if (isset($normalized['url'])) {
 			// Remote or site-relative URL (normalized to full URL)
 			$filePathResolved = $normalized['url'];
@@ -526,45 +526,45 @@ class Transcode extends Component
 					. DIRECTORY_SEPARATOR
 					. trim($subfolder, DIRECTORY_SEPARATOR)
 					. DIRECTORY_SEPARATOR;
-	
+
 				$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['thumbnail']), '/')
 					. '/' . trim($subfolder, '/');
 			} else {
 				$destThumbnailPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR)
 					. DIRECTORY_SEPARATOR;
-	
+
 				$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
 			}
-	
+
 			// Options
 			$thumbnailOptions = $this->coalesceOptions('defaultThumbnailOptions', $thumbnailOptions);
-	
+
 			// Build the file name
 			$destThumbnailFile = $this->getFilename($filePathResolved, $thumbnailOptions);
-	
+
 			// Public URL
 			$publicUrl = $urlBase . '/' . $destThumbnailFile;
-	
+
 			// Check if remote file exists first
 			if ($this->isUrl($filePathResolved) && $this->doesRemoteFileExist($publicUrl)) {
 				return $publicUrl;
 			}
-	
+
 			// Build the ffmpeg command
 			$ffmpegCmd = $settings['ffmpegPath']
 				. ' -i ' . escapeshellarg($filePathResolved)
 				. ' -vcodec mjpeg'
-				. ' -vframes 1';
-	
+				. ' -vframes 1'
+
 			// Adjust scaling
 			$ffmpegCmd = $this->addScalingFfmpegArgs($thumbnailOptions, $ffmpegCmd);
-	
+
 			// Set timecode
 			if (!empty($thumbnailOptions['timeInSecs'])) {
 				$timeCode = gmdate('H:i:s', $thumbnailOptions['timeInSecs']);
 				$ffmpegCmd .= ' -ss ' . $timeCode . '.00';
 			}
-	
+
 			// Ensure directory exists
 			if (!is_dir($destThumbnailPath)) {
 				try {
@@ -573,13 +573,13 @@ class Transcode extends Component
 					Craft::error($e->getMessage(), __METHOD__);
 				}
 			}
-	
+
 			// Destination file path
 			$destThumbnailPath .= $destThumbnailFile;
-	
+
 			// Final ffmpeg command
 			$ffmpegCmd .= ' -f image2 -y ' . escapeshellarg($destThumbnailPath) . ' >/dev/null 2>/dev/null &';
-	
+
 			// Generate thumbnail if not exists
 			if (!file_exists($destThumbnailPath)) {
 				if ($generate) {
@@ -590,7 +590,7 @@ class Transcode extends Component
 				}
 				return false;
 			}
-	
+
 			// Return path or URL
 			if ($asPath) {
 				$result = $destThumbnailPath;
@@ -598,7 +598,7 @@ class Transcode extends Component
 				$result = $publicUrl;
 			}
 		}
-	
+
 		return $result;
 	}
 
