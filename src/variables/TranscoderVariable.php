@@ -188,8 +188,8 @@ class TranscoderVariable implements ViteVariableInterface
      * @return string|false|null
      * @throws InvalidConfigException
      */
-    public function getGifUrl($filePath, $gifOptions): string|false|null
+    public function getGifUrl($filePath, $gifOptions, bool $generate = true): string|false|null
     {
-        return Transcoder::$plugin->transcode->getGifUrl($filePath, $gifOptions);
+        return Transcoder::$plugin->transcode->getGifUrl($filePath, $gifOptions, $generate);
     }
 }

@@ -94,7 +94,14 @@ class Settings extends Model
      * @var bool
      */
     public bool $createSubfolders = true;
-
+	
+	/**
+	 * get the subfolder from an url segment if a url is pased as argument instead of an asset object 
+	 * set to false if disabled
+	 * @var bool
+	 */
+	public int|bool $subfolderUrlSegment = false;
+	
     /**
      * clear caches when somebody clears all caches from the CP?
      *
@@ -215,7 +222,7 @@ class Settings extends Model
         'audioSampleRate' => '44100',
         'audioChannels' => '2',
         'synchronous' => false,
-        'stripMetadata' => false,
+        'stripMetadata' => false
     ];
 
     /**

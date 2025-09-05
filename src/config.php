@@ -63,6 +63,10 @@ return [
     // if a upload location has a subfolder defined, add this to the transcoder paths too
     'createSubfolders' => true,
 
+	// if an URL (video.url) is passed as a parameter in getVideoUrl()
+	// we don't have an folderPath, so can look for it in the URL (often an entry or element id)
+	'subfolderUrlSegment' => false,
+	
     // Add the Clear Caches utility to the CP?
     'clearCaches' => false,
 
@@ -161,7 +165,7 @@ return [
         'timeInSecs' => '',
         'seekInSecs' => '',
         'synchronous' => false,
-        'stripMetadata' => false,
+        'stripMetadata' => false
     ],
 
     // Default options for Gif encoding
