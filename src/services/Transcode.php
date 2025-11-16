@@ -88,20 +88,6 @@ class Transcode extends Component
 
 	/**
 	 * Returns a URL to the transcoded video or "" if it doesn't exist (at
-	 * which
-	 * time it will create it).
-	 *
-	 * @param string|Asset $filePath string  path to the original video -OR- an
-	 *                           Asset
-	 * @param array $videoOptions array   of options for the video
-	 * @param bool $generate whether the video should be encoded
-	 *
-	 * @return string       URL of the transcoded video or ""
-	 * @throws InvalidConfigException
-	 */
-
-	/**
-	 * Returns a URL to the transcoded video or "" if it doesn't exist (at
 	 * which time it will create it).
 	 *
 	 * @param string|Asset $filePath path to the original video -OR- an Asset
@@ -356,7 +342,6 @@ class Transcode extends Component
 			'error' => 'Encoding disabled',
 		]);
 	}
-
 
 	/**
 	 * Normalize asset or path into either a usable URL or local path.
@@ -915,7 +900,190 @@ class Transcode extends Component
 	 * @throws InvalidConfigException
 	 */
 
-	public function getGifUrl(Asset|string $filePath, array $gifOptions, bool $generate = true): string|false|null
+	public function getGifUrl(Asset|string $filePath, array $gifOptions, bool $generate = true): string
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$subfolder = $this->getSubfolderFromPath($filePath);
+	
+		// Environment check
+		$isDev = App::env('CRAFT_ENVIRONMENT') === 'development';
+	
+		// --- Normalize input ---
+		$normalized = $this->normalizeFilePath($filePath);
+		$originalExists = false;
+		$filePathResolved = null;
+	
+		if (isset($normalized['url'])) {
+			$filePathResolved = $normalized['url'];
+			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+		} elseif (isset($normalized['path'])) {
+			$filePathResolved = $normalized['path'];
+			$originalExists = file_exists($filePathResolved);
+		}
+	
+		if ($isDev) {
+			Craft::info("Normalized filePath: " . json_encode($normalized), __METHOD__);
+			Craft::info("Resolved filePath: " . $filePathResolved, __METHOD__);
+			Craft::info("Original exists? " . ($originalExists ? 'yes' : 'no'), __METHOD__);
+		}
+	
+		// Destination path & URL
+		if (!empty($subfolder)) {
+			$destGifPath = rtrim(App::parseEnv($settings['transcoderPaths']['gif']), DIRECTORY_SEPARATOR)
+				. DIRECTORY_SEPARATOR . trim($subfolder, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['gif']), '/')
+				. '/' . trim($subfolder, '/');
+		} else {
+			$destGifPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
+		}
+	
+		$gifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
+		$videoEncoders = $settings['videoEncoders'];
+		$thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
+		$gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+	
+		$destGifFile = $this->getFilename($filePathResolved ?? '', $gifOptions);
+		$encodedFile = $destGifPath . $destGifFile;
+		$publicUrl   = $urlBase . '/' . $destGifFile;
+	
+		$lockFile     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destGifFile . '.lock';
+		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destGifFile . '.progress';
+	
+		// --- Case 1: encoded GIF already exists (lazy cleanup) ---
+		if (is_file($encodedFile) && filesize($encodedFile) > 0) {
+			// Clean up lock/progress if finished
+			if (is_file($lockFile) || is_file($progressFile)) {
+				$contents = @file_get_contents($progressFile);
+				if (!$contents || str_contains((string)$contents, 'progress=end')) {
+					@unlink($lockFile);
+					@unlink($progressFile);
+				}
+			}
+	
+			return JsonHelper::encode([
+				'status' => 'ok',
+				'url' => $publicUrl,
+			]);
+		}
+	
+		// --- Case 2: check for stalled/crashed encoding ---
+		if (is_file($lockFile)) {
+			$pid = trim((string) @file_get_contents($lockFile));
+	
+			if ($pid !== '' && ctype_digit($pid)) {
+				exec("kill -0 $pid 2>&1", $processState);
+	
+				if (count($processState) > 0) {
+					// process died
+					if (is_file($encodedFile) && filesize($encodedFile) > 0) {
+						@unlink($lockFile);
+						@unlink($progressFile);
+						return JsonHelper::encode([
+							'status' => 'ok',
+							'url' => $publicUrl,
+						]);
+					}
+	
+					@unlink($lockFile);
+					Craft::error("Transcoder: ffmpeg process $pid died unexpectedly for $filePathResolved", __METHOD__);
+					return JsonHelper::encode([
+						'status' => 'error',
+						'url' => '',
+						'error' => 'Encoding failed due to a server error (process crashed, ffmpeg error)',
+					]);
+				}
+	
+				// detect stalled progress
+				if (file_exists($progressFile)) {
+					$contents = @file_get_contents($progressFile);
+					if ($contents && str_contains($contents, 'progress=end')) {
+						@unlink($lockFile);
+						@unlink($progressFile);
+						return JsonHelper::encode([
+							'status' => 'ok',
+							'url' => $publicUrl,
+						]);
+					}
+	
+					$lastUpdate = filemtime($progressFile);
+					if ($lastUpdate && (time() - $lastUpdate > 60)) {
+						@unlink($lockFile);
+						Craft::error("Transcoder: ffmpeg stalled for $filePathResolved", __METHOD__);
+						return JsonHelper::encode([
+							'status' => 'error',
+							'url' => '',
+							'error' => 'Encoding stalled (no progress updates)',
+						]);
+					}
+				}
+	
+				return JsonHelper::encode([
+					'status' => 'encoding',
+					'url' => '',
+					'info' => 'Encoding in progress',
+				]);
+			} else {
+				return JsonHelper::encode([
+					'status' => 'encoding',
+					'url' => '',
+					'info' => 'Encoding in progress (PID not yet available)',
+				]);
+			}
+		}
+	
+		// --- Case 3: original missing ---
+		if (!$originalExists) {
+			$msg = "Transcoder: original file not found at " . ($filePathResolved ?? 'unknown');
+			Craft::error($msg, __METHOD__);
+			return JsonHelper::encode([
+				'status' => 'error',
+				'url' => '',
+				'error' => $msg,
+			]);
+		}
+	
+		// --- Case 4: encode new GIF ---
+		if (!is_dir($destGifPath)) {
+			try {
+				FileHelper::createDirectory($destGifPath);
+			} catch (\Exception $e) {
+				Craft::error($e->getMessage(), __METHOD__);
+			}
+		}
+	
+		$ffmpegCmd = $settings['ffmpegPath']
+			. ' -i ' . escapeshellarg($filePathResolved)
+			. ' -vf "fps=10,scale=' . ($gifOptions['width'] ?? -1) . ':' . ($gifOptions['height'] ?? -1) . ':flags=lanczos"'
+			. ' -c:v ' . $thisEncoder['videoCodec'] . ' ' . $thisEncoder['videoCodecOptions']
+			. ' -y ' . escapeshellarg($encodedFile)
+			. ' 1> ' . $progressFile . ' 2>&1 & echo $!';
+	
+		if ($isDev) {
+			Craft::info("Final ffmpeg command: $ffmpegCmd", __METHOD__);
+		}
+	
+		if ($generate) {
+			$pid = $this->executeShellCommand($ffmpegCmd);
+			file_put_contents($lockFile, $pid);
+	
+			return JsonHelper::encode([
+				'status' => 'encoding',
+				'url' => '',
+				'info' => 'Encoding started',
+			]);
+		}
+	
+		return JsonHelper::encode([
+			'status' => 'error',
+			'url' => '',
+			'error' => 'Encoding disabled',
+		]);
+	}
+
+
+
+	public function getGifUrlOld(Asset|string $filePath, array $gifOptions, bool $generate = true): string|false|null
 	{
 		$result = '';
 		$settings = Transcoder::$plugin->getSettings();
