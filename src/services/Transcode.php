@@ -413,8 +413,12 @@ class Transcode extends Component
 	 */
 	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
 	{
+		$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
-		if (in_array($status['status'] ?? null, ['ok', 'queued', 'encoding'], true)) {
+		if (($status['status'] ?? null) === 'ok' && is_file($outputInfo['encodedFile']) && filesize($outputInfo['encodedFile']) > 0) {
+			return $status;
+		}
+		if (in_array($status['status'] ?? null, ['queued', 'encoding'], true)) {
 			return $status;
 		}
 
@@ -509,6 +513,10 @@ class Transcode extends Component
 			);
 			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
 			return $this->sanitizeVideoStatus($status);
+		}
+
+		if (!empty($storedStatus) && ($storedStatus['status'] ?? null) === 'ok') {
+			$storedStatus = [];
 		}
 
 		if (!empty($storedStatus)) {
