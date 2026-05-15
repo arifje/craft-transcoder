@@ -9,7 +9,7 @@ description: Using transcoder documentation for the Transcoder plugin. The Trans
 To generate a transcoded video, do the following:
 
 ```twig
-{% set transVideoUrl = craft.transcoder.getVideoUrl('/home/vagrant/sites/nystudio107/public/oceans.mp4', {
+{% set transVideoResponse = craft.transcoder.getVideoUrl('/home/vagrant/sites/nystudio107/public/oceans.mp4', {
     "videoFrameRate": 20,
     "videoBitRate": "500k",
     "width": 720,
@@ -20,7 +20,7 @@ To generate a transcoded video, do the following:
 You can also pass in an URL:
 
 ```twig
-{% set transVideoUrl = craft.transcoder.getVideoUrl('http://vjs.zencdn.net/v/oceans.mp4', {
+{% set transVideoResponse = craft.transcoder.getVideoUrl('http://vjs.zencdn.net/v/oceans.mp4', {
     "videoFrameRate": 20,
     "videoBitRate": "500k",
     "width": 720,
@@ -32,7 +32,7 @@ You can also pass in an `Asset`:
 
 ```twig
 {% set myAsset = entry.someAsset.one() %}
-{% set transVideoUrl = craft.transcoder.getVideoUrl(myAsset, {
+{% set transVideoResponse = craft.transcoder.getVideoUrl(myAsset, {
     "videoFrameRate": 20,
     "videoBitRate": "500k",
     "width": 720,
@@ -40,7 +40,50 @@ You can also pass in an `Asset`:
 }) %}
 ```
 
-It will return to you a URL to the transcoded video if it already exists, or if it doesn’t exist, it will return `""` and kick off the transcoding process (which can be quite lengthy for long videos).
+`getVideoUrl()` returns a JSON-encoded string that describes the current state of the transcoded video. This is the standard response format for asynchronous video transcoding.
+
+When the video is available, the response will include `status: "ok"` and the public URL:
+
+```json
+{
+    "status": "ok",
+    "url": "/transcoder/video/oceans_720w_480h.mp4"
+}
+```
+
+When the video does not exist yet, Transcoder will start the encoding process and return:
+
+```json
+{
+    "status": "encoding",
+    "url": "",
+    "info": "Encoding started"
+}
+```
+
+If the source file is missing or encoding fails, the response will include `status: "error"` and an `error` message:
+
+```json
+{
+    "status": "error",
+    "url": "",
+    "error": "Transcoder: original video not found at /path/to/source.mp4"
+}
+```
+
+Decode the response before using the URL:
+
+```twig
+{% set transVideoResponse = craft.transcoder.getVideoUrl(myAsset, videoOptions)|json_decode %}
+
+{% if transVideoResponse.status == 'ok' %}
+    <video src="{{ transVideoResponse.url }}" controls></video>
+{% elseif transVideoResponse.status == 'encoding' %}
+    <p>Video is being encoded.</p>
+{% else %}
+    <p>{{ transVideoResponse.error ?? 'Video could not be encoded.' }}</p>
+{% endif %}
+```
 
 In the array you pass in, the default values are used if the key-value pair does not exist:
 
@@ -59,7 +102,7 @@ These default values come from the `config.php` file.
 To have the Transcoder not change a parameter, pass in an empty value in the key-value pair, for example:
 
 ```twig
-{% set transVideoUrl = craft.transcoder.getVideoUrl('/home/vagrant/sites/nystudio107/public/oceans.mp4', {
+{% set transVideoResponse = craft.transcoder.getVideoUrl('/home/vagrant/sites/nystudio107/public/oceans.mp4', {
     "frameRate": "",
     "bitRate": ""
 }) %}
@@ -144,7 +187,7 @@ These default values come from the `config.php` file.
 To have the Transcoder not change a parameter, pass in an empty value in the key-value pair, for example:
 
 ```twig
-{% set transVideoUrl = craft.transcoder.getVideoUrl('/home/vagrant/sites/nystudio107/public/trimurti.mp4', {
+{% set transAudioUrl = craft.transcoder.getAudioUrl('/home/vagrant/sites/nystudio107/public/trimurti.mp4', {
     "audioBitRate": "",
     "audioSampleRate": "",
     "audioChannels": ""
@@ -154,6 +197,28 @@ To have the Transcoder not change a parameter, pass in an empty value in the key
 The above example would cause it to not change the audio of the source audio file at all (not recommended for client-proofing purposes).
 
 The file format setting `audioEncoder` is preset to what you’ll need to generate `mp3` audio files, but it can also generate `aac`, `ogg`, or any other format that `ffmpeg` supports. See the `config.php` file for details
+
+## Generating an Encoded GIF Video
+
+To generate an encoded GIF video, use `craft.transcoder.getGifUrl()`:
+
+```twig
+{% set gifResponse = craft.transcoder.getGifUrl(myAsset, {
+    "width": 720,
+    "height": 480
+})|json_decode %}
+```
+
+`getGifUrl()` uses the same JSON-encoded response format as `getVideoUrl()`:
+
+```json
+{
+    "status": "ok",
+    "url": "/transcoder/gif/oceans_720w_480h.mp4"
+}
+```
+
+While the GIF video is being encoded, the response will have `status: "encoding"` and an empty `url`. If encoding fails, the response will have `status: "error"` and an `error` message.
 
 ## Getting Transcoding Progress
 
@@ -168,11 +233,11 @@ Transcoding of video/audio files can take quite a bit of time, so Transcoder pro
     "height": 800,
     "aspectRatio": "none",
 } %}
-{% set transVideoUrl = craft.transcoder.getVideoUrl(myAsset, videoOptions) %}
+{% set transVideoResponse = craft.transcoder.getVideoUrl(myAsset, videoOptions)|json_decode %}
 {% set progressUrl = craft.transcoder.getVideoProgressUrl(myAsset, videoOptions) %}
 ```
 
-The variable `progressUrl` in the example above is set to a URL will return a JSON array of data indicating the current progress of the transcoding:
+The variable `progressUrl` in the example above is set to a URL that will return a JSON array of data indicating the current progress of the transcoding:
 
 ```
  {
@@ -205,7 +270,7 @@ To generate a thumbnail from a video, do the following:
 You can also pass in a URL:
 
 ```twig
-{% set transVideoUrl = craft.transcoder.getVideoUrl('http://vjs.zencdn.net/v/oceans.mp4', {
+{% set transVideoThumbUrl = craft.transcoder.getVideoThumbnailUrl('http://vjs.zencdn.net/v/oceans.mp4', {
     "width": 300,
     "height": 200,
     "timeInSecs": 20,
@@ -216,7 +281,7 @@ You can also pass in an `Asset`:
 
 ```twig
 {% set myAsset = entry.someAsset.one() %}
-{% set transVideoUrl = craft.transcoder.getVideoUrl(myAsset, {
+{% set transVideoThumbUrl = craft.transcoder.getVideoThumbnailUrl(myAsset, {
     "width": 300,
     "height": 200,
     "timeInSecs": 20,
