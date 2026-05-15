@@ -21,8 +21,11 @@ If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.
 
 Transcoder can queue video encoding when an entry is saved, so templates do not have to trigger the encoding process.
 
+The `enableDownloadFileEndpoint` and `queueVideosOnEntrySave` settings can also be managed from the plugin’s Control Panel settings screen. Values defined in `config/transcoder.php` take precedence over values saved from the Control Panel.
+
 ```php
 return [
+    'enableDownloadFileEndpoint' => false,
     'queueVideosOnEntrySave' => true,
 
     // Optional: limit scanning to these entry field handles.

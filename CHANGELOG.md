@@ -3,6 +3,7 @@
 ## 4.1.0 - 2026.05.15
 ### Added
 * Add queue-based video encoding on entry save, with queue-aware Twig status helpers and a polling endpoint.
+* Add Control Panel settings for the download endpoint and entry-save queueing toggles.
 
 ## 4.0.2 - 2024.09.30
 ## Added

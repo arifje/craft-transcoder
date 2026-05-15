@@ -1,0 +1,23 @@
+{# @var craft \craft\web\twig\variables\CraftVariable #}
+{# @var settings \nystudio107\transcoder\models\Settings #}
+
+{% import '_includes/forms' as forms %}
+{% import 'transcoder/_includes/macros.twig' as macros %}
+
+{{ forms.lightswitchField({
+    label: 'Enable download file endpoint'|t('transcoder'),
+    instructions: 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.'|t('transcoder'),
+    warning: macros.configWarning('enableDownloadFileEndpoint', 'transcoder'),
+    id: 'enableDownloadFileEndpoint',
+    name: 'enableDownloadFileEndpoint',
+    on: settings.enableDownloadFileEndpoint,
+}) }}
+
+{{ forms.lightswitchField({
+    label: 'Queue videos on entry save'|t('transcoder'),
+    instructions: 'Queue video encoding when entries are saved. This requires a working Craft queue runner for reliable background encoding.'|t('transcoder'),
+    warning: macros.configWarning('queueVideosOnEntrySave', 'transcoder'),
+    id: 'queueVideosOnEntrySave',
+    name: 'queueVideosOnEntrySave',
+    on: settings.queueVideosOnEntrySave,
+}) }}

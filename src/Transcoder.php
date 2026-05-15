@@ -33,6 +33,7 @@ use craft\web\UrlManager;
 use nystudio107\transcoder\models\Settings;
 use nystudio107\transcoder\services\ServicesTrait;
 use nystudio107\transcoder\variables\TranscoderVariable;
+use Throwable;
 use yii\base\ErrorException;
 use yii\base\Event;
 
@@ -74,7 +75,7 @@ class Transcoder extends Plugin
     /**
      * @var bool
      */
-    public bool $hasCpSettings = false;
+    public bool $hasCpSettings = true;
 
     /**
      * @var string
@@ -147,6 +148,25 @@ class Transcoder extends Plugin
     protected function createSettingsModel(): ?Model
     {
         return new Settings();
+    }
+
+    /**
+     * @inheritdoc
+     */
+    protected function settingsHtml(): ?string
+    {
+        try {
+            return Craft::$app->view->renderTemplate(
+                'transcoder/settings',
+                [
+                    'settings' => $this->getSettings(),
+                    'plugin' => $this,
+                ]
+            );
+        } catch (Throwable $e) {
+            Craft::error($e->getMessage(), __METHOD__);
+            return null;
+        }
     }
 
     /**

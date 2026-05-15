@@ -15,6 +15,10 @@
  */
 return [
     'Transcoder caches' => 'Transcoder caches',
+    'Enable download file endpoint' => 'Enable download file endpoint',
+    'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.' => 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.',
+    'Queue videos on entry save' => 'Queue videos on entry save',
+    'Queue video encoding when entries are saved. This requires a working Craft queue runner for reliable background encoding.' => 'Queue video encoding when entries are saved. This requires a working Craft queue runner for reliable background encoding.',
     '{name} plugin loaded' => '{name} plugin loaded',
     '{name} cache directory cleared' => '{name} cache directory cleared',
     'Queued {count} video encode(s) for entry {id}' => 'Queued {count} video encode(s) for entry {id}',
