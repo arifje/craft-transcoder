@@ -29,20 +29,48 @@ class TranscoderVariable implements ViteVariableInterface
     // =========================================================================
 
     /**
-     * Returns a URL to the transcoded video or "" if it doesn't exist (at which
-     * time it will create it).
+     * Returns a JSON-encoded status response for a transcoded video.
      *
      * @param $filePath
      * @param $videoOptions
      * @param bool $generate
+     * @param array $encodingOptions
      * @return string
      * @throws InvalidConfigException
      * @bool $generate
      *
      */
-    public function getVideoUrl($filePath, $videoOptions, bool $generate = true): string
+    public function getVideoUrl($filePath, $videoOptions, bool $generate = true, array $encodingOptions = []): string
     {
-        return Transcoder::$plugin->transcode->getVideoUrl($filePath, $videoOptions, $generate);
+        return Transcoder::$plugin->transcode->getVideoUrl($filePath, $videoOptions, $generate, $encodingOptions);
+    }
+
+    /**
+     * Return the queue-aware video status.
+     *
+     * @param $filePath
+     * @param array $videoOptions
+     * @param array $encodingOptions
+     * @return string
+     * @throws InvalidConfigException
+     */
+    public function getVideoStatus($filePath, array $videoOptions = [], array $encodingOptions = []): string
+    {
+        return Transcoder::$plugin->transcode->getVideoStatus($filePath, $videoOptions, $encodingOptions);
+    }
+
+    /**
+     * Return a URL that can be polled for queue-aware video status.
+     *
+     * @param $filePath
+     * @param array $videoOptions
+     * @param array $encodingOptions
+     * @return string
+     * @throws InvalidConfigException
+     */
+    public function getVideoStatusUrl($filePath, array $videoOptions = [], array $encodingOptions = []): string
+    {
+        return Transcoder::$plugin->transcode->getVideoStatusUrl($filePath, $videoOptions, $encodingOptions);
     }
 
     /**

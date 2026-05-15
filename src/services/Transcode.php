@@ -12,14 +12,21 @@ namespace nystudio107\transcoder\services;
 
 use Craft;
 use craft\base\Component;
+use craft\base\ElementInterface;
 use craft\elements\Asset;
+use craft\elements\db\ElementQueryInterface;
 use craft\events\DefineAssetThumbUrlEvent;
 use craft\fs\Local;
+use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\App;
 use craft\helpers\FileHelper;
 use craft\helpers\Json as JsonHelper;
+use craft\helpers\UrlHelper;
 use mikehaertl\shellcommand\Command as ShellCommand;
+use nystudio107\transcoder\events\TranscoderQueueEvent;
+use nystudio107\transcoder\jobs\EncodeVideo;
 use nystudio107\transcoder\Transcoder;
+use Throwable;
 use yii\base\Exception;
 use yii\base\InvalidConfigException;
 use yii\validators\UrlValidator;
@@ -28,6 +35,7 @@ use function count;
 use function function_exists;
 use function in_array;
 use function is_bool;
+use function is_iterable;
 
 /**
  * @author    nystudio107
@@ -38,6 +46,8 @@ class Transcode extends Component
 {
 	// Constants
 	// =========================================================================
+
+	public const EVENT_BEFORE_QUEUE_VIDEO = 'beforeQueueVideo';
 
 	// Suffixes to add to the generated filename params
 	protected const SUFFIX_MAP = [
@@ -87,18 +97,18 @@ class Transcode extends Component
 	// =========================================================================
 
 	/**
-	 * Returns a URL to the transcoded video or "" if it doesn't exist (at
-	 * which time it will create it).
+	 * Returns a JSON-encoded status response for a transcoded video.
 	 *
 	 * @param string|Asset $filePath path to the original video -OR- an Asset
 	 * @param array $videoOptions options for the video
 	 * @param bool $generate whether the video should be encoded
+	 * @param array $encodingOptions extra options recorded with queued encodes
 	 *
-	 * @return string URL of the transcoded video or ""
+	 * @return string
 	 * @throws InvalidConfigException
 	 */
 
-	public function getVideoUrl(string|Asset $filePath, array $videoOptions, bool $generate = true): string
+	public function getVideoUrl(string|Asset $filePath, array $videoOptions, bool $generate = true, array $encodingOptions = []): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
 		$subfolder = $this->getSubfolderFromPath($filePath);
@@ -341,6 +351,224 @@ class Transcode extends Component
 			'url' => '',
 			'error' => 'Encoding disabled',
 		]);
+	}
+
+	/**
+	 * Queue video encodes for all video assets found on an element.
+	 *
+	 * @param ElementInterface $element
+	 * @return int
+	 */
+	public function queueVideoEncodesForElement(ElementInterface $element): int
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$fieldHandles = $settings['autoEncodeVideoFieldHandles'] ?? [];
+		$videoOptions = $settings['autoEncodeVideoOptions'] ?? [];
+		$encodingOptions = $settings['autoEncodeEncodingOptions'] ?? [];
+		$assets = [];
+
+		if (!empty($fieldHandles)) {
+			foreach ($fieldHandles as $fieldHandle) {
+				try {
+					$this->collectVideoAssets($element->getFieldValue($fieldHandle), $assets);
+				} catch (Throwable $e) {
+					Craft::warning('Unable to inspect Transcoder field handle "' . $fieldHandle . '": ' . $e->getMessage(), __METHOD__);
+				}
+			}
+		} else {
+			$this->collectVideoAssetsFromElement($element, $assets);
+		}
+
+		$queued = 0;
+		foreach ($assets as $asset) {
+			$event = new TranscoderQueueEvent([
+				'element' => $element,
+				'assetId' => $asset->id,
+				'videoOptions' => $videoOptions,
+				'encodingOptions' => $encodingOptions,
+			]);
+			$this->trigger(self::EVENT_BEFORE_QUEUE_VIDEO, $event);
+
+			if (!$event->isValid) {
+				continue;
+			}
+
+			$status = $this->queueVideoEncode($asset, $event->videoOptions, $event->encodingOptions);
+			if (($status['status'] ?? null) === 'queued') {
+				$queued++;
+			}
+		}
+
+		return $queued;
+	}
+
+	/**
+	 * Queue a single video encode.
+	 *
+	 * @param Asset $asset
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
+	{
+		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
+		if (in_array($status['status'] ?? null, ['ok', 'queued', 'encoding'], true)) {
+			return $status;
+		}
+
+		$jobId = Craft::$app->getQueue()->push(new EncodeVideo([
+			'assetId' => $asset->id,
+			'videoOptions' => $videoOptions,
+			'encodingOptions' => $encodingOptions,
+		]));
+
+		$status = [
+			'status' => 'queued',
+			'url' => '',
+			'progress' => 0,
+			'jobId' => $jobId,
+		];
+		$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
+
+		return $status;
+	}
+
+	/**
+	 * Return the queue-aware video status as a JSON string for Twig usage.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function getVideoStatus(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): string
+	{
+		return JsonHelper::encode($this->getVideoStatusData($filePath, $videoOptions, $encodingOptions));
+	}
+
+	/**
+	 * Return a URL that can be polled for queue-aware video status.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function getVideoStatusUrl(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): string
+	{
+		return UrlHelper::actionUrl('transcoder/default/video-status', [
+			'key' => $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions),
+		]);
+	}
+
+	/**
+	 * Return queue-aware video status data.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function getVideoStatusData(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): array
+	{
+		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
+		$storedStatus = $this->readVideoStatus($statusKey);
+
+		if (is_file($outputInfo['encodedFile'])
+			&& filesize($outputInfo['encodedFile']) > 0
+			&& (!is_file($outputInfo['lockFile']) || !$this->isProcessRunningFromLockFile($outputInfo['lockFile']))
+		) {
+			@unlink($outputInfo['lockFile']);
+			@unlink($outputInfo['progressFile']);
+			$status = [
+				'status' => 'ok',
+				'url' => $outputInfo['publicUrl'],
+				'progress' => 100,
+			];
+			if (!$outputInfo['originalExists']) {
+				$status['warning'] = 'Original video missing, serving encoded version';
+			}
+			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			return $this->sanitizeVideoStatus($status);
+		}
+
+		if (is_file($outputInfo['lockFile'])) {
+			$status = array_merge(
+				[
+					'status' => 'encoding',
+					'url' => '',
+					'progress' => 0,
+				],
+				$this->getProgressData($outputInfo['filename'])
+			);
+			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			return $this->sanitizeVideoStatus($status);
+		}
+
+		if (!empty($storedStatus)) {
+			return $this->sanitizeVideoStatus($storedStatus);
+		}
+
+		if (!$outputInfo['originalExists']) {
+			return $this->sanitizeVideoStatus([
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+				'error' => 'Transcoder: original video not found at ' . ($outputInfo['source'] ?? 'unknown'),
+			]);
+		}
+
+		return $this->sanitizeVideoStatus([
+			'status' => 'pending',
+			'url' => '',
+			'progress' => 0,
+		]);
+	}
+
+	/**
+	 * Write queue-aware video status for a file.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @param array $status
+	 * @param array $encodingOptions
+	 * @throws InvalidConfigException
+	 */
+	public function writeVideoStatus(Asset|string $filePath, array $videoOptions, array $status, array $encodingOptions = []): void
+	{
+		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+		$status = array_merge($this->getVideoStatusStorageInfo($outputInfo), $status);
+
+		$this->writeVideoStatusByKey(
+			$this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions),
+			$status
+		);
+	}
+
+	/**
+	 * Return the stable status key for a video/options pair.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function getVideoStatusKey(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): string
+	{
+		$videoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
+		$settings = Transcoder::$plugin->getSettings();
+		$videoEncoders = $settings['videoEncoders'];
+		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
+		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+
+		return 'video-' . sha1($this->getFilename($filePath, $videoOptions) . JsonHelper::encode($encodingOptions));
 	}
 
 	/**
@@ -1359,6 +1587,328 @@ class Transcode extends Component
 
 		// Coalesce the passed in $options with the $defaultOptions
 		return array_merge($defaultOptions, $options);
+	}
+
+	/**
+	 * Return video status data by key, for controller polling.
+	 *
+	 * @param string $key
+	 * @return array
+	 */
+	public function getVideoStatusByKey(string $key): array
+	{
+		$status = $this->readVideoStatus($key);
+		if (empty($status)) {
+			return [
+				'status' => 'unknown',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
+		if (!empty($status['encodedFile']) && is_file($status['encodedFile']) && filesize($status['encodedFile']) > 0) {
+			$lockFile = $status['lockFile'] ?? null;
+			if (!$lockFile || !is_file($lockFile) || !$this->isProcessRunningFromLockFile($lockFile)) {
+				if ($lockFile) {
+					@unlink($lockFile);
+				}
+				if (!empty($status['progressFile'])) {
+					@unlink($status['progressFile']);
+				}
+				$status['status'] = 'ok';
+				$status['url'] = $status['publicUrl'] ?? ($status['url'] ?? '');
+				$status['progress'] = 100;
+				$this->writeVideoStatusByKey($key, $status);
+				return $this->sanitizeVideoStatus($status);
+			}
+		}
+
+		if (($status['filename'] ?? null) && ($status['status'] ?? null) === 'encoding') {
+			$status = array_merge($status, $this->getProgressData($status['filename']));
+		}
+
+		return $this->sanitizeVideoStatus($status);
+	}
+
+	/**
+	 * Build destination and status metadata for a video encode.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	protected function getVideoOutputInfo(Asset|string $filePath, array $videoOptions): array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$subfolder = $this->getSubfolderFromPath($filePath);
+		$normalized = $this->normalizeFilePath($filePath);
+		$originalExists = false;
+		$filePathResolved = null;
+
+		if (isset($normalized['url'])) {
+			$filePathResolved = $normalized['url'];
+			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+		} elseif (isset($normalized['path'])) {
+			$filePathResolved = $normalized['path'];
+			$originalExists = file_exists($filePathResolved);
+		}
+
+		if (!empty($subfolder)) {
+			$destVideoPath = rtrim(App::parseEnv($settings['transcoderPaths']['video']), DIRECTORY_SEPARATOR)
+				. DIRECTORY_SEPARATOR
+				. trim($subfolder, DIRECTORY_SEPARATOR)
+				. DIRECTORY_SEPARATOR;
+			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['video']), '/')
+				. '/' . trim($subfolder, '/');
+		} else {
+			$destVideoPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
+		}
+
+		$videoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
+		$videoEncoders = $settings['videoEncoders'];
+		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
+		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+		$destVideoFile = $this->getFilename($filePathResolved ?? '', $videoOptions);
+
+		return [
+			'source' => $filePathResolved,
+			'originalExists' => $originalExists,
+			'filename' => $destVideoFile,
+			'encodedFile' => $destVideoPath . $destVideoFile,
+			'publicUrl' => $urlBase . '/' . $destVideoFile,
+			'lockFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock',
+			'progressFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress',
+		];
+	}
+
+	/**
+	 * Return the internal status storage metadata for a video output.
+	 *
+	 * @param array $outputInfo
+	 * @return array
+	 */
+	protected function getVideoStatusStorageInfo(array $outputInfo): array
+	{
+		return [
+			'filename' => $outputInfo['filename'],
+			'publicUrl' => $outputInfo['publicUrl'],
+			'encodedFile' => $outputInfo['encodedFile'],
+			'lockFile' => $outputInfo['lockFile'],
+			'progressFile' => $outputInfo['progressFile'],
+		];
+	}
+
+	/**
+	 * Remove internal filesystem paths from status responses.
+	 *
+	 * @param array $status
+	 * @return array
+	 */
+	protected function sanitizeVideoStatus(array $status): array
+	{
+		unset($status['encodedFile'], $status['lockFile'], $status['progressFile'], $status['publicUrl']);
+
+		return $status;
+	}
+
+	/**
+	 * Collect video assets from an element's field layout.
+	 *
+	 * @param ElementInterface $element
+	 * @param array $assets
+	 */
+	protected function collectVideoAssetsFromElement(ElementInterface $element, array &$assets): void
+	{
+		$fieldLayout = $element->getFieldLayout();
+		if ($fieldLayout === null) {
+			return;
+		}
+
+		foreach ($fieldLayout->getCustomFields() as $field) {
+			try {
+				$this->collectVideoAssets($element->getFieldValue($field->handle), $assets);
+			} catch (Throwable $e) {
+				Craft::warning('Unable to inspect Transcoder field handle "' . $field->handle . '": ' . $e->getMessage(), __METHOD__);
+			}
+		}
+	}
+
+	/**
+	 * Collect video assets recursively from field values.
+	 *
+	 * @param mixed $value
+	 * @param array $assets
+	 */
+	protected function collectVideoAssets(mixed $value, array &$assets): void
+	{
+		if ($value instanceof Asset) {
+			if ($value->id && AssetsHelper::getFileKindByExtension($value->filename) === Asset::KIND_VIDEO) {
+				$assets[$value->id] = $value;
+			}
+			return;
+		}
+
+		if ($value instanceof ElementQueryInterface) {
+			foreach ($value->all() as $element) {
+				$this->collectVideoAssets($element, $assets);
+			}
+			return;
+		}
+
+		if ($value instanceof ElementInterface) {
+			$this->collectVideoAssetsFromElement($value, $assets);
+			return;
+		}
+
+		if (is_iterable($value)) {
+			foreach ($value as $item) {
+				$this->collectVideoAssets($item, $assets);
+			}
+		}
+	}
+
+	/**
+	 * Parse the current ffmpeg progress file.
+	 *
+	 * @param string $filename
+	 * @return array
+	 */
+	protected function getProgressData(string $filename): array
+	{
+		$result = [
+			'filename' => $filename,
+			'progress' => 0,
+		];
+		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.progress';
+		if (!file_exists($progressFile)) {
+			return $result;
+		}
+
+		$content = @file_get_contents($progressFile);
+		if (!$content) {
+			return $result;
+		}
+
+		preg_match('/Duration: (.*?), start:/', $content, $matches);
+		if (count($matches) === 0) {
+			$result['duration'] = 'unknown';
+			$result['progress'] = 'unknown';
+			return $result;
+		}
+
+		$duration = $this->durationToSeconds($matches[1]);
+		preg_match_all('/time=(.*?) bitrate/', $content, $matches);
+		$rawTime = array_pop($matches);
+		if (is_array($rawTime)) {
+			$rawTime = array_pop($rawTime);
+		}
+		$time = $this->durationToSeconds((string)$rawTime);
+
+		$result['duration'] = $duration;
+		$result['time'] = $time;
+		$result['progress'] = $duration > 0 ? min(99, round(($time / $duration) * 100)) : 0;
+
+		return $result;
+	}
+
+	/**
+	 * Convert a ffmpeg duration string to seconds.
+	 *
+	 * @param string $duration
+	 * @return float
+	 */
+	protected function durationToSeconds(string $duration): float
+	{
+		$parts = array_reverse(explode(':', $duration));
+		$seconds = (float)($parts[0] ?? 0);
+		if (!empty($parts[1])) {
+			$seconds += (int)$parts[1] * 60;
+		}
+		if (!empty($parts[2])) {
+			$seconds += (int)$parts[2] * 60 * 60;
+		}
+
+		return $seconds;
+	}
+
+	/**
+	 * Read status metadata from runtime storage.
+	 *
+	 * @param string $key
+	 * @return array
+	 */
+	protected function readVideoStatus(string $key): array
+	{
+		$path = $this->getVideoStatusPath($key);
+		if (!is_file($path)) {
+			return [];
+		}
+
+		$status = JsonHelper::decodeIfJson((string)@file_get_contents($path), true);
+
+		return is_array($status) ? $status : [];
+	}
+
+	/**
+	 * Write status metadata to runtime storage.
+	 *
+	 * @param string $key
+	 * @param array $status
+	 */
+	protected function writeVideoStatusByKey(string $key, array $status): void
+	{
+		$status['key'] = $key;
+		$status['updatedAt'] = time();
+
+		try {
+			FileHelper::createDirectory($this->getVideoStatusDirectory());
+			file_put_contents($this->getVideoStatusPath($key), JsonHelper::encode($status));
+		} catch (Throwable $e) {
+			Craft::error($e->getMessage(), __METHOD__);
+		}
+	}
+
+	/**
+	 * Return the directory that stores queue-aware status files.
+	 *
+	 * @return string
+	 */
+	protected function getVideoStatusDirectory(): string
+	{
+		return Craft::$app->getPath()->getRuntimePath() . DIRECTORY_SEPARATOR . 'transcoder-status';
+	}
+
+	/**
+	 * Return the path to a status file.
+	 *
+	 * @param string $key
+	 * @return string
+	 */
+	protected function getVideoStatusPath(string $key): string
+	{
+		$key = preg_replace('/[^a-zA-Z0-9\\-]/', '', $key);
+
+		return $this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . $key . '.json';
+	}
+
+	/**
+	 * Return whether a process stored in a lock file is still running.
+	 *
+	 * @param string $lockFile
+	 * @return bool
+	 */
+	protected function isProcessRunningFromLockFile(string $lockFile): bool
+	{
+		$pid = trim((string)@file_get_contents($lockFile));
+		if ($pid === '' || !ctype_digit($pid)) {
+			return false;
+		}
+
+		exec("kill -0 $pid 2>&1", $processState);
+
+		return count($processState) === 0;
 	}
 
 	/**

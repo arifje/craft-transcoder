@@ -17,4 +17,31 @@ To install `ffmpeg` on Centos 6/7, you can follow the guide [How to Install FFmp
 
 If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.
 
+## Queueing Videos on Entry Save
+
+Transcoder can queue video encoding when an entry is saved, so templates do not have to trigger the encoding process.
+
+```php
+return [
+    'queueVideosOnEntrySave' => true,
+
+    // Optional: limit scanning to these entry field handles.
+    // Leave empty to inspect all custom fields recursively, including Matrix blocks.
+    'autoEncodeVideoFieldHandles' => [
+        'contentBuilder',
+        'video',
+    ],
+
+    // Options passed to getVideoUrl() by the queue job.
+    'autoEncodeVideoOptions' => [],
+
+    // Extra options recorded with the status key.
+    'autoEncodeEncodingOptions' => [
+        'watermark' => true,
+    ],
+];
+```
+
+When `queueVideosOnEntrySave` is enabled, Transcoder listens for saved entries, finds video assets in the configured fields, and adds encoding jobs to Craft’s queue. Make sure your production environment has a queue worker or queue runner configured, otherwise video encoding will only run when Craft processes queued jobs.
+
 Brought to you by [nystudio107](https://nystudio107.com)

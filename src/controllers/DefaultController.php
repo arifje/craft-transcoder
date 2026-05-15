@@ -40,6 +40,7 @@ class DefaultController extends Controller
     protected array|bool|int $allowAnonymous = [
         'download-file',
         'progress',
+        'video-status',
     ];
 
     // Public Methods
@@ -51,7 +52,10 @@ class DefaultController extends Controller
     public function beforeAction($action): bool
     {
         if (!Transcoder::$settings->enableDownloadFileEndpoint) {
-            $this->allowAnonymous = false;
+            $this->allowAnonymous = [
+                'progress',
+                'video-status',
+            ];
         }
 
         return parent::beforeAction($action);
@@ -174,5 +178,16 @@ class DefaultController extends Controller
         }
 
         return $this->asJson($result);
+    }
+
+    /**
+     * Return the queue-aware video status by stable key.
+     *
+     * @param string $key
+     * @return Response
+     */
+    public function actionVideoStatus(string $key): Response
+    {
+        return $this->asJson(Transcoder::$plugin->transcode->getVideoStatusByKey($key));
     }
 }

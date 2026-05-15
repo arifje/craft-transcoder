@@ -1,5 +1,9 @@
 # Transcoder Changelog
 
+## Unreleased
+### Added
+* Add queue-based video encoding on entry save, with queue-aware Twig status helpers and a polling endpoint.
+
 ## 4.0.2 - 2024.09.30
 ## Added
 * Add `phpstan` and `ecs` code linting

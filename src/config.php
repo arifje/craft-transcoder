@@ -70,6 +70,18 @@ return [
     // Add the Clear Caches utility to the CP?
     'clearCaches' => false,
 
+    // Queue video encoding when entries are saved
+    'queueVideosOnEntrySave' => false,
+
+    // Entry field handles to inspect for video assets. Leave empty to inspect all custom fields recursively
+    'autoEncodeVideoFieldHandles' => [],
+
+    // Default video options used when an entry save queues encoding
+    'autoEncodeVideoOptions' => [],
+
+    // Extra options recorded with queued encodes, for example ['watermark' => true]
+    'autoEncodeEncodingOptions' => [],
+
     // Preset video encoders
     'videoEncoders' => [
         'h264' => [

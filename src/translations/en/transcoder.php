@@ -17,6 +17,7 @@ return [
     'Transcoder caches' => 'Transcoder caches',
     '{name} plugin loaded' => '{name} plugin loaded',
     '{name} cache directory cleared' => '{name} cache directory cleared',
+    'Queued {count} video encode(s) for entry {id}' => 'Queued {count} video encode(s) for entry {id}',
     'Manifest file not found at: {manifestPath}' => 'Manifest file not found at: {manifestPath}',
     'Module does not exist in the manifest: {moduleName}' => 'Module does not exist in the manifest: {moduleName}'
 ];

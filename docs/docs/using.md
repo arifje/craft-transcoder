@@ -255,6 +255,45 @@ The variable `progressUrl` in the example above is set to a URL that will return
 
 You can use this information to provide a progress bar via JavaScript or from a plugin.
 
+## Polling Queued Video Status
+
+When video encoding is queued on entry save, templates should read the current status rather than start the encoding process.
+
+```twig
+{% set videoOptions = {} %}
+{% set encodingOptions = { "watermark": true } %}
+{% set encodedVideoData = craft.transcoder.getVideoStatus(video, videoOptions, encodingOptions)|json_decode %}
+{% set statusUrl = craft.transcoder.getVideoStatusUrl(video, videoOptions, encodingOptions) %}
+```
+
+`getVideoStatus()` returns a JSON-encoded string with one of these statuses:
+
+```json
+{
+    "status": "queued",
+    "url": "",
+    "progress": 0
+}
+```
+
+```json
+{
+    "status": "encoding",
+    "url": "",
+    "progress": 42
+}
+```
+
+```json
+{
+    "status": "ok",
+    "url": "/transcoder/video/oceans.mp4",
+    "progress": 100
+}
+```
+
+The `statusUrl` can be polled by JavaScript or a Vue component. It returns the same queue-aware status format, so templates can show admin-only progress UI for `queued` and `encoding`, render the encoded URL for `ok`, and fall back to the original asset URL when needed.
+
 ## Generating a Video Thumbnail
 
 To generate a thumbnail from a video, do the following:

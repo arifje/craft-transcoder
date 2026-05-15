@@ -110,6 +110,36 @@ class Settings extends Model
     public bool $clearCaches = false;
 
     /**
+     * Queue video encoding when entries are saved.
+     *
+     * @var bool
+     */
+    public bool $queueVideosOnEntrySave = false;
+
+    /**
+     * Entry field handles to inspect for video assets. Leave empty to inspect
+     * all custom fields recursively.
+     *
+     * @var array
+     */
+    public array $autoEncodeVideoFieldHandles = [];
+
+    /**
+     * Default options used when an entry save queues video encoding.
+     *
+     * @var array
+     */
+    public array $autoEncodeVideoOptions = [];
+
+    /**
+     * Extra options recorded with queued encodes. These are included in the
+     * status key so future output-affecting options can be distinguished.
+     *
+     * @var array
+     */
+    public array $autoEncodeEncodingOptions = [];
+
+    /**
      * Preset video encoders
      *
      * @var array
@@ -282,6 +312,10 @@ class Settings extends Model
             ['useHashedNames', 'boolean'],
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
+            ['queueVideosOnEntrySave', 'boolean'],
+            ['autoEncodeVideoFieldHandles', ArrayValidator::class],
+            ['autoEncodeVideoOptions', ArrayValidator::class],
+            ['autoEncodeEncodingOptions', ArrayValidator::class],
             ['videoEncoders', 'required'],
             ['audioEncoders', 'required'],
             ['defaultVideoOptions', 'required'],

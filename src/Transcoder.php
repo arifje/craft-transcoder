@@ -15,7 +15,9 @@ use craft\base\Model;
 use craft\base\Plugin;
 use craft\console\Application as ConsoleApplication;
 use craft\elements\Asset;
+use craft\elements\Entry;
 use craft\events\DefineAssetThumbUrlEvent;
+use craft\events\ElementEvent;
 use craft\events\PluginEvent;
 use craft\events\RegisterCacheOptionsEvent;
 use craft\events\RegisterUrlRulesEvent;
@@ -23,6 +25,7 @@ use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\FileHelper;
 use craft\helpers\UrlHelper;
 use craft\services\Assets;
+use craft\services\Elements;
 use craft\services\Plugins;
 use craft\utilities\ClearCaches;
 use craft\web\twig\variables\CraftVariable;
@@ -201,6 +204,39 @@ class Transcoder extends Plugin
                         'label' => Craft::t('transcoder', 'Transcoder caches'),
                         'action' => [$this, 'clearAllCaches'],
                     ];
+                }
+            );
+        }
+        if ($settings->queueVideosOnEntrySave) {
+            Event::on(
+                Elements::class,
+                Elements::EVENT_AFTER_SAVE_ELEMENT,
+                function (ElementEvent $event) {
+                    $element = $event->element;
+                    if (!$element instanceof Entry) {
+                        return;
+                    }
+                    if (method_exists($element, 'getIsDraft') && $element->getIsDraft()) {
+                        return;
+                    }
+                    if (method_exists($element, 'getIsRevision') && $element->getIsRevision()) {
+                        return;
+                    }
+
+                    $queued = $this->transcode->queueVideoEncodesForElement($element);
+                    if ($queued > 0) {
+                        Craft::info(
+                            Craft::t(
+                                'transcoder',
+                                'Queued {count} video encode(s) for entry {id}',
+                                [
+                                    'count' => $queued,
+                                    'id' => $element->id,
+                                ]
+                            ),
+                            __METHOD__
+                        );
+                    }
                 }
             );
         }
