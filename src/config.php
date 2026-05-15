@@ -57,6 +57,9 @@ return [
     // Determines whether the download file endpoint should be enabled for anonymous frontend access
     'enableDownloadFileEndpoint' => false,
 
+    // Determines whether video encoding should be enabled
+    'enableVideoEncoding' => true,
+
     // Use a md5 hash for the filenames instead of parameterized naming
     'useHashedNames' => false,
 
@@ -70,7 +73,7 @@ return [
     // Add the Clear Caches utility to the CP?
     'clearCaches' => false,
 
-    // Queue video encoding when entries are saved
+    // Queue video encoding when entries are saved. Requires enableVideoEncoding to be true
     'queueVideosOnEntrySave' => false,
 
     // Entry field handles to inspect for video assets. Leave empty to inspect all custom fields recursively

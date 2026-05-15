@@ -227,7 +227,7 @@ class Transcoder extends Plugin
                 }
             );
         }
-        if ($settings->queueVideosOnEntrySave) {
+        if ($settings->enableVideoEncoding && $settings->queueVideosOnEntrySave) {
             Event::on(
                 Elements::class,
                 Elements::EVENT_AFTER_SAVE_ELEMENT,

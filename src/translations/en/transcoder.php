@@ -15,6 +15,8 @@
  */
 return [
     'Transcoder caches' => 'Transcoder caches',
+    'Enable video encoding' => 'Enable video encoding',
+    'Allow Transcoder to encode videos from Twig calls and queued entry saves. Disable this to serve original videos while keeping other plugin helpers available.' => 'Allow Transcoder to encode videos from Twig calls and queued entry saves. Disable this to serve original videos while keeping other plugin helpers available.',
     'Enable download file endpoint' => 'Enable download file endpoint',
     'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.' => 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.',
     'Queue videos on entry save' => 'Queue videos on entry save',

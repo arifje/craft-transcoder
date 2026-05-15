@@ -81,6 +81,11 @@ class Settings extends Model
     public bool $enableDownloadFileEndpoint = false;
 
     /**
+     * @var bool Determines whether video encoding should be enabled
+     */
+    public bool $enableVideoEncoding = true;
+
+    /**
      * Use a md5 hash for the filenames instead of parameterized naming
      *
      * @var bool
@@ -309,6 +314,7 @@ class Settings extends Model
             ['transcoderPaths', 'required'],
             ['transcoderUrls', ArrayValidator::class],
             ['enableDownloadFileEndpoint', 'boolean'],
+            ['enableVideoEncoding', 'boolean'],
             ['useHashedNames', 'boolean'],
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],

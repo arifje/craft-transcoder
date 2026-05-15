@@ -111,6 +111,14 @@ class Transcode extends Component
 	public function getVideoUrl(string|Asset $filePath, array $videoOptions, bool $generate = true, array $encodingOptions = []): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
+		if (!$settings->enableVideoEncoding) {
+			return JsonHelper::encode([
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			]);
+		}
+
 		$subfolder = $this->getSubfolderFromPath($filePath);
 
 		// Environment check
@@ -413,6 +421,14 @@ class Transcode extends Component
 	 */
 	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
 	{
+		if (!Transcoder::$plugin->getSettings()->enableVideoEncoding) {
+			return [
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
 		$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
 		if (($status['status'] ?? null) === 'ok' && is_file($outputInfo['encodedFile']) && filesize($outputInfo['encodedFile']) > 0) {
@@ -480,6 +496,14 @@ class Transcode extends Component
 	 */
 	public function getVideoStatusData(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): array
 	{
+		if (!Transcoder::$plugin->getSettings()->enableVideoEncoding) {
+			return [
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
 		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
 		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 		$storedStatus = $this->readVideoStatus($statusKey);

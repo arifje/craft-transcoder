@@ -5,6 +5,15 @@
 {% import 'transcoder/_includes/macros.twig' as macros %}
 
 {{ forms.lightswitchField({
+    label: 'Enable video encoding'|t('transcoder'),
+    instructions: 'Allow Transcoder to encode videos from Twig calls and queued entry saves. Disable this to serve original videos while keeping other plugin helpers available.'|t('transcoder'),
+    warning: macros.configWarning('enableVideoEncoding', 'transcoder'),
+    id: 'enableVideoEncoding',
+    name: 'enableVideoEncoding',
+    on: settings.enableVideoEncoding,
+}) }}
+
+{{ forms.lightswitchField({
     label: 'Enable download file endpoint'|t('transcoder'),
     instructions: 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.'|t('transcoder'),
     warning: macros.configWarning('enableDownloadFileEndpoint', 'transcoder'),
