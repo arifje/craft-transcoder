@@ -1695,7 +1695,7 @@ class Transcode extends Component
 		$videoEncoders = $settings['videoEncoders'];
 		$thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
 		$gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
-		$destGifFile = $this->getFilename($filePathResolved ?? '', $gifOptions);
+		$destGifFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $gifOptions);
 
 		return [
 			'source' => $filePathResolved,
@@ -2018,6 +2018,7 @@ class Transcode extends Component
 	protected function getFilename(Asset|string $filePath, array $options): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
+		$assetId = $filePath instanceof Asset ? $filePath->id : null;
 		$filePath = $this->getAssetPath($filePath);
 
 		$validator = new UrlValidator();
@@ -2029,6 +2030,9 @@ class Transcode extends Component
 			$pathParts = pathinfo($filePath);
 		}
 		$fileName = $pathParts['filename'];
+		if ($assetId) {
+			$fileName .= '_asset' . $assetId;
+		}
 
 		// Add our options to the file name
 		foreach ($options as $key => $value) {
@@ -2268,7 +2272,7 @@ class Transcode extends Component
 		$videoEncoders = $settings['videoEncoders'];
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
-		$destVideoFile = $this->getFilename($filePathResolved ?? '', $videoOptions);
+		$destVideoFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $videoOptions);
 
 		return [
 			'source' => $filePathResolved,
