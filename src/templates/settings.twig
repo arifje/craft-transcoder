@@ -14,6 +14,15 @@
 }) }}
 
 {{ forms.lightswitchField({
+    label: 'Enable video posters'|t('transcoder'),
+    instructions: 'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.'|t('transcoder'),
+    warning: macros.configWarning('enableVideoPosters', 'transcoder'),
+    id: 'enableVideoPosters',
+    name: 'enableVideoPosters',
+    on: settings.enableVideoPosters,
+}) }}
+
+{{ forms.lightswitchField({
     label: 'Enable download file endpoint'|t('transcoder'),
     instructions: 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.'|t('transcoder'),
     warning: macros.configWarning('enableDownloadFileEndpoint', 'transcoder'),
@@ -29,4 +38,38 @@
     id: 'queueVideosOnEntrySave',
     name: 'queueVideosOnEntrySave',
     on: settings.queueVideosOnEntrySave,
+}) }}
+
+{{ forms.editableTableField({
+    label: 'Video poster formats'|t('transcoder'),
+    instructions: 'Define the poster images Transcoder should generate for each queued video.'|t('transcoder'),
+    warning: macros.configWarning('videoPosterFormats', 'transcoder'),
+    id: 'videoPosterFormats',
+    name: 'videoPosterFormats',
+    cols: {
+        handle: {
+            type: 'singleline',
+            heading: 'Handle'|t('transcoder'),
+            placeholder: '16_9',
+        },
+        width: {
+            type: 'number',
+            heading: 'Width'|t('transcoder'),
+            placeholder: '800',
+        },
+        height: {
+            type: 'number',
+            heading: 'Height'|t('transcoder'),
+            placeholder: '450',
+        },
+        timeInSecs: {
+            type: 'number',
+            heading: 'Time'|t('transcoder'),
+            placeholder: '3',
+        },
+    },
+    rows: craft.transcoder.getVideoPosterFormatRows(),
+    allowAdd: true,
+    allowReorder: true,
+    allowDelete: true,
 }) }}

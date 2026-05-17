@@ -421,7 +421,8 @@ class Transcode extends Component
 	 */
 	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
 	{
-		if (!Transcoder::$plugin->getSettings()->enableVideoEncoding) {
+		$settings = Transcoder::$plugin->getSettings();
+		if (!$settings->enableVideoEncoding && !$settings->enableVideoPosters) {
 			return [
 				'status' => 'disabled',
 				'url' => '',
@@ -431,7 +432,12 @@ class Transcode extends Component
 
 		$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
-		if (($status['status'] ?? null) === 'ok' && is_file($outputInfo['encodedFile']) && filesize($outputInfo['encodedFile']) > 0) {
+		$missingPosters = $settings->enableVideoPosters && $this->hasMissingVideoPosters($asset);
+		if (($status['status'] ?? null) === 'ok'
+			&& is_file($outputInfo['encodedFile'])
+			&& filesize($outputInfo['encodedFile']) > 0
+			&& !$missingPosters
+		) {
 			return $status;
 		}
 		if (in_array($status['status'] ?? null, ['queued', 'encoding'], true)) {
@@ -842,6 +848,136 @@ class Transcode extends Component
 			} else {
 				$result = $publicUrl;
 			}
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Return a configured poster URL, or an empty string if it has not been generated.
+	 *
+	 * @param Asset|string $filePath
+	 * @param string $formatHandle
+	 * @param bool $generate
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function getVideoPosterUrl(Asset|string $filePath, string $formatHandle, bool $generate = false): string
+	{
+		if (!Transcoder::$plugin->getSettings()->enableVideoPosters) {
+			return '';
+		}
+
+		$formats = $this->getVideoPosterFormats();
+		if (!array_key_exists($formatHandle, $formats)) {
+			return '';
+		}
+
+		$options = $this->coalesceOptions('defaultThumbnailOptions', $formats[$formatHandle]);
+		$options['posterFormat'] = $formatHandle;
+
+		$url = $this->getVideoThumbnailUrl($filePath, $options, $generate);
+
+		return is_string($url) ? $url : '';
+	}
+
+	/**
+	 * Return configured poster URLs keyed by format handle.
+	 *
+	 * @param Asset|string $filePath
+	 * @param bool $generate
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function getVideoPosterUrls(Asset|string $filePath, bool $generate = false): array
+	{
+		$result = [];
+		foreach ($this->getVideoPosterFormats() as $formatHandle => $format) {
+			$result[$formatHandle] = $this->getVideoPosterUrl($filePath, $formatHandle, $generate);
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Generate all configured poster formats for a video.
+	 *
+	 * @param Asset|string $filePath
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function generateVideoPosters(Asset|string $filePath): array
+	{
+		return $this->getVideoPosterUrls($filePath, true);
+	}
+
+	/**
+	 * Return whether any configured poster is missing.
+	 *
+	 * @param Asset|string $filePath
+	 * @return bool
+	 * @throws InvalidConfigException
+	 */
+	protected function hasMissingVideoPosters(Asset|string $filePath): bool
+	{
+		foreach ($this->getVideoPosterUrls($filePath) as $url) {
+			if ($url === '') {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Return normalized poster format rows for the settings UI.
+	 *
+	 * @return array
+	 */
+	public function getVideoPosterFormatRows(): array
+	{
+		$rows = [];
+		foreach ($this->getVideoPosterFormats() as $handle => $format) {
+			$rows[] = [
+				'handle' => $handle,
+				'width' => $format['width'] ?? '',
+				'height' => $format['height'] ?? '',
+				'timeInSecs' => $format['timeInSecs'] ?? '',
+			];
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * Return configured poster formats keyed by handle.
+	 *
+	 * @return array
+	 */
+	protected function getVideoPosterFormats(): array
+	{
+		$formats = Transcoder::$plugin->getSettings()->videoPosterFormats;
+		$result = [];
+
+		foreach ($formats as $key => $format) {
+			if (!is_array($format)) {
+				continue;
+			}
+
+			$handle = is_string($key) ? $key : ($format['handle'] ?? '');
+			$handle = trim((string)$handle);
+			if ($handle === '') {
+				continue;
+			}
+
+			$options = [];
+			foreach (['width', 'height', 'timeInSecs'] as $optionKey) {
+				if (isset($format[$optionKey]) && $format[$optionKey] !== '') {
+					$options[$optionKey] = (int)$format[$optionKey];
+				}
+			}
+
+			$result[$handle] = $options;
 		}
 
 		return $result;

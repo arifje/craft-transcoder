@@ -19,14 +19,17 @@ If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.
 
 ## Queueing Videos on Entry Save
 
-Transcoder can queue video encoding when an entry is saved, so templates do not have to trigger the encoding process.
+Transcoder can queue video encoding and poster generation when an entry is saved, so templates do not have to trigger ffmpeg work.
 
-The `enableVideoEncoding`, `enableDownloadFileEndpoint`, and `queueVideosOnEntrySave` settings can also be managed from the plugin’s Control Panel settings screen. Values defined in `config/transcoder.php` take precedence over values saved from the Control Panel.
+The `enableVideoEncoding`, `enableVideoPosters`, `enableDownloadFileEndpoint`, `queueVideosOnEntrySave`, and `videoPosterFormats` settings can also be managed from the plugin’s Control Panel settings screen. Values defined in `config/transcoder.php` take precedence over values saved from the Control Panel.
 
 ```php
 return [
     // Disable this to serve original videos without disabling the plugin.
     'enableVideoEncoding' => true,
+
+    // Generate configured poster images for queued videos.
+    'enableVideoPosters' => true,
 
     'enableDownloadFileEndpoint' => false,
     'queueVideosOnEntrySave' => true,
@@ -45,9 +48,20 @@ return [
     'autoEncodeEncodingOptions' => [
         'watermark' => true,
     ],
+
+    'videoPosterFormats' => [
+        '16_9' => [
+            'width' => 800,
+            'height' => 450,
+            'timeInSecs' => 3,
+        ],
+        'original_3s' => [
+            'timeInSecs' => 3,
+        ],
+    ],
 ];
 ```
 
-When `queueVideosOnEntrySave` is enabled, Transcoder listens for saved entries, finds video assets in the configured fields, and adds encoding jobs to Craft’s queue. Make sure your production environment has a queue worker or queue runner configured, otherwise video encoding will only run when Craft processes queued jobs.
+When `queueVideosOnEntrySave` is enabled, Transcoder listens for saved entries, finds video assets in the configured fields, and adds encoding jobs to Craft’s queue. Those jobs encode video when `enableVideoEncoding` is enabled and generate configured posters when `enableVideoPosters` is enabled. Make sure your production environment has a queue worker or queue runner configured, otherwise video encoding and poster generation will only run when Craft processes queued jobs.
 
 Brought to you by [nystudio107](https://nystudio107.com)

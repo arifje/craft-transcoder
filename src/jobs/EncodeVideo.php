@@ -49,41 +49,51 @@ class EncodeVideo extends BaseJob
         }
 
         try {
-            Transcoder::$plugin->transcode->writeVideoStatus(
-                $asset,
-                $this->videoOptions,
-                [
-                    'status' => 'encoding',
-                    'url' => '',
-                    'progress' => 0,
-                    'info' => 'Encoding started',
-                ],
-                $this->encodingOptions
-            );
+            $settings = Transcoder::$plugin->getSettings();
 
-            $response = Transcoder::$plugin->transcode->getVideoUrl($asset, $this->videoOptions, true);
-            $status = json_decode($response, true);
-
-            if (is_array($status)) {
+            if ($settings->enableVideoEncoding) {
                 Transcoder::$plugin->transcode->writeVideoStatus(
                     $asset,
                     $this->videoOptions,
-                    $status,
+                    [
+                        'status' => 'encoding',
+                        'url' => '',
+                        'progress' => 0,
+                        'info' => 'Encoding started',
+                    ],
                     $this->encodingOptions
                 );
+
+                $response = Transcoder::$plugin->transcode->getVideoUrl($asset, $this->videoOptions, true);
+                $status = json_decode($response, true);
+
+                if (is_array($status)) {
+                    Transcoder::$plugin->transcode->writeVideoStatus(
+                        $asset,
+                        $this->videoOptions,
+                        $status,
+                        $this->encodingOptions
+                    );
+                }
+            }
+
+            if ($settings->enableVideoPosters) {
+                Transcoder::$plugin->transcode->generateVideoPosters($asset);
             }
         } catch (Throwable $e) {
             Craft::error($e->getMessage(), __METHOD__);
-            Transcoder::$plugin->transcode->writeVideoStatus(
-                $asset,
-                $this->videoOptions,
-                [
-                    'status' => 'error',
-                    'url' => '',
-                    'error' => $e->getMessage(),
-                ],
-                $this->encodingOptions
-            );
+            if (Transcoder::$plugin->getSettings()->enableVideoEncoding) {
+                Transcoder::$plugin->transcode->writeVideoStatus(
+                    $asset,
+                    $this->videoOptions,
+                    [
+                        'status' => 'error',
+                        'url' => '',
+                        'error' => $e->getMessage(),
+                    ],
+                    $this->encodingOptions
+                );
+            }
         }
     }
 

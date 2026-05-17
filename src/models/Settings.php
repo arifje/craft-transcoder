@@ -86,6 +86,11 @@ class Settings extends Model
     public bool $enableVideoEncoding = true;
 
     /**
+     * @var bool Determines whether video poster generation should be enabled
+     */
+    public bool $enableVideoPosters = true;
+
+    /**
      * Use a md5 hash for the filenames instead of parameterized naming
      *
      * @var bool
@@ -143,6 +148,25 @@ class Settings extends Model
      * @var array
      */
     public array $autoEncodeEncodingOptions = [];
+
+    /**
+     * Poster formats generated when videos are queued.
+     *
+     * @var array
+     */
+    public array $videoPosterFormats = [
+        '16_9' => [
+            'width' => 800,
+            'height' => 450,
+            'timeInSecs' => 3,
+        ],
+        'original_3s' => [
+            'timeInSecs' => 3,
+        ],
+        'original_1s' => [
+            'timeInSecs' => 1,
+        ],
+    ];
 
     /**
      * Preset video encoders
@@ -313,6 +337,7 @@ class Settings extends Model
             ['transcoderUrls', ArrayValidator::class],
             ['enableDownloadFileEndpoint', 'boolean'],
             ['enableVideoEncoding', 'boolean'],
+            ['enableVideoPosters', 'boolean'],
             ['useHashedNames', 'boolean'],
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
@@ -320,6 +345,7 @@ class Settings extends Model
             ['autoEncodeVideoFieldHandles', ArrayValidator::class],
             ['autoEncodeVideoOptions', ArrayValidator::class],
             ['autoEncodeEncodingOptions', ArrayValidator::class],
+            ['videoPosterFormats', ArrayValidator::class],
             ['videoEncoders', 'required'],
             ['audioEncoders', 'required'],
             ['defaultVideoOptions', 'required'],

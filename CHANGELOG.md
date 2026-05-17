@@ -1,5 +1,10 @@
 # Transcoder Changelog
 
+## 4.2.0 - 2026.05.17
+### Added
+* Add configurable queued video poster generation with Control Panel settings.
+* Add Twig helpers for reading configured video poster URLs.
+
 ## 4.1.0 - 2026.05.15
 ### Added
 * Add queue-based video encoding on entry save, with queue-aware Twig status helpers and a polling endpoint.

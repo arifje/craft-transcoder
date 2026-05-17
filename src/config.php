@@ -60,6 +60,9 @@ return [
     // Determines whether video encoding should be enabled
     'enableVideoEncoding' => true,
 
+    // Determines whether video poster generation should be enabled
+    'enableVideoPosters' => true,
+
     // Use a md5 hash for the filenames instead of parameterized naming
     'useHashedNames' => false,
 
@@ -84,6 +87,21 @@ return [
 
     // Extra options recorded with queued encodes, for example ['watermark' => true]
     'autoEncodeEncodingOptions' => [],
+
+    // Poster formats generated when videos are queued
+    'videoPosterFormats' => [
+        '16_9' => [
+            'width' => 800,
+            'height' => 450,
+            'timeInSecs' => 3,
+        ],
+        'original_3s' => [
+            'timeInSecs' => 3,
+        ],
+        'original_1s' => [
+            'timeInSecs' => 1,
+        ],
+    ],
 
     // Preset video encoders
     'videoEncoders' => [
