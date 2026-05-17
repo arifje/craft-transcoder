@@ -227,7 +227,9 @@ class Transcoder extends Plugin
                 }
             );
         }
-        if (($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave) {
+        if ((($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave)
+            || ($settings->enableGifEncoding && $settings->queueGifsOnEntrySave)
+        ) {
             Event::on(
                 Elements::class,
                 Elements::EVENT_AFTER_SAVE_ELEMENT,
@@ -243,14 +245,35 @@ class Transcoder extends Plugin
                         return;
                     }
 
-                    $queued = $this->transcode->queueVideoEncodesForElement($element);
-                    if ($queued > 0) {
+                    $queuedVideos = 0;
+                    if (($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave) {
+                        $queuedVideos = $this->transcode->queueVideoEncodesForElement($element);
+                    }
+                    if ($queuedVideos > 0) {
                         Craft::info(
                             Craft::t(
                                 'transcoder',
                                 'Queued {count} video encode(s) for entry {id}',
                                 [
-                                    'count' => $queued,
+                                    'count' => $queuedVideos,
+                                    'id' => $element->id,
+                                ]
+                            ),
+                            __METHOD__
+                        );
+                    }
+
+                    $queuedGifs = 0;
+                    if ($settings->enableGifEncoding && $settings->queueGifsOnEntrySave) {
+                        $queuedGifs = $this->transcode->queueGifEncodesForElement($element);
+                    }
+                    if ($queuedGifs > 0) {
+                        Craft::info(
+                            Craft::t(
+                                'transcoder',
+                                'Queued {count} GIF encode(s) for entry {id}',
+                                [
+                                    'count' => $queuedGifs,
                                     'id' => $element->id,
                                 ]
                             ),

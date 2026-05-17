@@ -91,6 +91,11 @@ class Settings extends Model
     public bool $enableVideoPosters = true;
 
     /**
+     * @var bool Determines whether GIF encoding should be enabled
+     */
+    public bool $enableGifEncoding = true;
+
+    /**
      * Use a md5 hash for the filenames instead of parameterized naming
      *
      * @var bool
@@ -148,6 +153,35 @@ class Settings extends Model
      * @var array
      */
     public array $autoEncodeEncodingOptions = [];
+
+    /**
+     * Queue GIF encoding when entries are saved.
+     *
+     * @var bool
+     */
+    public bool $queueGifsOnEntrySave = false;
+
+    /**
+     * Entry field handles to inspect for GIF assets. Leave empty to inspect
+     * all custom fields recursively.
+     *
+     * @var array
+     */
+    public array $autoEncodeGifFieldHandles = [];
+
+    /**
+     * Default options used when an entry save queues GIF encoding.
+     *
+     * @var array
+     */
+    public array $autoEncodeGifOptions = [];
+
+    /**
+     * Seconds to delay each queued GIF job after the previous one.
+     *
+     * @var int
+     */
+    public int $gifQueueDelaySeconds = 15;
 
     /**
      * Poster formats generated when videos are queued.
@@ -338,6 +372,7 @@ class Settings extends Model
             ['enableDownloadFileEndpoint', 'boolean'],
             ['enableVideoEncoding', 'boolean'],
             ['enableVideoPosters', 'boolean'],
+            ['enableGifEncoding', 'boolean'],
             ['useHashedNames', 'boolean'],
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
@@ -345,6 +380,11 @@ class Settings extends Model
             ['autoEncodeVideoFieldHandles', ArrayValidator::class],
             ['autoEncodeVideoOptions', ArrayValidator::class],
             ['autoEncodeEncodingOptions', ArrayValidator::class],
+            ['queueGifsOnEntrySave', 'boolean'],
+            ['autoEncodeGifFieldHandles', ArrayValidator::class],
+            ['autoEncodeGifOptions', ArrayValidator::class],
+            ['gifQueueDelaySeconds', 'integer'],
+            ['gifQueueDelaySeconds', 'number', 'min' => 0],
             ['videoPosterFormats', ArrayValidator::class],
             ['videoEncoders', 'required'],
             ['audioEncoders', 'required'],

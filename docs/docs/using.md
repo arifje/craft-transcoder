@@ -200,7 +200,19 @@ The file format setting `audioEncoder` is preset to what you’ll need to genera
 
 ## Generating an Encoded GIF Video
 
-To generate an encoded GIF video, use `craft.transcoder.getGifUrl()`:
+When GIF encoding is queued on entry save, templates should read the current status rather than start the encoding process:
+
+```twig
+{% set gifOptions = {} %}
+{% set gifData = craft.transcoder.isGifEncodingEnabled()
+    ? craft.transcoder.getGifStatus(myAsset, gifOptions)|json_decode
+    : { status: 'disabled' }
+%}
+```
+
+`getGifStatus()` returns the same queue-aware status format as `getVideoStatus()`. Use `craft.transcoder.isGifEncodingEnabled()` with `craft.app.plugins.isPluginEnabled('transcoder')` in templates when you want to fall back to the original GIF while encoding is disabled.
+
+To generate an encoded GIF video from Twig, use `craft.transcoder.getGifUrl()`. This starts ffmpeg work during the request, so queued GIF encoding is recommended for production templates:
 
 ```twig
 {% set gifResponse = craft.transcoder.getGifUrl(myAsset, {
@@ -262,8 +274,10 @@ When video encoding is queued on entry save, templates should read the current s
 ```twig
 {% set videoOptions = {} %}
 {% set encodingOptions = { "watermark": true } %}
-{% set encodedVideoData = craft.transcoder.getVideoStatus(video, videoOptions, encodingOptions)|json_decode %}
-{% set statusUrl = craft.transcoder.getVideoStatusUrl(video, videoOptions, encodingOptions) %}
+{% set encodedVideoData = craft.transcoder.isVideoEncodingEnabled()
+    ? craft.transcoder.getVideoStatus(video, videoOptions, encodingOptions)|json_decode
+    : { status: 'disabled' }
+%}
 ```
 
 `getVideoStatus()` returns a JSON-encoded string with one of these statuses:

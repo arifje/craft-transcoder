@@ -29,6 +29,36 @@ class TranscoderVariable implements ViteVariableInterface
     // =========================================================================
 
     /**
+     * Returns whether video encoding is enabled in the plugin settings.
+     *
+     * @return bool
+     */
+    public function isVideoEncodingEnabled(): bool
+    {
+        return (bool)Transcoder::$plugin->getSettings()->enableVideoEncoding;
+    }
+
+    /**
+     * Returns whether video poster generation is enabled in the plugin settings.
+     *
+     * @return bool
+     */
+    public function isVideoPostersEnabled(): bool
+    {
+        return (bool)Transcoder::$plugin->getSettings()->enableVideoPosters;
+    }
+
+    /**
+     * Returns whether GIF encoding is enabled in the plugin settings.
+     *
+     * @return bool
+     */
+    public function isGifEncodingEnabled(): bool
+    {
+        return (bool)Transcoder::$plugin->getSettings()->enableGifEncoding;
+    }
+
+    /**
      * Returns a JSON-encoded status response for a transcoded video.
      *
      * @param $filePath
@@ -222,6 +252,32 @@ class TranscoderVariable implements ViteVariableInterface
         }
 
         return $result;
+    }
+
+    /**
+     * Return the queue-aware GIF status.
+     *
+     * @param $filePath
+     * @param array $gifOptions
+     * @return string
+     * @throws InvalidConfigException
+     */
+    public function getGifStatus($filePath, array $gifOptions = []): string
+    {
+        return Transcoder::$plugin->transcode->getGifStatus($filePath, $gifOptions);
+    }
+
+    /**
+     * Return a URL that can be polled for queue-aware GIF status.
+     *
+     * @param $filePath
+     * @param array $gifOptions
+     * @return string
+     * @throws InvalidConfigException
+     */
+    public function getGifStatusUrl($filePath, array $gifOptions = []): string
+    {
+        return Transcoder::$plugin->transcode->getGifStatusUrl($filePath, $gifOptions);
     }
 
     /**

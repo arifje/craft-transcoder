@@ -24,6 +24,7 @@ use craft\helpers\Json as JsonHelper;
 use craft\helpers\UrlHelper;
 use mikehaertl\shellcommand\Command as ShellCommand;
 use nystudio107\transcoder\events\TranscoderQueueEvent;
+use nystudio107\transcoder\jobs\EncodeGif;
 use nystudio107\transcoder\jobs\EncodeVideo;
 use nystudio107\transcoder\Transcoder;
 use Throwable;
@@ -48,6 +49,8 @@ class Transcode extends Component
 	// =========================================================================
 
 	public const EVENT_BEFORE_QUEUE_VIDEO = 'beforeQueueVideo';
+
+	public const EVENT_BEFORE_QUEUE_GIF = 'beforeQueueGif';
 
 	// Suffixes to add to the generated filename params
 	protected const SUFFIX_MAP = [
@@ -457,6 +460,99 @@ class Transcode extends Component
 			'jobId' => $jobId,
 		];
 		$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
+
+		return $status;
+	}
+
+	/**
+	 * Queue GIF encodes for all GIF assets found on an element.
+	 *
+	 * @param ElementInterface $element
+	 * @return int
+	 */
+	public function queueGifEncodesForElement(ElementInterface $element): int
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$fieldHandles = $settings['autoEncodeGifFieldHandles'] ?? [];
+		$gifOptions = $settings['autoEncodeGifOptions'] ?? [];
+		$assets = [];
+
+		if (!empty($fieldHandles)) {
+			foreach ($fieldHandles as $fieldHandle) {
+				try {
+					$this->collectGifAssets($element->getFieldValue($fieldHandle), $assets);
+				} catch (Throwable $e) {
+					Craft::warning('Unable to inspect Transcoder GIF field handle "' . $fieldHandle . '": ' . $e->getMessage(), __METHOD__);
+				}
+			}
+		} else {
+			$this->collectGifAssetsFromElement($element, $assets);
+		}
+
+		$queued = 0;
+		$delaySeconds = max(0, (int)$settings->gifQueueDelaySeconds);
+		foreach (array_values($assets) as $index => $asset) {
+			$event = new TranscoderQueueEvent([
+				'element' => $element,
+				'assetId' => $asset->id,
+				'videoOptions' => $gifOptions,
+			]);
+			$this->trigger(self::EVENT_BEFORE_QUEUE_GIF, $event);
+
+			if (!$event->isValid) {
+				continue;
+			}
+
+			$status = $this->queueGifEncode($asset, $event->videoOptions, $index * $delaySeconds);
+			if (($status['status'] ?? null) === 'queued') {
+				$queued++;
+			}
+		}
+
+		return $queued;
+	}
+
+	/**
+	 * Queue a single GIF encode.
+	 *
+	 * @param Asset $asset
+	 * @param array $gifOptions
+	 * @param int $delay
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function queueGifEncode(Asset $asset, array $gifOptions = [], int $delay = 0): array
+	{
+		if (!Transcoder::$plugin->getSettings()->enableGifEncoding) {
+			return [
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
+		$outputInfo = $this->getGifOutputInfo($asset, $gifOptions);
+		$status = $this->getGifStatusData($asset, $gifOptions);
+		if (($status['status'] ?? null) === 'ok' && is_file($outputInfo['encodedFile']) && filesize($outputInfo['encodedFile']) > 0) {
+			return $status;
+		}
+		if (in_array($status['status'] ?? null, ['queued', 'encoding'], true)) {
+			return $status;
+		}
+
+		$jobId = $this->pushQueueJob(new EncodeGif([
+			'assetId' => $asset->id,
+			'gifOptions' => $gifOptions,
+		]), $delay);
+
+		$status = [
+			'status' => 'queued',
+			'url' => '',
+			'progress' => 0,
+			'jobId' => $jobId,
+			'delay' => $delay,
+		];
+		$this->writeGifStatus($asset, $gifOptions, $status);
 
 		return $status;
 	}
@@ -1287,6 +1383,240 @@ class Transcode extends Component
 	// =========================================================================
 
 	/**
+	 * Return the queue-aware GIF status as a JSON string for Twig usage.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $gifOptions
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function getGifStatus(Asset|string $filePath, array $gifOptions = []): string
+	{
+		return JsonHelper::encode($this->getGifStatusData($filePath, $gifOptions));
+	}
+
+	/**
+	 * Return a URL that can be polled for queue-aware GIF status.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $gifOptions
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function getGifStatusUrl(Asset|string $filePath, array $gifOptions = []): string
+	{
+		return UrlHelper::actionUrl('transcoder/default/gif-status', [
+			'key' => $this->getGifStatusKey($filePath, $gifOptions),
+		]);
+	}
+
+	/**
+	 * Return queue-aware GIF status data.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $gifOptions
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function getGifStatusData(Asset|string $filePath, array $gifOptions = []): array
+	{
+		if (!Transcoder::$plugin->getSettings()->enableGifEncoding) {
+			return [
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
+		$outputInfo = $this->getGifOutputInfo($filePath, $gifOptions);
+		$statusKey = $this->getGifStatusKey($filePath, $gifOptions);
+		$storedStatus = $this->readVideoStatus($statusKey);
+
+		if (is_file($outputInfo['encodedFile'])
+			&& filesize($outputInfo['encodedFile']) > 0
+			&& (!is_file($outputInfo['lockFile']) || !$this->isProcessRunningFromLockFile($outputInfo['lockFile']))
+		) {
+			@unlink($outputInfo['lockFile']);
+			@unlink($outputInfo['progressFile']);
+			$status = [
+				'status' => 'ok',
+				'url' => $outputInfo['publicUrl'],
+				'progress' => 100,
+			];
+			if (!$outputInfo['originalExists']) {
+				$status['warning'] = 'Original GIF missing, serving encoded version';
+			}
+			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			return $this->sanitizeVideoStatus($status);
+		}
+
+		if (is_file($outputInfo['lockFile'])) {
+			$status = array_merge(
+				[
+					'status' => 'encoding',
+					'url' => '',
+					'progress' => 0,
+				],
+				$this->getProgressData($outputInfo['filename'])
+			);
+			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			return $this->sanitizeVideoStatus($status);
+		}
+
+		if (!empty($storedStatus) && ($storedStatus['status'] ?? null) === 'ok') {
+			$storedStatus = [];
+		}
+
+		if (!empty($storedStatus)) {
+			return $this->sanitizeVideoStatus($storedStatus);
+		}
+
+		if (!$outputInfo['originalExists']) {
+			return $this->sanitizeVideoStatus([
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+				'error' => 'Transcoder: original GIF not found at ' . ($outputInfo['source'] ?? 'unknown'),
+			]);
+		}
+
+		return $this->sanitizeVideoStatus([
+			'status' => 'pending',
+			'url' => '',
+			'progress' => 0,
+		]);
+	}
+
+	/**
+	 * Write queue-aware GIF status for a file.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $gifOptions
+	 * @param array $status
+	 * @throws InvalidConfigException
+	 */
+	public function writeGifStatus(Asset|string $filePath, array $gifOptions, array $status): void
+	{
+		$outputInfo = $this->getGifOutputInfo($filePath, $gifOptions);
+		$status = array_merge($this->getVideoStatusStorageInfo($outputInfo), $status);
+
+		$this->writeVideoStatusByKey($this->getGifStatusKey($filePath, $gifOptions), $status);
+	}
+
+	/**
+	 * Return GIF status data by key, for controller polling.
+	 *
+	 * @param string $key
+	 * @return array
+	 */
+	public function getGifStatusByKey(string $key): array
+	{
+		$status = $this->readVideoStatus($key);
+		if (empty($status)) {
+			return [
+				'status' => 'unknown',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
+		if (!empty($status['encodedFile']) && is_file($status['encodedFile']) && filesize($status['encodedFile']) > 0) {
+			$lockFile = $status['lockFile'] ?? null;
+			if (!$lockFile || !is_file($lockFile) || !$this->isProcessRunningFromLockFile($lockFile)) {
+				if ($lockFile) {
+					@unlink($lockFile);
+				}
+				if (!empty($status['progressFile'])) {
+					@unlink($status['progressFile']);
+				}
+				$status['status'] = 'ok';
+				$status['url'] = $status['publicUrl'] ?? ($status['url'] ?? '');
+				$status['progress'] = 100;
+				$this->writeVideoStatusByKey($key, $status);
+				return $this->sanitizeVideoStatus($status);
+			}
+		}
+
+		if (($status['filename'] ?? null) && ($status['status'] ?? null) === 'encoding') {
+			$status = array_merge($status, $this->getProgressData($status['filename']));
+		}
+
+		return $this->sanitizeVideoStatus($status);
+	}
+
+	/**
+	 * Return the stable status key for a GIF/options pair.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $gifOptions
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function getGifStatusKey(Asset|string $filePath, array $gifOptions = []): string
+	{
+		$gifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
+		$settings = Transcoder::$plugin->getSettings();
+		$videoEncoders = $settings['videoEncoders'];
+		$thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
+		$gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+
+		return 'gif-' . sha1($this->getFilename($filePath, $gifOptions));
+	}
+
+	/**
+	 * Build destination and status metadata for a GIF encode.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $gifOptions
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	protected function getGifOutputInfo(Asset|string $filePath, array $gifOptions): array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$subfolder = $this->getSubfolderFromPath($filePath);
+		$normalized = $this->normalizeFilePath($filePath);
+		$originalExists = false;
+		$filePathResolved = null;
+
+		if (isset($normalized['url'])) {
+			$filePathResolved = $normalized['url'];
+			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+		} elseif (isset($normalized['path'])) {
+			$filePathResolved = $normalized['path'];
+			$originalExists = file_exists($filePathResolved);
+		}
+
+		if (!empty($subfolder)) {
+			$destGifPath = rtrim(App::parseEnv($settings['transcoderPaths']['gif']), DIRECTORY_SEPARATOR)
+				. DIRECTORY_SEPARATOR
+				. trim($subfolder, DIRECTORY_SEPARATOR)
+				. DIRECTORY_SEPARATOR;
+			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['gif']), '/')
+				. '/' . trim($subfolder, '/');
+		} else {
+			$destGifPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
+		}
+
+		$gifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
+		$videoEncoders = $settings['videoEncoders'];
+		$thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
+		$gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+		$destGifFile = $this->getFilename($filePathResolved ?? '', $gifOptions);
+
+		return [
+			'source' => $filePathResolved,
+			'originalExists' => $originalExists,
+			'filename' => $destGifFile,
+			'encodedFile' => $destGifPath . $destGifFile,
+			'publicUrl' => $urlBase . '/' . $destGifFile,
+			'lockFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destGifFile . '.lock',
+			'progressFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destGifFile . '.progress',
+		];
+	}
+
+	/**
 	 * Returns a URL to an encoded GIF file (mp4)
 	 *
 	 * @param Asset|string $filePath path to the original video or an Asset
@@ -1299,6 +1629,14 @@ class Transcode extends Component
 	public function getGifUrl(Asset|string $filePath, array $gifOptions, bool $generate = true): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
+		if (!$settings->enableGifEncoding) {
+			return JsonHelper::encode([
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			]);
+		}
+
 		$subfolder = $this->getSubfolderFromPath($filePath);
 	
 		// Environment check
@@ -1938,6 +2276,62 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Collect GIF assets from an element's field layout.
+	 *
+	 * @param ElementInterface $element
+	 * @param array $assets
+	 */
+	protected function collectGifAssetsFromElement(ElementInterface $element, array &$assets): void
+	{
+		$fieldLayout = $element->getFieldLayout();
+		if ($fieldLayout === null) {
+			return;
+		}
+
+		foreach ($fieldLayout->getCustomFields() as $field) {
+			try {
+				$this->collectGifAssets($element->getFieldValue($field->handle), $assets);
+			} catch (Throwable $e) {
+				Craft::warning('Unable to inspect Transcoder GIF field handle "' . $field->handle . '": ' . $e->getMessage(), __METHOD__);
+			}
+		}
+	}
+
+	/**
+	 * Collect GIF assets recursively from field values.
+	 *
+	 * @param mixed $value
+	 * @param array $assets
+	 */
+	protected function collectGifAssets(mixed $value, array &$assets): void
+	{
+		if ($value instanceof Asset) {
+			if ($value->id && strtolower(pathinfo($value->filename, PATHINFO_EXTENSION)) === 'gif') {
+				$assets[$value->id] = $value;
+			}
+			return;
+		}
+
+		if ($value instanceof ElementQueryInterface) {
+			foreach ($value->all() as $element) {
+				$this->collectGifAssets($element, $assets);
+			}
+			return;
+		}
+
+		if ($value instanceof ElementInterface) {
+			$this->collectGifAssetsFromElement($value, $assets);
+			return;
+		}
+
+		if (is_iterable($value)) {
+			foreach ($value as $item) {
+				$this->collectGifAssets($item, $assets);
+			}
+		}
+	}
+
+	/**
 	 * Parse the current ffmpeg progress file.
 	 *
 	 * @param string $filename
@@ -2077,6 +2471,23 @@ class Transcode extends Component
 		exec("kill -0 $pid 2>&1", $processState);
 
 		return count($processState) === 0;
+	}
+
+	/**
+	 * Push a queue job, applying a delay when the active queue supports it.
+	 *
+	 * @param object $job
+	 * @param int $delay
+	 * @return mixed
+	 */
+	protected function pushQueueJob(object $job, int $delay = 0): mixed
+	{
+		$queue = Craft::$app->getQueue();
+		if ($delay > 0 && method_exists($queue, 'delay')) {
+			return $queue->delay($delay)->push($job);
+		}
+
+		return $queue->push($job);
 	}
 
 	/**

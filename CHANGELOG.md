@@ -1,5 +1,10 @@
 # Transcoder Changelog
 
+## 4.3.0 - 2026.05.17
+### Added
+* Add queue-based GIF encoding on entry save with queue-aware Twig status helpers.
+* Add GIF settings tab with controls for enabling GIF encoding and spreading queued jobs over time.
+
 ## 4.2.0 - 2026.05.17
 ### Added
 * Add configurable queued video poster generation with Control Panel settings.

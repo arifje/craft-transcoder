@@ -41,6 +41,7 @@ class DefaultController extends Controller
         'download-file',
         'progress',
         'video-status',
+        'gif-status',
     ];
 
     // Public Methods
@@ -55,6 +56,7 @@ class DefaultController extends Controller
             $this->allowAnonymous = [
                 'progress',
                 'video-status',
+                'gif-status',
             ];
         }
 
@@ -189,5 +191,16 @@ class DefaultController extends Controller
     public function actionVideoStatus(string $key): Response
     {
         return $this->asJson(Transcoder::$plugin->transcode->getVideoStatusByKey($key));
+    }
+
+    /**
+     * Return the queue-aware GIF status by stable key.
+     *
+     * @param string $key
+     * @return Response
+     */
+    public function actionGifStatus(string $key): Response
+    {
+        return $this->asJson(Transcoder::$plugin->transcode->getGifStatusByKey($key));
     }
 }

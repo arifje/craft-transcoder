@@ -4,72 +4,119 @@
 {% import '_includes/forms' as forms %}
 {% import 'transcoder/_includes/macros.twig' as macros %}
 
-{{ forms.lightswitchField({
-    label: 'Enable video encoding'|t('transcoder'),
-    instructions: 'Allow Transcoder to encode videos from Twig calls and queued entry saves. Disable this to serve original videos while keeping other plugin helpers available.'|t('transcoder'),
-    warning: macros.configWarning('enableVideoEncoding', 'transcoder'),
-    id: 'enableVideoEncoding',
-    name: 'enableVideoEncoding',
-    on: settings.enableVideoEncoding,
-}) }}
-
-{{ forms.lightswitchField({
-    label: 'Enable video posters'|t('transcoder'),
-    instructions: 'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.'|t('transcoder'),
-    warning: macros.configWarning('enableVideoPosters', 'transcoder'),
-    id: 'enableVideoPosters',
-    name: 'enableVideoPosters',
-    on: settings.enableVideoPosters,
-}) }}
-
-{{ forms.lightswitchField({
-    label: 'Enable download file endpoint'|t('transcoder'),
-    instructions: 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.'|t('transcoder'),
-    warning: macros.configWarning('enableDownloadFileEndpoint', 'transcoder'),
-    id: 'enableDownloadFileEndpoint',
-    name: 'enableDownloadFileEndpoint',
-    on: settings.enableDownloadFileEndpoint,
-}) }}
-
-{{ forms.lightswitchField({
-    label: 'Queue videos on entry save'|t('transcoder'),
-    instructions: 'Queue video encoding when entries are saved. This requires a working Craft queue runner for reliable background encoding.'|t('transcoder'),
-    warning: macros.configWarning('queueVideosOnEntrySave', 'transcoder'),
-    id: 'queueVideosOnEntrySave',
-    name: 'queueVideosOnEntrySave',
-    on: settings.queueVideosOnEntrySave,
-}) }}
-
-{{ forms.editableTableField({
-    label: 'Video poster formats'|t('transcoder'),
-    instructions: 'Define the poster images Transcoder should generate for each queued video.'|t('transcoder'),
-    warning: macros.configWarning('videoPosterFormats', 'transcoder'),
-    id: 'videoPosterFormats',
-    name: 'videoPosterFormats',
-    cols: {
-        handle: {
-            type: 'singleline',
-            heading: 'Handle'|t('transcoder'),
-            placeholder: '16_9',
-        },
-        width: {
-            type: 'number',
-            heading: 'Width'|t('transcoder'),
-            placeholder: '800',
-        },
-        height: {
-            type: 'number',
-            heading: 'Height'|t('transcoder'),
-            placeholder: '450',
-        },
-        timeInSecs: {
-            type: 'number',
-            heading: 'Time'|t('transcoder'),
-            placeholder: '3',
-        },
+{% set tabs = {
+    video: {
+        label: 'Video'|t('transcoder'),
+        url: '#video',
     },
-    rows: craft.transcoder.getVideoPosterFormatRows(),
-    allowAdd: true,
-    allowReorder: true,
-    allowDelete: true,
-}) }}
+    gif: {
+        label: 'GIF'|t('transcoder'),
+        url: '#gif',
+    },
+} %}
+
+{% include '_includes/tabs' with { tabs: tabs, selectedTab: 'video' } only %}
+
+<div id="video">
+    {{ forms.lightswitchField({
+        label: 'Enable video encoding'|t('transcoder'),
+        instructions: 'Allow Transcoder to encode videos from Twig calls and queued entry saves. Disable this to serve original videos while keeping other plugin helpers available.'|t('transcoder'),
+        warning: macros.configWarning('enableVideoEncoding', 'transcoder'),
+        id: 'enableVideoEncoding',
+        name: 'enableVideoEncoding',
+        on: settings.enableVideoEncoding,
+    }) }}
+
+    {{ forms.lightswitchField({
+        label: 'Enable video posters'|t('transcoder'),
+        instructions: 'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.'|t('transcoder'),
+        warning: macros.configWarning('enableVideoPosters', 'transcoder'),
+        id: 'enableVideoPosters',
+        name: 'enableVideoPosters',
+        on: settings.enableVideoPosters,
+    }) }}
+
+    {{ forms.lightswitchField({
+        label: 'Enable download file endpoint'|t('transcoder'),
+        instructions: 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.'|t('transcoder'),
+        warning: macros.configWarning('enableDownloadFileEndpoint', 'transcoder'),
+        id: 'enableDownloadFileEndpoint',
+        name: 'enableDownloadFileEndpoint',
+        on: settings.enableDownloadFileEndpoint,
+    }) }}
+
+    {{ forms.lightswitchField({
+        label: 'Queue videos on entry save'|t('transcoder'),
+        instructions: 'Queue video encoding and poster generation when entries are saved. This requires a working Craft queue runner for reliable background processing.'|t('transcoder'),
+        warning: macros.configWarning('queueVideosOnEntrySave', 'transcoder'),
+        id: 'queueVideosOnEntrySave',
+        name: 'queueVideosOnEntrySave',
+        on: settings.queueVideosOnEntrySave,
+    }) }}
+
+    {{ forms.editableTableField({
+        label: 'Video poster formats'|t('transcoder'),
+        instructions: 'Define the poster images Transcoder should generate for each queued video.'|t('transcoder'),
+        warning: macros.configWarning('videoPosterFormats', 'transcoder'),
+        id: 'videoPosterFormats',
+        name: 'videoPosterFormats',
+        cols: {
+            handle: {
+                type: 'singleline',
+                heading: 'Handle'|t('transcoder'),
+                placeholder: '16_9',
+            },
+            width: {
+                type: 'number',
+                heading: 'Width'|t('transcoder'),
+                placeholder: '800',
+            },
+            height: {
+                type: 'number',
+                heading: 'Height'|t('transcoder'),
+                placeholder: '450',
+            },
+            timeInSecs: {
+                type: 'number',
+                heading: 'Time'|t('transcoder'),
+                placeholder: '3',
+            },
+        },
+        rows: craft.transcoder.getVideoPosterFormatRows(),
+        allowAdd: true,
+        allowReorder: true,
+        allowDelete: true,
+    }) }}
+</div>
+
+<div id="gif" class="hidden">
+    {{ forms.lightswitchField({
+        label: 'Enable GIF encoding'|t('transcoder'),
+        instructions: 'Allow Transcoder to convert GIF assets to mp4 files.'|t('transcoder'),
+        warning: macros.configWarning('enableGifEncoding', 'transcoder'),
+        id: 'enableGifEncoding',
+        name: 'enableGifEncoding',
+        on: settings.enableGifEncoding,
+    }) }}
+
+    {{ forms.lightswitchField({
+        label: 'Queue GIFs on entry save'|t('transcoder'),
+        instructions: 'Queue GIF encoding when entries are saved instead of starting ffmpeg from templates.'|t('transcoder'),
+        warning: macros.configWarning('queueGifsOnEntrySave', 'transcoder'),
+        id: 'queueGifsOnEntrySave',
+        name: 'queueGifsOnEntrySave',
+        on: settings.queueGifsOnEntrySave,
+    }) }}
+
+    {{ forms.textField({
+        label: 'GIF queue delay'|t('transcoder'),
+        instructions: 'Seconds to delay each queued GIF job after the previous one. This spreads large batches over time and helps avoid overloading the server.'|t('transcoder'),
+        warning: macros.configWarning('gifQueueDelaySeconds', 'transcoder'),
+        id: 'gifQueueDelaySeconds',
+        name: 'gifQueueDelaySeconds',
+        value: settings.gifQueueDelaySeconds,
+        type: 'number',
+        min: 0,
+        size: 5,
+    }) }}
+</div>

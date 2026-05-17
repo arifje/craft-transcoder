@@ -63,6 +63,9 @@ return [
     // Determines whether video poster generation should be enabled
     'enableVideoPosters' => true,
 
+    // Determines whether GIF to mp4 encoding should be enabled
+    'enableGifEncoding' => true,
+
     // Use a md5 hash for the filenames instead of parameterized naming
     'useHashedNames' => false,
 
@@ -87,6 +90,18 @@ return [
 
     // Extra options recorded with queued encodes, for example ['watermark' => true]
     'autoEncodeEncodingOptions' => [],
+
+    // Queue GIF encoding when entries are saved
+    'queueGifsOnEntrySave' => false,
+
+    // Entry field handles to inspect for GIF assets. Leave empty to inspect all custom fields recursively
+    'autoEncodeGifFieldHandles' => [],
+
+    // Default GIF options used when an entry save queues encoding
+    'autoEncodeGifOptions' => [],
+
+    // Seconds to delay each queued GIF job after the previous one
+    'gifQueueDelaySeconds' => 15,
 
     // Poster formats generated when videos are queued
     'videoPosterFormats' => [
