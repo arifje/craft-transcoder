@@ -286,7 +286,7 @@ class Settings extends Model
                 unset($config['transcoderPath']);
             }
             if (isset($config['transcoderUrl'])) {
-                $config['$transcoderUrls']['default'] = $config['transcoderUrl'];
+                $config['transcoderUrls']['default'] = $config['transcoderUrl'];
                 unset($config['transcoderUrl']);
             }
         }
@@ -308,8 +308,6 @@ class Settings extends Model
             ['ffprobePath', 'required'],
             ['ffprobeOptions', 'string'],
             ['ffprobeOptions', 'safe'],
-            ['transcoderPath', 'string'],
-            ['transcoderPath', 'required'],
             ['transcoderPaths', ArrayValidator::class],
             ['transcoderPaths', 'required'],
             ['transcoderUrls', ArrayValidator::class],
