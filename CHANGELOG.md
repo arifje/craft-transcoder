@@ -2,7 +2,7 @@
 
 ## 4.3.0 - 2026.05.17
 ### Added
-* Add queue-based GIF encoding on entry save with queue-aware Twig status helpers.
+* Add queue-based GIF encoding with queue-aware Twig status helpers.
 * Add GIF settings tab with controls for enabling GIF encoding and spreading queued jobs over time.
 
 ## 4.2.0 - 2026.05.17
@@ -12,8 +12,8 @@
 
 ## 4.1.0 - 2026.05.15
 ### Added
-* Add queue-based video encoding on entry save, with queue-aware Twig status helpers and a polling endpoint.
-* Add Control Panel settings for the download endpoint and entry-save queueing toggles.
+* Add queue-based video encoding with queue-aware Twig status helpers and a polling endpoint.
+* Add Control Panel settings for the download endpoint and asset-upload queueing toggles.
 * Add a setting to disable video encoding while keeping original video playback available.
 
 ## 4.0.2 - 2024.09.30

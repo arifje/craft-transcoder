@@ -79,25 +79,25 @@ return [
     // Add the Clear Caches utility to the CP?
     'clearCaches' => false,
 
-    // Queue video encoding when entries are saved. Requires enableVideoEncoding to be true
+    // Queue video encoding when new video assets are uploaded. Requires enableVideoEncoding to be true
     'queueVideosOnEntrySave' => false,
 
-    // Entry field handles to inspect for video assets. Leave empty to inspect all custom fields recursively
+    // Legacy entry field handles to inspect for video assets when queueing entries manually
     'autoEncodeVideoFieldHandles' => [],
 
-    // Default video options used when an entry save queues encoding
+    // Default video options used when an asset upload queues encoding
     'autoEncodeVideoOptions' => [],
 
     // Extra options recorded with queued encodes, for example ['watermark' => true]
     'autoEncodeEncodingOptions' => [],
 
-    // Queue GIF encoding when entries are saved
+    // Queue GIF encoding when new GIF assets are uploaded
     'queueGifsOnEntrySave' => false,
 
-    // Entry field handles to inspect for GIF assets. Leave empty to inspect all custom fields recursively
+    // Legacy entry field handles to inspect for GIF assets when queueing entries manually
     'autoEncodeGifFieldHandles' => [],
 
-    // Default GIF options used when an entry save queues encoding
+    // Default GIF options used when an asset upload queues encoding
     'autoEncodeGifOptions' => [],
 
     // Seconds to delay each queued GIF job after the previous one

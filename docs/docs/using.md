@@ -200,7 +200,7 @@ The file format setting `audioEncoder` is preset to what you’ll need to genera
 
 ## Generating an Encoded GIF Video
 
-When GIF encoding is queued on entry save, templates should read the current status rather than start the encoding process:
+When GIF encoding is queued on asset upload, templates should read the current status rather than start the encoding process:
 
 ```twig
 {% set gifOptions = {} %}
@@ -269,7 +269,7 @@ You can use this information to provide a progress bar via JavaScript or from a 
 
 ## Polling Queued Video Status
 
-When video encoding is queued on entry save, templates should read the current status rather than start the encoding process.
+When video encoding is queued on asset upload, templates should read the current status rather than start the encoding process.
 
 ```twig
 {% set videoOptions = {} %}

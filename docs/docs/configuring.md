@@ -17,9 +17,9 @@ To install `ffmpeg` on Centos 6/7, you can follow the guide [How to Install FFmp
 
 If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.
 
-## Queueing Media on Entry Save
+## Queueing Media on Asset Upload
 
-Transcoder can queue video encoding, poster generation, and GIF encoding when an entry is saved, so templates do not have to trigger ffmpeg work.
+Transcoder can queue video encoding, poster generation, and GIF encoding when a new asset is uploaded, so templates do not have to trigger ffmpeg work.
 
 The `enableVideoEncoding`, `enableVideoPosters`, `enableGifEncoding`, `enableDownloadFileEndpoint`, `queueVideosOnEntrySave`, `queueGifsOnEntrySave`, `gifQueueDelaySeconds`, and `videoPosterFormats` settings can also be managed from the plugin’s Control Panel settings screen. Values defined in `config/transcoder.php` take precedence over values saved from the Control Panel.
 
@@ -38,25 +38,12 @@ return [
     'queueVideosOnEntrySave' => true,
     'queueGifsOnEntrySave' => true,
 
-    // Optional: limit scanning to these entry field handles.
-    // Leave empty to inspect all custom fields recursively, including Matrix blocks.
-    'autoEncodeVideoFieldHandles' => [
-        'contentBuilder',
-        'video',
-    ],
-
     // Options passed to getVideoUrl() by the queue job.
     'autoEncodeVideoOptions' => [],
 
     // Extra options recorded with the status key.
     'autoEncodeEncodingOptions' => [
         'watermark' => true,
-    ],
-
-    // Optional: limit GIF scanning to these entry field handles.
-    // Leave empty to inspect all custom fields recursively, including Matrix blocks.
-    'autoEncodeGifFieldHandles' => [
-        'contentBuilder',
     ],
 
     // Options passed to getGifUrl() by the queue job.
@@ -78,8 +65,8 @@ return [
 ];
 ```
 
-When queueing is enabled, Transcoder listens for saved entries, finds matching video and GIF assets in the configured fields, and adds encoding jobs to Craft’s queue. Video jobs encode video when `enableVideoEncoding` is enabled and generate configured posters when `enableVideoPosters` is enabled.
+When queueing is enabled, Transcoder listens for newly saved assets and adds encoding jobs to Craft’s queue when the asset MIME type matches. Video jobs only start for `video/*` assets, and GIF jobs only start for `image/gif` assets. Video jobs encode video when `enableVideoEncoding` is enabled and generate configured posters when `enableVideoPosters` is enabled.
 
-GIF jobs are intentionally load-spread. If an entry contains many GIFs, each queued GIF job is delayed by `gifQueueDelaySeconds` after the previous one. With the default value of `15`, 40 GIFs are scheduled across roughly 10 minutes instead of starting all at once. Make sure your production environment has a queue worker or queue runner configured, otherwise queued work will only run when Craft processes queued jobs.
+GIF jobs can be delayed with `gifQueueDelaySeconds` to avoid starting immediately after upload. Make sure your production environment has a queue worker or queue runner configured, otherwise queued work will only run when Craft processes queued jobs.
 
 Brought to you by [nystudio107](https://nystudio107.com)

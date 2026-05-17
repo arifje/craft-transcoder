@@ -473,6 +473,43 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Queue media work for a newly uploaded asset.
+	 *
+	 * @param Asset $asset
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function queueMediaForAsset(Asset $asset): array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$statuses = [];
+
+		if (($settings->enableVideoEncoding || $settings->enableVideoPosters)
+			&& $settings->queueVideosOnEntrySave
+			&& $this->isVideoAsset($asset)
+		) {
+			$statuses['video'] = $this->queueVideoEncode(
+				$asset,
+				$settings['autoEncodeVideoOptions'] ?? [],
+				$settings['autoEncodeEncodingOptions'] ?? []
+			);
+		}
+
+		if ($settings->enableGifEncoding
+			&& $settings->queueGifsOnEntrySave
+			&& $this->isGifAsset($asset)
+		) {
+			$statuses['gif'] = $this->queueGifEncode(
+				$asset,
+				$settings['autoEncodeGifOptions'] ?? [],
+				max(0, (int)$settings->gifQueueDelaySeconds)
+			);
+		}
+
+		return $statuses;
+	}
+
+	/**
 	 * Queue GIF encodes for all GIF assets found on an element.
 	 *
 	 * @param ElementInterface $element

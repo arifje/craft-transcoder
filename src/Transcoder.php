@@ -15,10 +15,8 @@ use craft\base\Model;
 use craft\base\Plugin;
 use craft\console\Application as ConsoleApplication;
 use craft\elements\Asset;
-use craft\elements\Entry;
-use craft\events\BatchElementActionEvent;
 use craft\events\DefineAssetThumbUrlEvent;
-use craft\events\ElementEvent;
+use craft\events\ModelEvent;
 use craft\events\PluginEvent;
 use craft\events\RegisterCacheOptionsEvent;
 use craft\events\RegisterUrlRulesEvent;
@@ -27,7 +25,6 @@ use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\FileHelper;
 use craft\helpers\UrlHelper;
 use craft\services\Assets;
-use craft\services\Elements;
 use craft\services\Plugins;
 use craft\utilities\ClearCaches;
 use craft\web\twig\variables\CraftVariable;
@@ -261,74 +258,29 @@ class Transcoder extends Plugin
             );
         }
         Event::on(
-            Elements::class,
-            Elements::EVENT_AFTER_PROPAGATE_ELEMENT,
-            function (BatchElementActionEvent $event) {
+            Asset::class,
+            Asset::EVENT_AFTER_SAVE,
+            function (ModelEvent $event) {
                 $settings = $this->getSettings();
                 if (!$settings->queueVideosOnEntrySave && !$settings->queueGifsOnEntrySave) {
                     return;
                 }
 
-                $element = $event->element;
-                if (!$element instanceof Entry) {
-                    return;
-                }
-                if (method_exists($element, 'getIsRevision') && $element->getIsRevision()) {
+                $asset = $event->sender;
+                if (!$event->isNew || !$asset instanceof Asset) {
                     return;
                 }
 
-                $queuedVideos = 0;
-                if (($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave) {
-                    $queuedVideos = $this->transcode->queueVideoEncodesForElement($element);
-                }
-                if ($queuedVideos > 0) {
+                $statuses = $this->transcode->queueMediaForAsset($asset);
+                foreach ($statuses as $mediaType => $status) {
                     Craft::info(
                         Craft::t(
                             'transcoder',
-                            'Queued {count} video encode(s) for entry {id}',
+                            'Queued {mediaType} encode for asset {id}: {status}',
                             [
-                                'count' => $queuedVideos,
-                                'id' => $element->id,
-                            ]
-                        ),
-                        __METHOD__
-                    );
-                } elseif (($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave) {
-                    Craft::info(
-                        Craft::t(
-                            'transcoder',
-                            'No video assets found to queue for entry {id}',
-                            [
-                                'id' => $element->id,
-                            ]
-                        ),
-                        __METHOD__
-                    );
-                }
-
-                $queuedGifs = 0;
-                if ($settings->enableGifEncoding && $settings->queueGifsOnEntrySave) {
-                    $queuedGifs = $this->transcode->queueGifEncodesForElement($element);
-                }
-                if ($queuedGifs > 0) {
-                    Craft::info(
-                        Craft::t(
-                            'transcoder',
-                            'Queued {count} GIF encode(s) for entry {id}',
-                            [
-                                'count' => $queuedGifs,
-                                'id' => $element->id,
-                            ]
-                        ),
-                        __METHOD__
-                    );
-                } elseif ($settings->enableGifEncoding && $settings->queueGifsOnEntrySave) {
-                    Craft::info(
-                        Craft::t(
-                            'transcoder',
-                            'No GIF assets found to queue for entry {id}',
-                            [
-                                'id' => $element->id,
+                                'mediaType' => $mediaType,
+                                'id' => $asset->id,
+                                'status' => $status['status'] ?? 'unknown',
                             ]
                         ),
                         __METHOD__

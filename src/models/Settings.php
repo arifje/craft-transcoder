@@ -125,7 +125,7 @@ class Settings extends Model
     public bool $clearCaches = false;
 
     /**
-     * Queue video encoding when entries are saved.
+     * Queue video encoding when new video assets are uploaded.
      *
      * @var bool
      */
@@ -140,7 +140,7 @@ class Settings extends Model
     public array $autoEncodeVideoFieldHandles = [];
 
     /**
-     * Default options used when an entry save queues video encoding.
+     * Default options used when an asset upload queues video encoding.
      *
      * @var array
      */
@@ -155,7 +155,7 @@ class Settings extends Model
     public array $autoEncodeEncodingOptions = [];
 
     /**
-     * Queue GIF encoding when entries are saved.
+     * Queue GIF encoding when new GIF assets are uploaded.
      *
      * @var bool
      */
@@ -170,7 +170,7 @@ class Settings extends Model
     public array $autoEncodeGifFieldHandles = [];
 
     /**
-     * Default options used when an entry save queues GIF encoding.
+     * Default options used when an asset upload queues GIF encoding.
      *
      * @var array
      */
