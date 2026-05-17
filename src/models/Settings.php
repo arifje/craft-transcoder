@@ -129,6 +129,13 @@ class Settings extends Model
      *
      * @var bool
      */
+    public bool $queueVideosOnSave = false;
+
+    /**
+     * Deprecated alias for queueVideosOnSave.
+     *
+     * @var bool
+     */
     public bool $queueVideosOnEntrySave = false;
 
     /**
@@ -156,6 +163,13 @@ class Settings extends Model
 
     /**
      * Queue GIF encoding when new GIF assets are uploaded.
+     *
+     * @var bool
+     */
+    public bool $queueGifsOnSave = false;
+
+    /**
+     * Deprecated alias for queueGifsOnSave.
      *
      * @var bool
      */
@@ -376,11 +390,11 @@ class Settings extends Model
             ['useHashedNames', 'boolean'],
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
-            ['queueVideosOnEntrySave', 'boolean'],
+            [['queueVideosOnSave', 'queueVideosOnEntrySave'], 'boolean'],
             ['autoEncodeVideoFieldHandles', ArrayValidator::class],
             ['autoEncodeVideoOptions', ArrayValidator::class],
             ['autoEncodeEncodingOptions', ArrayValidator::class],
-            ['queueGifsOnEntrySave', 'boolean'],
+            [['queueGifsOnSave', 'queueGifsOnEntrySave'], 'boolean'],
             ['autoEncodeGifFieldHandles', ArrayValidator::class],
             ['autoEncodeGifOptions', ArrayValidator::class],
             ['gifQueueDelaySeconds', 'integer'],

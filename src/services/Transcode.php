@@ -484,10 +484,7 @@ class Transcode extends Component
 		$settings = Transcoder::$plugin->getSettings();
 		$statuses = [];
 
-		if (($settings->enableVideoEncoding || $settings->enableVideoPosters)
-			&& $settings->queueVideosOnEntrySave
-			&& $this->isVideoAsset($asset)
-		) {
+		if ($this->isVideoQueueEnabled() && $this->isVideoAsset($asset)) {
 			$statuses['video'] = $this->queueVideoEncode(
 				$asset,
 				$settings['autoEncodeVideoOptions'] ?? [],
@@ -495,10 +492,7 @@ class Transcode extends Component
 			);
 		}
 
-		if ($settings->enableGifEncoding
-			&& $settings->queueGifsOnEntrySave
-			&& $this->isGifAsset($asset)
-		) {
+		if ($this->isGifQueueEnabled() && $this->isGifAsset($asset)) {
 			$statuses['gif'] = $this->queueGifEncode(
 				$asset,
 				$settings['autoEncodeGifOptions'] ?? [],
@@ -507,6 +501,32 @@ class Transcode extends Component
 		}
 
 		return $statuses;
+	}
+
+	/**
+	 * Returns whether video queueing is enabled.
+	 *
+	 * @return bool
+	 */
+	public function isVideoQueueEnabled(): bool
+	{
+		$settings = Transcoder::$plugin->getSettings();
+
+		return ($settings->queueVideosOnSave || $settings->queueVideosOnEntrySave)
+			&& ($settings->enableVideoEncoding || $settings->enableVideoPosters);
+	}
+
+	/**
+	 * Returns whether GIF queueing is enabled.
+	 *
+	 * @return bool
+	 */
+	public function isGifQueueEnabled(): bool
+	{
+		$settings = Transcoder::$plugin->getSettings();
+
+		return ($settings->queueGifsOnSave || $settings->queueGifsOnEntrySave)
+			&& $settings->enableGifEncoding;
 	}
 
 	/**

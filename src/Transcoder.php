@@ -261,13 +261,12 @@ class Transcoder extends Plugin
             Asset::class,
             Asset::EVENT_AFTER_SAVE,
             function (ModelEvent $event) {
-                $settings = $this->getSettings();
-                if (!$settings->queueVideosOnEntrySave && !$settings->queueGifsOnEntrySave) {
+                if (!$this->transcode->isVideoQueueEnabled() && !$this->transcode->isGifQueueEnabled()) {
                     return;
                 }
 
                 $asset = $event->sender;
-                if (!$event->isNew || !$asset instanceof Asset) {
+                if (!$asset instanceof Asset) {
                     return;
                 }
 

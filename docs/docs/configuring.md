@@ -21,7 +21,7 @@ If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.
 
 Transcoder can queue video encoding, poster generation, and GIF encoding when a new asset is uploaded, so templates do not have to trigger ffmpeg work.
 
-The `enableVideoEncoding`, `enableVideoPosters`, `enableGifEncoding`, `enableDownloadFileEndpoint`, `queueVideosOnEntrySave`, `queueGifsOnEntrySave`, `gifQueueDelaySeconds`, and `videoPosterFormats` settings can also be managed from the plugin’s Control Panel settings screen. Values defined in `config/transcoder.php` take precedence over values saved from the Control Panel.
+The `enableVideoEncoding`, `enableVideoPosters`, `enableGifEncoding`, `enableDownloadFileEndpoint`, `queueVideosOnSave`, `queueGifsOnSave`, `gifQueueDelaySeconds`, and `videoPosterFormats` settings can also be managed from the plugin’s Control Panel settings screen. Values defined in `config/transcoder.php` take precedence over values saved from the Control Panel.
 
 ```php
 return [
@@ -35,8 +35,8 @@ return [
     'enableGifEncoding' => true,
 
     'enableDownloadFileEndpoint' => false,
-    'queueVideosOnEntrySave' => true,
-    'queueGifsOnEntrySave' => true,
+    'queueVideosOnSave' => true,
+    'queueGifsOnSave' => true,
 
     // Options passed to getVideoUrl() by the queue job.
     'autoEncodeVideoOptions' => [],

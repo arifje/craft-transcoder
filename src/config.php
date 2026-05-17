@@ -80,7 +80,7 @@ return [
     'clearCaches' => false,
 
     // Queue video encoding when new video assets are uploaded. Requires enableVideoEncoding to be true
-    'queueVideosOnEntrySave' => false,
+    'queueVideosOnSave' => false,
 
     // Legacy entry field handles to inspect for video assets when queueing entries manually
     'autoEncodeVideoFieldHandles' => [],
@@ -92,7 +92,7 @@ return [
     'autoEncodeEncodingOptions' => [],
 
     // Queue GIF encoding when new GIF assets are uploaded
-    'queueGifsOnEntrySave' => false,
+    'queueGifsOnSave' => false,
 
     // Legacy entry field handles to inspect for GIF assets when queueing entries manually
     'autoEncodeGifFieldHandles' => [],

@@ -55,10 +55,7 @@ class TranscoderVariable implements ViteVariableInterface
      */
     public function isVideoQueueEnabled(): bool
     {
-        $settings = Transcoder::$plugin->getSettings();
-
-        return (bool)$settings->queueVideosOnEntrySave
-            && ($settings->enableVideoEncoding || $settings->enableVideoPosters);
+        return Transcoder::$plugin->transcode->isVideoQueueEnabled();
     }
 
     /**
@@ -78,9 +75,7 @@ class TranscoderVariable implements ViteVariableInterface
      */
     public function isGifQueueEnabled(): bool
     {
-        $settings = Transcoder::$plugin->getSettings();
-
-        return (bool)$settings->queueGifsOnEntrySave && $settings->enableGifEncoding;
+        return Transcoder::$plugin->transcode->isGifQueueEnabled();
     }
 
     /**
