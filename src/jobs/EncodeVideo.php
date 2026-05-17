@@ -92,14 +92,23 @@ class EncodeVideo extends BaseJob
         } catch (Throwable $e) {
             Craft::error($e->getMessage(), __METHOD__);
             if (Transcoder::$plugin->getSettings()->enableVideoEncoding) {
+                $status = [
+                    'status' => 'error',
+                    'url' => '',
+                    'error' => $e->getMessage(),
+                ];
+                try {
+                    $currentStatus = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
+                    if (($currentStatus['status'] ?? null) === 'error') {
+                        $status = array_merge($currentStatus, $status);
+                    }
+                } catch (Throwable) {
+                }
+
                 Transcoder::$plugin->transcode->writeVideoStatus(
                     $asset,
                     $this->videoOptions,
-                    [
-                        'status' => 'error',
-                        'url' => '',
-                        'error' => $e->getMessage(),
-                    ],
+                    $status,
                     $this->encodingOptions
                 );
             }
@@ -124,7 +133,7 @@ class EncodeVideo extends BaseJob
         }
 
         if (($initialStatus['status'] ?? null) === 'error') {
-            throw new \RuntimeException($initialStatus['error'] ?? Craft::t('transcoder', 'Video encoding failed'));
+            throw new \RuntimeException($this->formatErrorMessage($initialStatus));
         }
 
         $deadline = time() + self::TIMEOUT_SECONDS;
@@ -140,7 +149,7 @@ class EncodeVideo extends BaseJob
             }
 
             if ($state === 'error') {
-                throw new \RuntimeException($status['error'] ?? Craft::t('transcoder', 'Video encoding failed'));
+                throw new \RuntimeException($this->formatErrorMessage($status));
             }
 
             Transcoder::$plugin->transcode->writeVideoStatus($asset, $this->videoOptions, $status, $this->encodingOptions);
@@ -154,6 +163,27 @@ class EncodeVideo extends BaseJob
         }
 
         throw new \RuntimeException(Craft::t('transcoder', 'Video encoding timed out'));
+    }
+
+    /**
+     * Format a queue-visible error message with ffmpeg debug details.
+     *
+     * @param array $status
+     * @return string
+     */
+    protected function formatErrorMessage(array $status): string
+    {
+        $message = $status['error'] ?? Craft::t('transcoder', 'Video encoding failed');
+
+        if (!empty($status['ffmpegCommand'])) {
+            $message .= "\n\nFFmpeg command:\n" . $status['ffmpegCommand'];
+        }
+
+        if (!empty($status['ffmpegLog'])) {
+            $message .= "\n\nFFmpeg log:\n" . $status['ffmpegLog'];
+        }
+
+        return $message;
     }
 
     /**
