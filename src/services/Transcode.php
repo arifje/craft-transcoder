@@ -1449,12 +1449,22 @@ class Transcode extends Component
 	 *
 	 * @param Asset|string $filePath
 	 * @param array $gifOptions
+	 * @param bool $queueIfMissing
 	 * @return string
 	 * @throws InvalidConfigException
 	 */
-	public function getGifStatus(Asset|string $filePath, array $gifOptions = []): string
+	public function getGifStatus(Asset|string $filePath, array $gifOptions = [], bool $queueIfMissing = false): string
 	{
-		return JsonHelper::encode($this->getGifStatusData($filePath, $gifOptions));
+		$status = $this->getGifStatusData($filePath, $gifOptions);
+		if ($queueIfMissing
+			&& $filePath instanceof Asset
+			&& ($status['status'] ?? null) === 'pending'
+		) {
+			$settings = Transcoder::$plugin->getSettings();
+			$status = $this->queueGifEncode($filePath, $gifOptions, max(0, (int)$settings->gifQueueDelaySeconds));
+		}
+
+		return JsonHelper::encode($status);
 	}
 
 	/**
