@@ -169,7 +169,7 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 
-		$destVideoFile = $this->getFilename($filePathResolved ?? '', $videoOptions);
+		$destVideoFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $videoOptions);
 		$encodedFile   = $destVideoPath . $destVideoFile;
 		$publicUrl     = $urlBase . '/' . $destVideoFile;
 
@@ -707,6 +707,19 @@ class Transcode extends Component
 				$status['warning'] = 'Original video missing, serving encoded version';
 			}
 			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			return $this->sanitizeVideoStatus($status);
+		}
+
+		if (is_file($outputInfo['lockFile']) && !$this->isProcessRunningFromLockFile($outputInfo['lockFile'])) {
+			@unlink($outputInfo['lockFile']);
+			$status = [
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+				'error' => 'Encoding failed due to a server error (process crashed, ffmpeg error)',
+			];
+			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			Craft::error('Transcoder: ffmpeg process died unexpectedly for ' . ($outputInfo['source'] ?? 'unknown'), __METHOD__);
 			return $this->sanitizeVideoStatus($status);
 		}
 
@@ -1542,6 +1555,19 @@ class Transcode extends Component
 			return $this->sanitizeVideoStatus($status);
 		}
 
+		if (is_file($outputInfo['lockFile']) && !$this->isProcessRunningFromLockFile($outputInfo['lockFile'])) {
+			@unlink($outputInfo['lockFile']);
+			$status = [
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+				'error' => 'GIF encoding failed due to a server error (process crashed, ffmpeg error)',
+			];
+			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			Craft::error('Transcoder: ffmpeg process died unexpectedly for GIF ' . ($outputInfo['source'] ?? 'unknown'), __METHOD__);
+			return $this->sanitizeVideoStatus($status);
+		}
+
 		if (is_file($outputInfo['lockFile'])) {
 			$status = array_merge(
 				[
@@ -1769,7 +1795,7 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
 		$gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 	
-		$destGifFile = $this->getFilename($filePathResolved ?? '', $gifOptions);
+		$destGifFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $gifOptions);
 		$encodedFile = $destGifPath . $destGifFile;
 		$publicUrl   = $urlBase . '/' . $destGifFile;
 	

@@ -16,6 +16,7 @@ use craft\base\Plugin;
 use craft\console\Application as ConsoleApplication;
 use craft\elements\Asset;
 use craft\events\DefineAssetThumbUrlEvent;
+use craft\events\ElementEvent;
 use craft\events\ModelEvent;
 use craft\events\PluginEvent;
 use craft\events\RegisterCacheOptionsEvent;
@@ -25,6 +26,7 @@ use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\FileHelper;
 use craft\helpers\UrlHelper;
 use craft\services\Assets;
+use craft\services\Elements;
 use craft\services\Plugins;
 use craft\utilities\ClearCaches;
 use craft\web\twig\variables\CraftVariable;
@@ -63,6 +65,13 @@ class Transcoder extends Plugin
      * @var null|Settings
      */
     public static ?Settings $settings;
+
+    /**
+     * Asset IDs already inspected for queueing in the current request.
+     *
+     * @var array<int, bool>
+     */
+    protected array $queuedAssetSaveChecks = [];
 
     // Public Properties
     // =========================================================================
@@ -261,30 +270,24 @@ class Transcoder extends Plugin
             Asset::class,
             Asset::EVENT_AFTER_SAVE,
             function (ModelEvent $event) {
-                if (!$this->transcode->isVideoQueueEnabled() && !$this->transcode->isGifQueueEnabled()) {
-                    return;
-                }
-
                 $asset = $event->sender;
                 if (!$asset instanceof Asset) {
                     return;
                 }
 
-                $statuses = $this->transcode->queueMediaForAsset($asset);
-                foreach ($statuses as $mediaType => $status) {
-                    Craft::info(
-                        Craft::t(
-                            'transcoder',
-                            'Queued {mediaType} encode for asset {id}: {status}',
-                            [
-                                'mediaType' => $mediaType,
-                                'id' => $asset->id,
-                                'status' => $status['status'] ?? 'unknown',
-                            ]
-                        ),
-                        __METHOD__
-                    );
+                $this->queueMediaForSavedAsset($asset);
+            }
+        );
+        Event::on(
+            Elements::class,
+            Elements::EVENT_AFTER_SAVE_ELEMENT,
+            function (ElementEvent $event) {
+                $asset = $event->element;
+                if (!$asset instanceof Asset) {
+                    return;
                 }
+
+                $this->queueMediaForSavedAsset($asset);
             }
         );
         // Handler: Plugins::EVENT_AFTER_INSTALL_PLUGIN
@@ -328,6 +331,41 @@ class Transcoder extends Plugin
                 );
             }
         );
+    }
+
+    /**
+     * Queue missing media encodes for a saved asset.
+     *
+     * @param Asset $asset
+     * @return void
+     */
+    protected function queueMediaForSavedAsset(Asset $asset): void
+    {
+        if (!$asset->id || isset($this->queuedAssetSaveChecks[$asset->id])) {
+            return;
+        }
+
+        $this->queuedAssetSaveChecks[$asset->id] = true;
+
+        if (!$this->transcode->isVideoQueueEnabled() && !$this->transcode->isGifQueueEnabled()) {
+            return;
+        }
+
+        $statuses = $this->transcode->queueMediaForAsset($asset);
+        foreach ($statuses as $mediaType => $status) {
+            Craft::info(
+                Craft::t(
+                    'transcoder',
+                    'Queued {mediaType} encode for asset {id}: {status}',
+                    [
+                        'mediaType' => $mediaType,
+                        'id' => $asset->id,
+                        'status' => $status['status'] ?? 'unknown',
+                    ]
+                ),
+                __METHOD__
+            );
+        }
     }
 
     /**
