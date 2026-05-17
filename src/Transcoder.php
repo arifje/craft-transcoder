@@ -21,6 +21,7 @@ use craft\events\ElementEvent;
 use craft\events\PluginEvent;
 use craft\events\RegisterCacheOptionsEvent;
 use craft\events\RegisterUrlRulesEvent;
+use craft\events\TemplateEvent;
 use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\FileHelper;
 use craft\helpers\UrlHelper;
@@ -30,6 +31,7 @@ use craft\services\Plugins;
 use craft\utilities\ClearCaches;
 use craft\web\twig\variables\CraftVariable;
 use craft\web\UrlManager;
+use craft\web\View;
 use nystudio107\transcoder\models\Settings;
 use nystudio107\transcoder\services\ServicesTrait;
 use nystudio107\transcoder\variables\TranscoderVariable;
@@ -102,6 +104,8 @@ class Transcoder extends Plugin
         $this->addComponents();
         // Install our global event handlers
         $this->installEventHandlers();
+        // Register settings page tabs
+        $this->registerSettingsTabs();
         // We've loaded!
         Craft::info(
             Craft::t(
@@ -185,6 +189,34 @@ class Transcoder extends Plugin
                     'class' => TranscoderVariable::class,
                     'viteService' => $this->vite,
                 ]);
+            }
+        );
+    }
+
+    /**
+     * Register Craft CP tabs for the plugin settings page.
+     */
+    protected function registerSettingsTabs(): void
+    {
+        Event::on(
+            View::class,
+            View::EVENT_BEFORE_RENDER_TEMPLATE,
+            function (TemplateEvent $event) {
+                if (
+                    $event->template === 'settings/plugins/_settings.twig'
+                    && ($event->variables['plugin']->handle ?? null) === $this->handle
+                ) {
+                    $event->variables['tabs'] = [
+                        [
+                            'label' => Craft::t('transcoder', 'Video'),
+                            'url' => '#settings-tab-video',
+                        ],
+                        [
+                            'label' => Craft::t('transcoder', 'GIF'),
+                            'url' => '#settings-tab-gif',
+                        ],
+                    ];
+                }
             }
         );
     }

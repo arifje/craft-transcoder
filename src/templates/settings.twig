@@ -4,20 +4,7 @@
 {% import '_includes/forms' as forms %}
 {% import 'transcoder/_includes/macros.twig' as macros %}
 
-{% set tabs = {
-    video: {
-        label: 'Video'|t('transcoder'),
-        url: '#video',
-    },
-    gif: {
-        label: 'GIF'|t('transcoder'),
-        url: '#gif',
-    },
-} %}
-
-{% include '_includes/tabs' with { tabs: tabs, selectedTab: 'video' } only %}
-
-<div id="video">
+<div id="tab-video">
     {{ forms.lightswitchField({
         label: 'Enable video encoding'|t('transcoder'),
         instructions: 'Allow Transcoder to encode videos from Twig calls and queued entry saves. Disable this to serve original videos while keeping other plugin helpers available.'|t('transcoder'),
@@ -89,7 +76,7 @@
     }) }}
 </div>
 
-<div id="gif" class="hidden">
+<div id="tab-gif" class="hidden">
     {{ forms.lightswitchField({
         label: 'Enable GIF encoding'|t('transcoder'),
         instructions: 'Allow Transcoder to convert GIF assets to mp4 files.'|t('transcoder'),
