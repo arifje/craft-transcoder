@@ -227,7 +227,7 @@ class Transcode extends Component
 						]);
 					}
 
-					@unlink($lockFile);
+					$this->removeEncodeTempFiles($lockFile, $progressFile);
 					Craft::error("Transcoder: ffmpeg process $pid died unexpectedly for $filePathResolved", __METHOD__);
 					return JsonHelper::encode([
 						'status' => 'error',
@@ -240,7 +240,7 @@ class Transcode extends Component
 				if (file_exists($progressFile)) {
 					$lastUpdate = filemtime($progressFile);
 					if ($lastUpdate && (time() - $lastUpdate > 60)) {
-						@unlink($lockFile);
+						$this->removeEncodeTempFiles($lockFile, $progressFile);
 						Craft::error("Transcoder: ffmpeg stalled for $filePathResolved", __METHOD__);
 						return JsonHelper::encode([
 							'status' => 'error',
@@ -710,8 +710,8 @@ class Transcode extends Component
 			return $this->sanitizeVideoStatus($status);
 		}
 
-		if (is_file($outputInfo['lockFile']) && !$this->isProcessRunningFromLockFile($outputInfo['lockFile'])) {
-			@unlink($outputInfo['lockFile']);
+		if ($this->isEncodeLockStale($outputInfo['lockFile'], $outputInfo['progressFile'])) {
+			$this->removeEncodeTempFiles($outputInfo['lockFile'], $outputInfo['progressFile']);
 			$status = [
 				'status' => 'error',
 				'url' => '',
@@ -737,6 +737,20 @@ class Transcode extends Component
 		}
 
 		if (!empty($storedStatus) && ($storedStatus['status'] ?? null) === 'ok') {
+			$storedStatus = [];
+		}
+
+		if (!empty($storedStatus)
+			&& ($storedStatus['status'] ?? null) === 'encoding'
+			&& !is_file($outputInfo['encodedFile'])
+			&& !is_file($outputInfo['lockFile'])
+		) {
+			if (!empty($storedStatus['lockFile'])) {
+				@unlink($storedStatus['lockFile']);
+			}
+			if (!empty($storedStatus['progressFile'])) {
+				@unlink($storedStatus['progressFile']);
+			}
 			$storedStatus = [];
 		}
 
@@ -1555,8 +1569,8 @@ class Transcode extends Component
 			return $this->sanitizeVideoStatus($status);
 		}
 
-		if (is_file($outputInfo['lockFile']) && !$this->isProcessRunningFromLockFile($outputInfo['lockFile'])) {
-			@unlink($outputInfo['lockFile']);
+		if ($this->isEncodeLockStale($outputInfo['lockFile'], $outputInfo['progressFile'])) {
+			$this->removeEncodeTempFiles($outputInfo['lockFile'], $outputInfo['progressFile']);
 			$status = [
 				'status' => 'error',
 				'url' => '',
@@ -1582,6 +1596,20 @@ class Transcode extends Component
 		}
 
 		if (!empty($storedStatus) && ($storedStatus['status'] ?? null) === 'ok') {
+			$storedStatus = [];
+		}
+
+		if (!empty($storedStatus)
+			&& ($storedStatus['status'] ?? null) === 'encoding'
+			&& !is_file($outputInfo['encodedFile'])
+			&& !is_file($outputInfo['lockFile'])
+		) {
+			if (!empty($storedStatus['lockFile'])) {
+				@unlink($storedStatus['lockFile']);
+			}
+			if (!empty($storedStatus['progressFile'])) {
+				@unlink($storedStatus['progressFile']);
+			}
 			$storedStatus = [];
 		}
 
@@ -1640,19 +1668,28 @@ class Transcode extends Component
 
 		if (!empty($status['encodedFile']) && is_file($status['encodedFile']) && filesize($status['encodedFile']) > 0) {
 			$lockFile = $status['lockFile'] ?? null;
-			if (!$lockFile || !is_file($lockFile) || !$this->isProcessRunningFromLockFile($lockFile)) {
-				if ($lockFile) {
-					@unlink($lockFile);
-				}
-				if (!empty($status['progressFile'])) {
-					@unlink($status['progressFile']);
-				}
+			$progressFile = $status['progressFile'] ?? null;
+			if (!$lockFile || !is_file($lockFile) || $this->isEncodeLockStale($lockFile, $progressFile)) {
+				$this->removeEncodeTempFiles($lockFile, $progressFile);
 				$status['status'] = 'ok';
 				$status['url'] = $status['publicUrl'] ?? ($status['url'] ?? '');
 				$status['progress'] = 100;
 				$this->writeVideoStatusByKey($key, $status);
 				return $this->sanitizeVideoStatus($status);
 			}
+		}
+
+		if (($status['status'] ?? null) === 'encoding'
+			&& !empty($status['lockFile'])
+			&& $this->isEncodeLockStale($status['lockFile'], $status['progressFile'] ?? null)
+		) {
+			$this->removeEncodeTempFiles($status['lockFile'], $status['progressFile'] ?? null);
+			$status['status'] = 'error';
+			$status['url'] = '';
+			$status['progress'] = 0;
+			$status['error'] = 'Encoding failed due to a server error (process crashed, ffmpeg error)';
+			$this->writeVideoStatusByKey($key, $status);
+			return $this->sanitizeVideoStatus($status);
 		}
 
 		if (($status['filename'] ?? null) && ($status['status'] ?? null) === 'encoding') {
@@ -1837,7 +1874,7 @@ class Transcode extends Component
 						]);
 					}
 	
-					@unlink($lockFile);
+					$this->removeEncodeTempFiles($lockFile, $progressFile);
 					Craft::error("Transcoder: ffmpeg process $pid died unexpectedly for $filePathResolved", __METHOD__);
 					return JsonHelper::encode([
 						'status' => 'error',
@@ -1860,7 +1897,7 @@ class Transcode extends Component
 	
 					$lastUpdate = filemtime($progressFile);
 					if ($lastUpdate && (time() - $lastUpdate > 60)) {
-						@unlink($lockFile);
+						$this->removeEncodeTempFiles($lockFile, $progressFile);
 						Craft::error("Transcoder: ffmpeg stalled for $filePathResolved", __METHOD__);
 						return JsonHelper::encode([
 							'status' => 'error',
@@ -2236,19 +2273,28 @@ class Transcode extends Component
 
 		if (!empty($status['encodedFile']) && is_file($status['encodedFile']) && filesize($status['encodedFile']) > 0) {
 			$lockFile = $status['lockFile'] ?? null;
-			if (!$lockFile || !is_file($lockFile) || !$this->isProcessRunningFromLockFile($lockFile)) {
-				if ($lockFile) {
-					@unlink($lockFile);
-				}
-				if (!empty($status['progressFile'])) {
-					@unlink($status['progressFile']);
-				}
+			$progressFile = $status['progressFile'] ?? null;
+			if (!$lockFile || !is_file($lockFile) || $this->isEncodeLockStale($lockFile, $progressFile)) {
+				$this->removeEncodeTempFiles($lockFile, $progressFile);
 				$status['status'] = 'ok';
 				$status['url'] = $status['publicUrl'] ?? ($status['url'] ?? '');
 				$status['progress'] = 100;
 				$this->writeVideoStatusByKey($key, $status);
 				return $this->sanitizeVideoStatus($status);
 			}
+		}
+
+		if (($status['status'] ?? null) === 'encoding'
+			&& !empty($status['lockFile'])
+			&& $this->isEncodeLockStale($status['lockFile'], $status['progressFile'] ?? null)
+		) {
+			$this->removeEncodeTempFiles($status['lockFile'], $status['progressFile'] ?? null);
+			$status['status'] = 'error';
+			$status['url'] = '';
+			$status['progress'] = 0;
+			$status['error'] = 'GIF encoding failed due to a server error (process crashed, ffmpeg error)';
+			$this->writeVideoStatusByKey($key, $status);
+			return $this->sanitizeVideoStatus($status);
 		}
 
 		if (($status['filename'] ?? null) && ($status['status'] ?? null) === 'encoding') {
@@ -2633,6 +2679,46 @@ class Transcode extends Component
 		exec("kill -0 $pid 2>&1", $processState);
 
 		return count($processState) === 0;
+	}
+
+	/**
+	 * Return whether a lock/progress pair no longer belongs to an active encode.
+	 *
+	 * @param string|null $lockFile
+	 * @param string|null $progressFile
+	 * @return bool
+	 */
+	protected function isEncodeLockStale(?string $lockFile, ?string $progressFile = null): bool
+	{
+		if (!$lockFile || !is_file($lockFile)) {
+			return false;
+		}
+
+		if (!$this->isProcessRunningFromLockFile($lockFile)) {
+			return true;
+		}
+
+		$timestampFile = $progressFile && is_file($progressFile) ? $progressFile : $lockFile;
+		$lastUpdated = filemtime($timestampFile);
+
+		return $lastUpdated !== false && (time() - $lastUpdated) > 120;
+	}
+
+	/**
+	 * Remove temporary ffmpeg lock/progress files.
+	 *
+	 * @param string|null $lockFile
+	 * @param string|null $progressFile
+	 * @return void
+	 */
+	protected function removeEncodeTempFiles(?string $lockFile, ?string $progressFile = null): void
+	{
+		if ($lockFile) {
+			@unlink($lockFile);
+		}
+		if ($progressFile) {
+			@unlink($progressFile);
+		}
 	}
 
 	/**
