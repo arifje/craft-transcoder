@@ -259,63 +259,60 @@ class Transcoder extends Plugin
                 }
             );
         }
-        if ((($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave)
-            || ($settings->enableGifEncoding && $settings->queueGifsOnEntrySave)
-        ) {
-            Event::on(
-                Elements::class,
-                Elements::EVENT_AFTER_SAVE_ELEMENT,
-                function (ElementEvent $event) {
-                    $settings = $this->getSettings();
-                    $element = $event->element;
-                    if (!$element instanceof Entry) {
-                        return;
-                    }
-                    if (method_exists($element, 'getIsDraft') && $element->getIsDraft()) {
-                        return;
-                    }
-                    if (method_exists($element, 'getIsRevision') && $element->getIsRevision()) {
-                        return;
-                    }
-
-                    $queuedVideos = 0;
-                    if (($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave) {
-                        $queuedVideos = $this->transcode->queueVideoEncodesForElement($element);
-                    }
-                    if ($queuedVideos > 0) {
-                        Craft::info(
-                            Craft::t(
-                                'transcoder',
-                                'Queued {count} video encode(s) for entry {id}',
-                                [
-                                    'count' => $queuedVideos,
-                                    'id' => $element->id,
-                                ]
-                            ),
-                            __METHOD__
-                        );
-                    }
-
-                    $queuedGifs = 0;
-                    if ($settings->enableGifEncoding && $settings->queueGifsOnEntrySave) {
-                        $queuedGifs = $this->transcode->queueGifEncodesForElement($element);
-                    }
-                    if ($queuedGifs > 0) {
-                        Craft::info(
-                            Craft::t(
-                                'transcoder',
-                                'Queued {count} GIF encode(s) for entry {id}',
-                                [
-                                    'count' => $queuedGifs,
-                                    'id' => $element->id,
-                                ]
-                            ),
-                            __METHOD__
-                        );
-                    }
+        Event::on(
+            Elements::class,
+            Elements::EVENT_AFTER_SAVE_ELEMENT,
+            function (ElementEvent $event) {
+                $settings = $this->getSettings();
+                if (!$settings->queueVideosOnEntrySave && !$settings->queueGifsOnEntrySave) {
+                    return;
                 }
-            );
-        }
+
+                $element = $event->element;
+                if (!$element instanceof Entry) {
+                    return;
+                }
+                if (method_exists($element, 'getIsRevision') && $element->getIsRevision()) {
+                    return;
+                }
+
+                $queuedVideos = 0;
+                if (($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave) {
+                    $queuedVideos = $this->transcode->queueVideoEncodesForElement($element);
+                }
+                if ($queuedVideos > 0) {
+                    Craft::info(
+                        Craft::t(
+                            'transcoder',
+                            'Queued {count} video encode(s) for entry {id}',
+                            [
+                                'count' => $queuedVideos,
+                                'id' => $element->id,
+                            ]
+                        ),
+                        __METHOD__
+                    );
+                }
+
+                $queuedGifs = 0;
+                if ($settings->enableGifEncoding && $settings->queueGifsOnEntrySave) {
+                    $queuedGifs = $this->transcode->queueGifEncodesForElement($element);
+                }
+                if ($queuedGifs > 0) {
+                    Craft::info(
+                        Craft::t(
+                            'transcoder',
+                            'Queued {count} GIF encode(s) for entry {id}',
+                            [
+                                'count' => $queuedGifs,
+                                'id' => $element->id,
+                            ]
+                        ),
+                        __METHOD__
+                    );
+                }
+            }
+        );
         // Handler: Plugins::EVENT_AFTER_INSTALL_PLUGIN
         Event::on(
             Plugins::class,
