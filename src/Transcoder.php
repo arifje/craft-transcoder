@@ -266,6 +266,7 @@ class Transcoder extends Plugin
                 Elements::class,
                 Elements::EVENT_AFTER_SAVE_ELEMENT,
                 function (ElementEvent $event) {
+                    $settings = $this->getSettings();
                     $element = $event->element;
                     if (!$element instanceof Entry) {
                         return;
