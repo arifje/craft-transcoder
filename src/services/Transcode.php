@@ -425,6 +425,14 @@ class Transcode extends Component
 	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
 	{
 		$settings = Transcoder::$plugin->getSettings();
+		if (!$this->isVideoAsset($asset)) {
+			return [
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+				'error' => 'Transcoder: asset is not a video',
+			];
+		}
 		if (!$settings->enableVideoEncoding && !$settings->enableVideoPosters) {
 			return [
 				'status' => 'disabled',
@@ -523,6 +531,14 @@ class Transcode extends Component
 	 */
 	public function queueGifEncode(Asset $asset, array $gifOptions = [], int $delay = 0): array
 	{
+		if (!$this->isGifAsset($asset)) {
+			return [
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+				'error' => 'Transcoder: asset is not a GIF',
+			];
+		}
 		if (!Transcoder::$plugin->getSettings()->enableGifEncoding) {
 			return [
 				'status' => 'disabled',
@@ -2259,7 +2275,7 @@ class Transcode extends Component
 	protected function collectVideoAssets(mixed $value, array &$assets): void
 	{
 		if ($value instanceof Asset) {
-			if ($value->id && AssetsHelper::getFileKindByExtension($value->filename) === Asset::KIND_VIDEO) {
+			if ($this->isVideoAsset($value)) {
 				$assets[$value->id] = $value;
 			}
 			return;
@@ -2315,7 +2331,7 @@ class Transcode extends Component
 	protected function collectGifAssets(mixed $value, array &$assets): void
 	{
 		if ($value instanceof Asset) {
-			if ($value->id && strtolower(pathinfo($value->filename, PATHINFO_EXTENSION)) === 'gif') {
+			if ($this->isGifAsset($value)) {
 				$assets[$value->id] = $value;
 			}
 			return;
@@ -2338,6 +2354,46 @@ class Transcode extends Component
 				$this->collectGifAssets($item, $assets);
 			}
 		}
+	}
+
+	/**
+	 * Returns whether the asset is safe to queue as a video.
+	 *
+	 * @param Asset $asset
+	 * @return bool
+	 */
+	protected function isVideoAsset(Asset $asset): bool
+	{
+		if (!$asset->id) {
+			return false;
+		}
+
+		$mimeType = strtolower((string)$asset->mimeType);
+		if ($mimeType !== '') {
+			return str_starts_with($mimeType, 'video/');
+		}
+
+		return AssetsHelper::getFileKindByExtension($asset->filename) === Asset::KIND_VIDEO;
+	}
+
+	/**
+	 * Returns whether the asset is safe to queue as a GIF.
+	 *
+	 * @param Asset $asset
+	 * @return bool
+	 */
+	protected function isGifAsset(Asset $asset): bool
+	{
+		if (!$asset->id) {
+			return false;
+		}
+
+		$mimeType = strtolower((string)$asset->mimeType);
+		if ($mimeType !== '') {
+			return $mimeType === 'image/gif';
+		}
+
+		return strtolower(pathinfo($asset->filename, PATHINFO_EXTENSION)) === 'gif';
 	}
 
 	/**
