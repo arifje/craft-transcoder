@@ -39,6 +39,8 @@ return [
     'GIF queue delay' => 'GIF queue delay',
     'Seconds to delay each queued GIF job after the previous one. This spreads large batches over time and helps avoid overloading the server.' => 'Seconds to delay each queued GIF job after the previous one. This spreads large batches over time and helps avoid overloading the server.',
     'Queued {count} GIF encode(s) for entry {id}' => 'Queued {count} GIF encode(s) for entry {id}',
+    'No video assets found to queue for entry {id}' => 'No video assets found to queue for entry {id}',
+    'No GIF assets found to queue for entry {id}' => 'No GIF assets found to queue for entry {id}',
     '{name} plugin loaded' => '{name} plugin loaded',
     '{name} cache directory cleared' => '{name} cache directory cleared',
     'Queued {count} video encode(s) for entry {id}' => 'Queued {count} video encode(s) for entry {id}',

@@ -16,6 +16,7 @@ use craft\base\Plugin;
 use craft\console\Application as ConsoleApplication;
 use craft\elements\Asset;
 use craft\elements\Entry;
+use craft\events\BatchElementActionEvent;
 use craft\events\DefineAssetThumbUrlEvent;
 use craft\events\ElementEvent;
 use craft\events\PluginEvent;
@@ -261,8 +262,8 @@ class Transcoder extends Plugin
         }
         Event::on(
             Elements::class,
-            Elements::EVENT_AFTER_SAVE_ELEMENT,
-            function (ElementEvent $event) {
+            Elements::EVENT_AFTER_PROPAGATE_ELEMENT,
+            function (BatchElementActionEvent $event) {
                 $settings = $this->getSettings();
                 if (!$settings->queueVideosOnEntrySave && !$settings->queueGifsOnEntrySave) {
                     return;
@@ -292,6 +293,17 @@ class Transcoder extends Plugin
                         ),
                         __METHOD__
                     );
+                } elseif (($settings->enableVideoEncoding || $settings->enableVideoPosters) && $settings->queueVideosOnEntrySave) {
+                    Craft::info(
+                        Craft::t(
+                            'transcoder',
+                            'No video assets found to queue for entry {id}',
+                            [
+                                'id' => $element->id,
+                            ]
+                        ),
+                        __METHOD__
+                    );
                 }
 
                 $queuedGifs = 0;
@@ -305,6 +317,17 @@ class Transcoder extends Plugin
                             'Queued {count} GIF encode(s) for entry {id}',
                             [
                                 'count' => $queuedGifs,
+                                'id' => $element->id,
+                            ]
+                        ),
+                        __METHOD__
+                    );
+                } elseif ($settings->enableGifEncoding && $settings->queueGifsOnEntrySave) {
+                    Craft::info(
+                        Craft::t(
+                            'transcoder',
+                            'No GIF assets found to queue for entry {id}',
+                            [
                                 'id' => $element->id,
                             ]
                         ),

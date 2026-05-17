@@ -81,12 +81,13 @@ class TranscoderVariable implements ViteVariableInterface
      * @param $filePath
      * @param array $videoOptions
      * @param array $encodingOptions
+     * @param bool $queueIfMissing
      * @return string
      * @throws InvalidConfigException
      */
-    public function getVideoStatus($filePath, array $videoOptions = [], array $encodingOptions = []): string
+    public function getVideoStatus($filePath, array $videoOptions = [], array $encodingOptions = [], bool $queueIfMissing = false): string
     {
-        return Transcoder::$plugin->transcode->getVideoStatus($filePath, $videoOptions, $encodingOptions);
+        return Transcoder::$plugin->transcode->getVideoStatus($filePath, $videoOptions, $encodingOptions, $queueIfMissing);
     }
 
     /**

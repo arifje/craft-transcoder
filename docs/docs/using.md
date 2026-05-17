@@ -275,10 +275,12 @@ When video encoding is queued on entry save, templates should read the current s
 {% set videoOptions = {} %}
 {% set encodingOptions = { "watermark": true } %}
 {% set encodedVideoData = craft.transcoder.isVideoEncodingEnabled()
-    ? craft.transcoder.getVideoStatus(video, videoOptions, encodingOptions)|json_decode
+    ? craft.transcoder.getVideoStatus(video, videoOptions, encodingOptions, craft.app.request.isPreview)|json_decode
     : { status: 'disabled' }
 %}
 ```
+
+The fourth `getVideoStatus()` argument can be set to `true` to queue a missing encode when the source is an Asset. This is useful for editor previews/admin-only template branches; public templates can leave it `false` and fall back to the original video while a background job is pending.
 
 `getVideoStatus()` returns a JSON-encoded string with one of these statuses:
 

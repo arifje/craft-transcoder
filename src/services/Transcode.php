@@ -563,12 +563,21 @@ class Transcode extends Component
 	 * @param Asset|string $filePath
 	 * @param array $videoOptions
 	 * @param array $encodingOptions
+	 * @param bool $queueIfMissing
 	 * @return string
 	 * @throws InvalidConfigException
 	 */
-	public function getVideoStatus(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): string
+	public function getVideoStatus(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = [], bool $queueIfMissing = false): string
 	{
-		return JsonHelper::encode($this->getVideoStatusData($filePath, $videoOptions, $encodingOptions));
+		$status = $this->getVideoStatusData($filePath, $videoOptions, $encodingOptions);
+		if ($queueIfMissing
+			&& $filePath instanceof Asset
+			&& ($status['status'] ?? null) === 'pending'
+		) {
+			$status = $this->queueVideoEncode($filePath, $videoOptions, $encodingOptions);
+		}
+
+		return JsonHelper::encode($status);
 	}
 
 	/**
