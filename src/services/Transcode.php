@@ -136,7 +136,7 @@ class Transcode extends Component
 
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+			$originalExists = $this->doesRemoteFileExist($filePathResolved, $filePath instanceof Asset ? 5 : 1, 2);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
@@ -838,7 +838,12 @@ class Transcode extends Component
 	private function normalizeFilePath(string|Asset $input): array
 	{
 		if ($input instanceof Asset) {
-			$url = $input->getUrl();
+			$filePath = $this->getAssetPath($input);
+			if ($filePath !== '' && !$this->isUrl($filePath) && file_exists($filePath)) {
+				return ['path' => $filePath];
+			}
+
+			$url = $this->isUrl($filePath) ? $filePath : $input->getUrl();
 			if ($url && str_starts_with($url, '/')) {
 				$siteUrl = Craft::$app->getSites()->getCurrentSite()->getBaseUrl();
 				$url = rtrim($siteUrl, '/') . $url;
@@ -909,7 +914,7 @@ class Transcode extends Component
 	 * @param string $url The URL to check.
 	 * @return bool True if the file exists, false otherwise.
 	 */
-	private function doesRemoteFileExist(string $url): bool
+	private function doesRemoteFileExist(string $url, int $attempts = 1, int $delaySeconds = 0): bool
 	{
 		// Bail early if not a valid absolute URL
 		if (!filter_var($url, FILTER_VALIDATE_URL)) {
@@ -919,10 +924,20 @@ class Transcode extends Component
 		// Add custom params to the url
 		$url = $this->addCustomParams($url);
 
-		// Check if the remote file exists
-		$headers = @get_headers($url);
+		$attempts = max(1, $attempts);
+		for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+			$headers = @get_headers($url);
 
-		return $headers && strpos($headers[0], '200') !== false;
+			if ($headers && preg_match('/\s(200|206|302|303|307|308)\s/', $headers[0])) {
+				return true;
+			}
+
+			if ($attempt < $attempts && $delaySeconds > 0) {
+				sleep($delaySeconds);
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -1781,7 +1796,7 @@ class Transcode extends Component
 
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+			$originalExists = $this->doesRemoteFileExist($filePathResolved, $filePath instanceof Asset ? 5 : 1, 2);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
@@ -1849,7 +1864,7 @@ class Transcode extends Component
 	
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+			$originalExists = $this->doesRemoteFileExist($filePathResolved, $filePath instanceof Asset ? 5 : 1, 2);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
@@ -2384,7 +2399,7 @@ class Transcode extends Component
 
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+			$originalExists = $this->doesRemoteFileExist($filePathResolved, $filePath instanceof Asset ? 5 : 1, 2);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
