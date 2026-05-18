@@ -1039,6 +1039,13 @@ class Transcode extends Component
 
 			// Build the file name
 			$destThumbnailFile = $this->getFilename($filePathResolved, $thumbnailOptions);
+			$destThumbnailFile = $this->getExistingThumbnailFilenameCandidate(
+				$destThumbnailPath,
+				$filePath,
+				$filePathResolved,
+				$thumbnailOptions,
+				$destThumbnailFile
+			);
 
 			// Public URL
 			$publicUrl = $urlBase . '/' . $destThumbnailFile;
@@ -1828,6 +1835,13 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
 		$gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 		$destGifFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $gifOptions);
+		$destGifFile = $this->getExistingGifFilenameCandidate(
+			$destGifPath,
+			$filePath,
+			$filePathResolved,
+			$gifOptions,
+			$destGifFile
+		);
 
 		return [
 			'source' => $filePathResolved,
@@ -1902,6 +1916,13 @@ class Transcode extends Component
 		$gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 	
 		$destGifFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $gifOptions);
+		$destGifFile = $this->getExistingGifFilenameCandidate(
+			$destGifPath,
+			$filePath,
+			$filePathResolved,
+			$gifOptions,
+			$destGifFile
+		);
 		$encodedFile = $destGifPath . $destGifFile;
 		$publicUrl   = $urlBase . '/' . $destGifFile;
 	
@@ -2509,6 +2530,150 @@ class Transcode extends Component
 				$legacyInput,
 				$videoOptions,
 				array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate']))
+			);
+		}
+
+		return array_values(array_unique(array_filter($candidates)));
+	}
+
+	/**
+	 * Return the first existing GIF filename from current and legacy candidates.
+	 *
+	 * @param string $destGifPath
+	 * @param Asset|string $filePath
+	 * @param string|null $filePathResolved
+	 * @param array $gifOptions
+	 * @param string $primaryFilename
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	protected function getExistingGifFilenameCandidate(
+		string $destGifPath,
+		Asset|string $filePath,
+		?string $filePathResolved,
+		array $gifOptions,
+		string $primaryFilename
+	): string {
+		foreach ($this->getGifFilenameCandidates($filePath, $filePathResolved, $gifOptions, $primaryFilename) as $filename) {
+			$encodedFile = $destGifPath . $filename;
+			if (is_file($encodedFile) && filesize($encodedFile) > 0) {
+				return $filename;
+			}
+		}
+
+		return $primaryFilename;
+	}
+
+	/**
+	 * Return current and legacy GIF filename candidates.
+	 *
+	 * @param Asset|string $filePath
+	 * @param string|null $filePathResolved
+	 * @param array $gifOptions
+	 * @param string $primaryFilename
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	protected function getGifFilenameCandidates(
+		Asset|string $filePath,
+		?string $filePathResolved,
+		array $gifOptions,
+		string $primaryFilename
+	): array {
+		$candidates = [$primaryFilename];
+		$legacyInputs = [];
+
+		if ($filePathResolved !== null && $filePathResolved !== '') {
+			$legacyInputs[] = $filePathResolved;
+		}
+
+		if ($filePath instanceof Asset) {
+			$assetUrl = $filePath->getUrl();
+			if ($assetUrl) {
+				$legacyInputs[] = $assetUrl;
+			}
+		}
+
+		foreach (array_unique($legacyInputs) as $legacyInput) {
+			$candidates[] = $this->getFilename($legacyInput, $gifOptions);
+			$candidates[] = $this->getFilename(
+				$legacyInput,
+				$gifOptions,
+				array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate']))
+			);
+		}
+
+		return array_values(array_unique(array_filter($candidates)));
+	}
+
+	/**
+	 * Return the first existing thumbnail/poster filename from current and legacy candidates.
+	 *
+	 * @param string $destThumbnailPath
+	 * @param Asset|string $filePath
+	 * @param string|null $filePathResolved
+	 * @param array $thumbnailOptions
+	 * @param string $primaryFilename
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	protected function getExistingThumbnailFilenameCandidate(
+		string $destThumbnailPath,
+		Asset|string $filePath,
+		?string $filePathResolved,
+		array $thumbnailOptions,
+		string $primaryFilename
+	): string {
+		foreach ($this->getThumbnailFilenameCandidates($filePath, $filePathResolved, $thumbnailOptions, $primaryFilename) as $filename) {
+			$thumbnailFile = $destThumbnailPath . $filename;
+			if (is_file($thumbnailFile) && filesize($thumbnailFile) > 0) {
+				return $filename;
+			}
+		}
+
+		return $primaryFilename;
+	}
+
+	/**
+	 * Return current and legacy thumbnail/poster filename candidates.
+	 *
+	 * @param Asset|string $filePath
+	 * @param string|null $filePathResolved
+	 * @param array $thumbnailOptions
+	 * @param string $primaryFilename
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	protected function getThumbnailFilenameCandidates(
+		Asset|string $filePath,
+		?string $filePathResolved,
+		array $thumbnailOptions,
+		string $primaryFilename
+	): array {
+		$candidates = [$primaryFilename];
+		$legacyInputs = [];
+
+		if ($filePathResolved !== null && $filePathResolved !== '') {
+			$legacyInputs[] = $filePathResolved;
+		}
+
+		if ($filePath instanceof Asset) {
+			$assetUrl = $filePath->getUrl();
+			if ($assetUrl) {
+				$legacyInputs[] = $assetUrl;
+			}
+		}
+
+		$thumbnailOptionsWithoutPosterFormat = $thumbnailOptions;
+		unset($thumbnailOptionsWithoutPosterFormat['posterFormat']);
+
+		foreach (array_unique($legacyInputs) as $legacyInput) {
+			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions);
+			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat);
+			$candidates[] = $this->getFilename(
+				$legacyInput,
+				$thumbnailOptions,
+				array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat'])))
 			);
 		}
 
