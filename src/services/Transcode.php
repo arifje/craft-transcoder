@@ -1573,6 +1573,19 @@ class Transcode extends Component
 			&& filesize($outputInfo['encodedFile']) > 0
 			&& (!is_file($outputInfo['lockFile']) || !$this->isProcessRunningFromLockFile($outputInfo['lockFile']))
 		) {
+			$failure = $this->getGifEncodeFailure($outputInfo, $storedStatus);
+			if ($failure) {
+				$this->removeEncodeTempFiles($outputInfo['lockFile'], $outputInfo['progressFile']);
+				@unlink($outputInfo['encodedFile']);
+				$status = array_merge([
+					'status' => 'error',
+					'url' => '',
+					'progress' => 0,
+				], $failure);
+				$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+				Craft::error($status['error'], __METHOD__);
+				return $this->sanitizeVideoStatus($status);
+			}
 			@unlink($outputInfo['lockFile']);
 			@unlink($outputInfo['progressFile']);
 			$status = [
@@ -1588,13 +1601,14 @@ class Transcode extends Component
 		}
 
 		if ($this->isEncodeLockStale($outputInfo['lockFile'], $outputInfo['progressFile'])) {
+			$failure = $this->getGifEncodeFailure($outputInfo, $storedStatus);
 			$this->removeEncodeTempFiles($outputInfo['lockFile'], $outputInfo['progressFile']);
-			$status = [
+			$status = array_merge([
 				'status' => 'error',
 				'url' => '',
 				'progress' => 0,
 				'error' => 'GIF encoding failed due to a server error (process crashed, ffmpeg error)',
-			];
+			], $failure ?? []);
 			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
 			Craft::error('Transcoder: ffmpeg process died unexpectedly for GIF ' . ($outputInfo['source'] ?? 'unknown'), __METHOD__);
 			return $this->sanitizeVideoStatus($status);
@@ -1607,6 +1621,7 @@ class Transcode extends Component
 					'url' => '',
 					'progress' => 0,
 				],
+				!empty($storedStatus['ffmpegCommand']) ? ['ffmpegCommand' => $storedStatus['ffmpegCommand']] : [],
 				$this->getProgressData($outputInfo['filename'])
 			);
 			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
@@ -1975,8 +1990,9 @@ class Transcode extends Component
 			. ' -i ' . escapeshellarg($filePathResolved)
 			. ' -vf "fps=10,scale=' . ($gifOptions['width'] ?? -1) . ':' . ($gifOptions['height'] ?? -1) . ':flags=lanczos"'
 			. ' -c:v ' . $thisEncoder['videoCodec'] . ' ' . $thisEncoder['videoCodecOptions']
-			. ' -y ' . escapeshellarg($encodedFile)
-			. ' 1> ' . $progressFile . ' 2>&1 & echo $!';
+			. ' -y ' . escapeshellarg($encodedFile);
+		$ffmpegCommand = $ffmpegCmd;
+		$ffmpegCmd .= ' 1> ' . $progressFile . ' 2>&1 & echo $!';
 	
 		if ($isDev) {
 			Craft::info("Final ffmpeg command: $ffmpegCmd", __METHOD__);
@@ -1990,6 +2006,7 @@ class Transcode extends Component
 				'status' => 'encoding',
 				'url' => '',
 				'info' => 'Encoding started',
+				'ffmpegCommand' => $ffmpegCommand,
 			]);
 		}
 	
@@ -2305,6 +2322,18 @@ class Transcode extends Component
 			$lockFile = $status['lockFile'] ?? null;
 			$progressFile = $status['progressFile'] ?? null;
 			if (!$lockFile || !is_file($lockFile) || $this->isEncodeLockStale($lockFile, $progressFile)) {
+				$failure = $this->getGifEncodeFailure($status, $status);
+				if ($failure) {
+					$this->removeEncodeTempFiles($lockFile, $progressFile);
+					@unlink($status['encodedFile']);
+					$status = array_merge($status, [
+						'status' => 'error',
+						'url' => '',
+						'progress' => 0,
+					], $failure);
+					$this->writeVideoStatusByKey($key, $status);
+					return $this->sanitizeVideoStatus($status);
+				}
 				$this->removeEncodeTempFiles($lockFile, $progressFile);
 				$status['status'] = 'ok';
 				$status['url'] = $status['publicUrl'] ?? ($status['url'] ?? '');
@@ -2318,11 +2347,14 @@ class Transcode extends Component
 			&& !empty($status['lockFile'])
 			&& $this->isEncodeLockStale($status['lockFile'], $status['progressFile'] ?? null)
 		) {
+			$failure = $this->getGifEncodeFailure($status, $status);
 			$this->removeEncodeTempFiles($status['lockFile'], $status['progressFile'] ?? null);
-			$status['status'] = 'error';
-			$status['url'] = '';
-			$status['progress'] = 0;
-			$status['error'] = 'Encoding failed due to a server error (process crashed, ffmpeg error)';
+			$status = array_merge($status, [
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+				'error' => 'GIF encoding failed due to a server error (process crashed, ffmpeg error)',
+			], $failure ?? []);
 			$this->writeVideoStatusByKey($key, $status);
 			return $this->sanitizeVideoStatus($status);
 		}
@@ -2765,6 +2797,47 @@ class Transcode extends Component
 			['size' => $fileSize]
 		);
 
+		if ($hasFailureLog) {
+			$message .= ' ' . Craft::t('transcoder', 'The ffmpeg log contains errors.');
+		}
+
+		return array_filter([
+			'error' => $message,
+			'fileSize' => $fileSize,
+			'ffmpegCommand' => $storedStatus['ffmpegCommand'] ?? null,
+			'ffmpegLog' => $logExcerpt ?: null,
+		], static fn($value) => $value !== null && $value !== '');
+	}
+
+	/**
+	 * Return an error payload when ffmpeg failed to produce a usable GIF mp4 file.
+	 *
+	 * @param array $outputInfo
+	 * @param array $storedStatus
+	 * @return array|null
+	 */
+	protected function getGifEncodeFailure(array $outputInfo, array $storedStatus = []): ?array
+	{
+		$encodedFile = $outputInfo['encodedFile'] ?? null;
+		$fileSize = $encodedFile && is_file($encodedFile) ? filesize($encodedFile) : 0;
+		$logExcerpt = $this->getFfmpegLogExcerpt($outputInfo['progressFile'] ?? null);
+		$hasFailureLog = (bool)preg_match(
+			'/conversion failed|error while|invalid data|unknown encoder|encoder .* not found|could not|failed|no such file|permission denied/i',
+			$logExcerpt
+		);
+
+		if ($fileSize > 0 && !$hasFailureLog) {
+			return null;
+		}
+
+		$message = Craft::t('transcoder', 'GIF encoding failed due to a server error (process crashed, ffmpeg error)');
+		if ($fileSize > 0) {
+			$message .= ' ' . Craft::t(
+				'transcoder',
+				'ffmpeg produced a suspicious output file ({size} bytes).',
+				['size' => $fileSize]
+			);
+		}
 		if ($hasFailureLog) {
 			$message .= ' ' . Craft::t('transcoder', 'The ffmpeg log contains errors.');
 		}

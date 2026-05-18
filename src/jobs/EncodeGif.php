@@ -70,14 +70,23 @@ class EncodeGif extends BaseJob
             $this->setProgress($queue, 1, Craft::t('transcoder', 'GIF encode complete'));
         } catch (Throwable $e) {
             Craft::error($e->getMessage(), __METHOD__);
+            $status = [
+                'status' => 'error',
+                'url' => '',
+                'error' => $e->getMessage(),
+            ];
+            try {
+                $currentStatus = Transcoder::$plugin->transcode->getGifStatusData($asset, $this->gifOptions);
+                if (($currentStatus['status'] ?? null) === 'error') {
+                    $status = array_merge($currentStatus, $status);
+                }
+            } catch (Throwable) {
+            }
+
             Transcoder::$plugin->transcode->writeGifStatus(
                 $asset,
                 $this->gifOptions,
-                [
-                    'status' => 'error',
-                    'url' => '',
-                    'error' => $e->getMessage(),
-                ]
+                $status
             );
 
             throw $e;
@@ -100,7 +109,7 @@ class EncodeGif extends BaseJob
         }
 
         if (($initialStatus['status'] ?? null) === 'error') {
-            throw new \RuntimeException($initialStatus['error'] ?? Craft::t('transcoder', 'GIF encoding failed'));
+            throw new \RuntimeException($this->formatErrorMessage($initialStatus));
         }
 
         $deadline = time() + self::TIMEOUT_SECONDS;
@@ -116,7 +125,7 @@ class EncodeGif extends BaseJob
             }
 
             if ($state === 'error') {
-                throw new \RuntimeException($status['error'] ?? Craft::t('transcoder', 'GIF encoding failed'));
+                throw new \RuntimeException($this->formatErrorMessage($status));
             }
 
             Transcoder::$plugin->transcode->writeGifStatus($asset, $this->gifOptions, $status);
@@ -130,6 +139,27 @@ class EncodeGif extends BaseJob
         }
 
         throw new \RuntimeException(Craft::t('transcoder', 'GIF encoding timed out'));
+    }
+
+    /**
+     * Format a queue-visible error message with ffmpeg debug details.
+     *
+     * @param array $status
+     * @return string
+     */
+    protected function formatErrorMessage(array $status): string
+    {
+        $message = $status['error'] ?? Craft::t('transcoder', 'GIF encoding failed');
+
+        if (!empty($status['ffmpegCommand'])) {
+            $message .= "\n\nFFmpeg command:\n" . $status['ffmpegCommand'];
+        }
+
+        if (!empty($status['ffmpegLog'])) {
+            $message .= "\n\nFFmpeg log:\n" . $status['ffmpegLog'];
+        }
+
+        return $message;
     }
 
     /**
