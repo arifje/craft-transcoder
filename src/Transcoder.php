@@ -219,6 +219,10 @@ class Transcoder extends Plugin
                             'url' => '#settings-tab-video',
                         ],
                         [
+                            'label' => Craft::t('transcoder', 'Video posters'),
+                            'url' => '#settings-tab-video-posters',
+                        ],
+                        [
                             'label' => Craft::t('transcoder', 'GIF'),
                             'url' => '#settings-tab-gif',
                         ],

@@ -15,15 +15,6 @@
     }) }}
 
     {{ forms.lightswitchField({
-        label: 'Enable video posters'|t('transcoder'),
-        instructions: 'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.'|t('transcoder'),
-        warning: macros.configWarning('enableVideoPosters', 'transcoder'),
-        id: 'enableVideoPosters',
-        name: 'enableVideoPosters',
-        on: settings.enableVideoPosters,
-    }) }}
-
-    {{ forms.lightswitchField({
         label: 'Enable download file endpoint'|t('transcoder'),
         instructions: 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.'|t('transcoder'),
         warning: macros.configWarning('enableDownloadFileEndpoint', 'transcoder'),
@@ -40,10 +31,21 @@
         name: 'queueVideosOnSave',
         on: settings.queueVideosOnSave or settings.queueVideosOnEntrySave,
     }) }}
+</div>
+
+<div id="tab-video-posters" class="hidden">
+    {{ forms.lightswitchField({
+        label: 'Enable video posters'|t('transcoder'),
+        instructions: 'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.'|t('transcoder'),
+        warning: macros.configWarning('enableVideoPosters', 'transcoder'),
+        id: 'enableVideoPosters',
+        name: 'enableVideoPosters',
+        on: settings.enableVideoPosters,
+    }) }}
 
     {{ forms.editableTableField({
         label: 'Video poster formats'|t('transcoder'),
-        instructions: 'Define the poster images Transcoder should generate for each queued video.'|t('transcoder'),
+        instructions: 'Define the poster images Transcoder should generate for each queued video. Leave width or height empty to use the original video dimension.'|t('transcoder'),
         warning: macros.configWarning('videoPosterFormats', 'transcoder'),
         id: 'videoPosterFormats',
         name: 'videoPosterFormats',
@@ -56,12 +58,12 @@
             width: {
                 type: 'number',
                 heading: 'Width'|t('transcoder'),
-                placeholder: '800',
+                placeholder: 'auto',
             },
             height: {
                 type: 'number',
                 heading: 'Height'|t('transcoder'),
-                placeholder: '450',
+                placeholder: 'auto',
             },
             timeInSecs: {
                 type: 'number',
