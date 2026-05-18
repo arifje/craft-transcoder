@@ -656,9 +656,17 @@ class Transcode extends Component
 	public function getVideoStatus(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = [], bool $queueIfMissing = false): string
 	{
 		$status = $this->getVideoStatusData($filePath, $videoOptions, $encodingOptions);
+		$missingPosters = $filePath instanceof Asset
+			&& Transcoder::$plugin->getSettings()->enableVideoPosters
+			&& $this->hasMissingVideoPosters($filePath);
+
 		if ($queueIfMissing
 			&& $filePath instanceof Asset
-			&& ($status['status'] ?? null) === 'pending'
+			&& (
+				($status['status'] ?? null) === 'pending'
+				|| (($status['status'] ?? null) === 'ok' && $missingPosters)
+				|| (($status['status'] ?? null) === 'disabled' && $missingPosters)
+			)
 		) {
 			$status = $this->queueVideoEncode($filePath, $videoOptions, $encodingOptions);
 		}
