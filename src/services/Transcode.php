@@ -838,12 +838,7 @@ class Transcode extends Component
 	private function normalizeFilePath(string|Asset $input): array
 	{
 		if ($input instanceof Asset) {
-			$filePath = $this->getAssetPath($input);
-			if ($filePath !== '' && !$this->isUrl($filePath) && file_exists($filePath)) {
-				return ['path' => $filePath];
-			}
-
-			$url = $this->isUrl($filePath) ? $filePath : $input->getUrl();
+			$url = $input->getUrl();
 			if ($url && str_starts_with($url, '/')) {
 				$siteUrl = Craft::$app->getSites()->getCurrentSite()->getBaseUrl();
 				$url = rtrim($siteUrl, '/') . $url;
