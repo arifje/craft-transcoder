@@ -73,6 +73,7 @@ class Transcode extends Component
 		'sharpen',
 		'synchronous',
 		'stripMetadata',
+		'videoBitRate',
 		'videoCodecOptions',
 	];
 
@@ -171,7 +172,15 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 
-		$destVideoFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $videoOptions);
+		$videoFilenameInput = $filePath instanceof Asset ? $filePath : ($filePathResolved ?? '');
+		$destVideoFile = $this->getFilename($videoFilenameInput, $videoOptions);
+		$destVideoFile = $this->getExistingVideoFilenameCandidate(
+			$destVideoPath,
+			$filePath,
+			$filePathResolved,
+			$videoOptions,
+			$destVideoFile
+		);
 		$encodedFile   = $destVideoPath . $destVideoFile;
 		$publicUrl     = $urlBase . '/' . $destVideoFile;
 
@@ -2140,9 +2149,10 @@ class Transcode extends Component
 	 * @return string
 	 * @throws InvalidConfigException
 	 */
-	protected function getFilename(Asset|string $filePath, array $options): string
+	protected function getFilename(Asset|string $filePath, array $options, ?array $excludeParams = null): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
+		$excludeParams ??= self::EXCLUDE_PARAMS;
 		$assetId = $filePath instanceof Asset ? $filePath->id : null;
 		$filePath = $this->getAssetPath($filePath);
 
@@ -2172,7 +2182,7 @@ class Transcode extends Component
 				if (is_bool($value)) {
 					$value = $value ? $key : 'no' . $key;
 				}
-				if (!in_array($key, self::EXCLUDE_PARAMS, true)) {
+				if (!in_array($key, $excludeParams, true)) {
 					$fileName .= '_' . $value . $suffix;
 				}
 			}
@@ -2422,6 +2432,13 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 		$destVideoFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $videoOptions);
+		$destVideoFile = $this->getExistingVideoFilenameCandidate(
+			$destVideoPath,
+			$filePath,
+			$filePathResolved,
+			$videoOptions,
+			$destVideoFile
+		);
 
 		return [
 			'source' => $filePathResolved,
@@ -2432,6 +2449,65 @@ class Transcode extends Component
 			'lockFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock',
 			'progressFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress',
 		];
+	}
+
+	/**
+	 * Return the first existing encoded video filename from current and legacy candidates.
+	 *
+	 * @param string $destVideoPath
+	 * @param Asset|string $filePath
+	 * @param string|null $filePathResolved
+	 * @param array $videoOptions
+	 * @param string $primaryFilename
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	protected function getExistingVideoFilenameCandidate(
+		string $destVideoPath,
+		Asset|string $filePath,
+		?string $filePathResolved,
+		array $videoOptions,
+		string $primaryFilename
+	): string {
+		foreach ($this->getVideoFilenameCandidates($filePath, $filePathResolved, $videoOptions, $primaryFilename) as $filename) {
+			$encodedFile = $destVideoPath . $filename;
+			if (is_file($encodedFile) && filesize($encodedFile) > 0) {
+				return $filename;
+			}
+		}
+
+		return $primaryFilename;
+	}
+
+	/**
+	 * Return current and legacy encoded video filename candidates.
+	 *
+	 * @param Asset|string $filePath
+	 * @param string|null $filePathResolved
+	 * @param array $videoOptions
+	 * @param string $primaryFilename
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	protected function getVideoFilenameCandidates(
+		Asset|string $filePath,
+		?string $filePathResolved,
+		array $videoOptions,
+		string $primaryFilename
+	): array {
+		$candidates = [$primaryFilename];
+		$legacyInput = $filePathResolved ?? ($filePath instanceof Asset ? $filePath : '');
+
+		if ($legacyInput !== '') {
+			$candidates[] = $this->getFilename($legacyInput, $videoOptions);
+			$candidates[] = $this->getFilename(
+				$legacyInput,
+				$videoOptions,
+				array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate']))
+			);
+		}
+
+		return array_values(array_unique(array_filter($candidates)));
 	}
 
 	/**
