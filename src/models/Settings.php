@@ -103,6 +103,13 @@ class Settings extends Model
     public bool $useHashedNames = false;
 
     /**
+     * How encoded video filenames should be generated: source or options.
+     *
+     * @var string
+     */
+    public string $videoFilenameStrategy = 'source';
+
+    /**
      * if a upload location has a subfolder defined, add this to the transcoder
      * paths too
      *
@@ -388,6 +395,7 @@ class Settings extends Model
             ['enableVideoPosters', 'boolean'],
             ['enableGifEncoding', 'boolean'],
             ['useHashedNames', 'boolean'],
+            ['videoFilenameStrategy', 'in', 'range' => ['source', 'options']],
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
             [['queueVideosOnSave', 'queueVideosOnEntrySave'], 'boolean'],

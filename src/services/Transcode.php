@@ -173,7 +173,7 @@ class Transcode extends Component
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 
 		$videoFilenameInput = $filePath instanceof Asset ? $filePath : ($filePathResolved ?? '');
-		$destVideoFile = $this->getFilename($videoFilenameInput, $videoOptions);
+		$destVideoFile = $this->getFilename($videoFilenameInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions));
 		$destVideoFile = $this->getExistingVideoFilenameCandidate(
 			$destVideoPath,
 			$filePath,
@@ -1464,7 +1464,7 @@ class Transcode extends Component
 
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 
-		return $this->getFilename($filePath, $videoOptions);
+		return $this->getFilename($filePath, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions));
 	}
 
 	/**
@@ -2431,7 +2431,11 @@ class Transcode extends Component
 		$videoEncoders = $settings['videoEncoders'];
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
-		$destVideoFile = $this->getFilename($filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''), $videoOptions);
+		$destVideoFile = $this->getFilename(
+			$filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''),
+			$videoOptions,
+			$this->getVideoFilenameExcludeParams($videoOptions)
+		);
 		$destVideoFile = $this->getExistingVideoFilenameCandidate(
 			$destVideoPath,
 			$filePath,
@@ -2499,7 +2503,8 @@ class Transcode extends Component
 		$legacyInput = $filePathResolved ?? ($filePath instanceof Asset ? $filePath : '');
 
 		if ($legacyInput !== '') {
-			$candidates[] = $this->getFilename($legacyInput, $videoOptions);
+			$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'source'));
+			$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'options'));
 			$candidates[] = $this->getFilename(
 				$legacyInput,
 				$videoOptions,
@@ -2508,6 +2513,24 @@ class Transcode extends Component
 		}
 
 		return array_values(array_unique(array_filter($candidates)));
+	}
+
+	/**
+	 * Return excluded filename option keys for a video filename strategy.
+	 *
+	 * @param array $videoOptions
+	 * @param string|null $strategy
+	 * @return array
+	 */
+	protected function getVideoFilenameExcludeParams(array $videoOptions, ?string $strategy = null): array
+	{
+		$strategy ??= Transcoder::$plugin->getSettings()->videoFilenameStrategy ?: 'source';
+
+		if ($strategy === 'options') {
+			return self::EXCLUDE_PARAMS;
+		}
+
+		return array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, array_keys($videoOptions))));
 	}
 
 	/**

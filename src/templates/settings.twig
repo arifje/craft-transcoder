@@ -31,6 +31,19 @@
         name: 'queueVideosOnSave',
         on: settings.queueVideosOnSave or settings.queueVideosOnEntrySave,
     }) }}
+
+    {{ forms.selectField({
+        label: 'Video filename strategy'|t('transcoder'),
+        instructions: 'Choose whether encoded video filenames should stay stable per source asset or include encoding options. Existing legacy filenames are still checked before a new encode is queued.'|t('transcoder'),
+        warning: macros.configWarning('videoFilenameStrategy', 'transcoder'),
+        id: 'videoFilenameStrategy',
+        name: 'videoFilenameStrategy',
+        value: settings.videoFilenameStrategy,
+        options: [
+            { label: 'Source asset'|t('transcoder'), value: 'source' },
+            { label: 'Encoding options'|t('transcoder'), value: 'options' },
+        ],
+    }) }}
 </div>
 
 <div id="tab-video-posters" class="hidden">

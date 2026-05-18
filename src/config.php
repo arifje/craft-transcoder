@@ -69,6 +69,9 @@ return [
     // Use a md5 hash for the filenames instead of parameterized naming
     'useHashedNames' => false,
 
+    // How encoded video filenames are generated: source or options
+    'videoFilenameStrategy' => 'source',
+
     // if a upload location has a subfolder defined, add this to the transcoder paths too
     'createSubfolders' => true,
 
