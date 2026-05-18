@@ -26,6 +26,7 @@ use mikehaertl\shellcommand\Command as ShellCommand;
 use nystudio107\transcoder\events\TranscoderQueueEvent;
 use nystudio107\transcoder\jobs\EncodeGif;
 use nystudio107\transcoder\jobs\EncodeVideo;
+use nystudio107\transcoder\jobs\GenerateVideoPosters;
 use nystudio107\transcoder\Transcoder;
 use Throwable;
 use yii\base\Exception;
@@ -457,29 +458,102 @@ class Transcode extends Component
 		$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
 		$missingPosters = $settings->enableVideoPosters && $this->hasMissingVideoPosters($asset);
-		if (($status['status'] ?? null) === 'ok'
+		$videoComplete = ($status['status'] ?? null) === 'ok'
 			&& is_file($outputInfo['encodedFile'])
-			&& filesize($outputInfo['encodedFile']) > 0
-			&& !$missingPosters
-		) {
-			return $status;
-		}
-		if (in_array($status['status'] ?? null, ['queued', 'encoding'], true)) {
+			&& filesize($outputInfo['encodedFile']) > 0;
+		$videoInProgress = in_array($status['status'] ?? null, ['queued', 'encoding'], true);
+		$postersInProgress = $this->isVideoPosterStatusActive($status);
+		$queueVideo = $settings->enableVideoEncoding && !$videoComplete && !$videoInProgress;
+		$queuePosters = $settings->enableVideoPosters && $missingPosters && !$postersInProgress;
+
+		if (!$queueVideo && !$queuePosters) {
 			return $status;
 		}
 
-		$jobId = Craft::$app->getQueue()->push(new EncodeVideo([
+		if ($queueVideo) {
+			$jobId = Craft::$app->getQueue()->push(new EncodeVideo([
+				'assetId' => $asset->id,
+				'videoOptions' => $videoOptions,
+				'encodingOptions' => $encodingOptions,
+			]));
+
+			$status = array_merge($status, [
+				'status' => 'queued',
+				'url' => '',
+				'progress' => 0,
+				'jobId' => $jobId,
+			]);
+		}
+
+		if ($queuePosters) {
+			$posterJobId = Craft::$app->getQueue()->push(new GenerateVideoPosters([
+				'assetId' => $asset->id,
+				'videoOptions' => $videoOptions,
+				'encodingOptions' => $encodingOptions,
+			]));
+
+			$status = array_merge($status, [
+				'status' => $videoInProgress || $queueVideo ? ($status['status'] ?? 'queued') : 'queued',
+				'posterStatus' => 'queued',
+				'posterProgress' => 0,
+				'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
+				'posterError' => '',
+				'posterJobId' => $posterJobId,
+			]);
+		}
+
+		$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
+
+		return $status;
+	}
+
+	/**
+	 * Queue poster generation for a video asset.
+	 *
+	 * @param Asset $asset
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function queueVideoPosters(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
+	{
+		if (!$this->isVideoAsset($asset)) {
+			return [
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+				'error' => 'Transcoder: asset is not a video',
+			];
+		}
+
+		if (!Transcoder::$plugin->getSettings()->enableVideoPosters) {
+			return [
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
+		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
+		if (!$this->hasMissingVideoPosters($asset) || $this->isVideoPosterStatusActive($status)) {
+			return $status;
+		}
+
+		$posterJobId = Craft::$app->getQueue()->push(new GenerateVideoPosters([
 			'assetId' => $asset->id,
 			'videoOptions' => $videoOptions,
 			'encodingOptions' => $encodingOptions,
 		]));
 
-		$status = [
-			'status' => 'queued',
-			'url' => '',
-			'progress' => 0,
-			'jobId' => $jobId,
-		];
+		$status = array_merge($status, [
+			'status' => in_array($status['status'] ?? null, ['queued', 'encoding'], true) ? $status['status'] : 'queued',
+			'posterStatus' => 'queued',
+			'posterProgress' => 0,
+			'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
+			'posterError' => '',
+			'posterJobId' => $posterJobId,
+		]);
 		$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
 
 		return $status;
@@ -713,6 +787,12 @@ class Transcode extends Component
 		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 		$storedStatus = $this->readVideoStatus($statusKey);
 
+		if ($this->isVideoPosterStatusActive($storedStatus)
+			&& !is_file($outputInfo['lockFile'])
+		) {
+			return $this->sanitizeVideoStatus($storedStatus);
+		}
+
 		if (is_file($outputInfo['encodedFile'])
 			&& filesize($outputInfo['encodedFile']) > 0
 			&& (!is_file($outputInfo['lockFile']) || !$this->isProcessRunningFromLockFile($outputInfo['lockFile']))
@@ -737,6 +817,7 @@ class Transcode extends Component
 				'url' => $outputInfo['publicUrl'],
 				'progress' => 100,
 			];
+			$status = array_merge($status, $this->getVideoPosterStatusFields($storedStatus));
 			if (!$outputInfo['originalExists']) {
 				$status['warning'] = 'Original video missing, serving encoded version';
 			}
@@ -765,6 +846,7 @@ class Transcode extends Component
 					'progress' => 0,
 				],
 				!empty($storedStatus['ffmpegCommand']) ? ['ffmpegCommand' => $storedStatus['ffmpegCommand']] : [],
+				$this->getVideoPosterStatusFields($storedStatus),
 				$this->getProgressData($outputInfo['filename'])
 			);
 			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
@@ -821,11 +903,35 @@ class Transcode extends Component
 	public function writeVideoStatus(Asset|string $filePath, array $videoOptions, array $status, array $encodingOptions = []): void
 	{
 		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
+		$storedStatus = $this->readVideoStatus($statusKey);
+		$status = array_merge($this->getVideoPosterStatusFields($storedStatus), $status);
 		$status = array_merge($this->getVideoStatusStorageInfo($outputInfo), $status);
 
 		$this->writeVideoStatusByKey(
-			$this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions),
+			$statusKey,
 			$status
+		);
+	}
+
+	/**
+	 * Write poster generation status without erasing current video progress.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @param array $status
+	 * @param array $encodingOptions
+	 * @throws InvalidConfigException
+	 */
+	public function writeVideoPosterStatus(Asset|string $filePath, array $videoOptions, array $status, array $encodingOptions = []): void
+	{
+		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
+		$storedStatus = $this->readVideoStatus($statusKey);
+
+		$this->writeVideoStatusByKey(
+			$statusKey,
+			array_merge($this->getVideoStatusStorageInfo($outputInfo), $storedStatus, $status)
 		);
 	}
 
@@ -1003,11 +1109,12 @@ class Transcode extends Component
 	 * @param bool $generate whether the thumbnail should be
 	 *                                 generated if it doesn't exists
 	 * @param bool $asPath Whether we should return a path or not
+	 * @param bool $synchronous Whether ffmpeg should run synchronously
 	 *
 	 * @return string|false|null URL or path of the video thumbnail
 	 * @throws InvalidConfigException
 	 */
-	public function getVideoThumbnailUrl(Asset|string $filePath, array $thumbnailOptions, bool $generate = true, bool $asPath = false): string|false|null
+	public function getVideoThumbnailUrl(Asset|string $filePath, array $thumbnailOptions, bool $generate = true, bool $asPath = false, bool $synchronous = false): string|false|null
 	{
 		$result = null;
 		$settings = Transcoder::$plugin->getSettings();
@@ -1091,17 +1198,33 @@ class Transcode extends Component
 			$destThumbnailPath .= $destThumbnailFile;
 
 			// Final ffmpeg command
-			$ffmpegCmd .= ' -f image2 -y ' . escapeshellarg($destThumbnailPath) . ' >/dev/null 2>/dev/null &';
+			$ffmpegCmd .= ' -f image2 -y ' . escapeshellarg($destThumbnailPath);
 
 			// Generate thumbnail if not exists
 			if (!file_exists($destThumbnailPath)) {
 				if ($generate) {
-					$shellOutput = $this->executeShellCommand($ffmpegCmd);
-					Craft::info($ffmpegCmd, __METHOD__);
+					if ($synchronous) {
+						$shellOutput = $this->executeShellCommand($ffmpegCmd . ' 2>&1');
+						Craft::info($ffmpegCmd, __METHOD__);
+
+						if (!file_exists($destThumbnailPath) || filesize($destThumbnailPath) === 0) {
+							$message = 'Video poster generation failed for ' . $filePathResolved
+								. "\n\nFFmpeg command:\n" . $ffmpegCmd
+								. "\n\nFFmpeg log:\n" . trim($shellOutput);
+							Craft::error($message, __METHOD__);
+							throw new \RuntimeException($message);
+						}
+					} else {
+						$shellOutput = $this->executeShellCommand($ffmpegCmd . ' >/dev/null 2>/dev/null &');
+						Craft::info($ffmpegCmd, __METHOD__);
+					}
 				} else {
 					Craft::info('Thumbnail does not exist, but not asked to generate it: ' . $filePathResolved, __METHOD__);
 				}
-				return false;
+
+				if (!file_exists($destThumbnailPath)) {
+					return false;
+				}
 			}
 
 			// Return path or URL
@@ -1121,10 +1244,11 @@ class Transcode extends Component
 	 * @param Asset|string $filePath
 	 * @param string $formatHandle
 	 * @param bool $generate
+	 * @param bool $synchronous
 	 * @return string
 	 * @throws InvalidConfigException
 	 */
-	public function getVideoPosterUrl(Asset|string $filePath, string $formatHandle, bool $generate = false): string
+	public function getVideoPosterUrl(Asset|string $filePath, string $formatHandle, bool $generate = false, bool $synchronous = false): string
 	{
 		if (!Transcoder::$plugin->getSettings()->enableVideoPosters) {
 			return '';
@@ -1139,7 +1263,7 @@ class Transcode extends Component
 		$options['posterFormat'] = $formatHandle;
 		$options['preventBlackBars'] = (bool)Transcoder::$plugin->getSettings()->preventVideoPosterBlackBars;
 
-		$url = $this->getVideoThumbnailUrl($filePath, $options, $generate);
+		$url = $this->getVideoThumbnailUrl($filePath, $options, $generate, false, $synchronous);
 
 		return is_string($url) ? $url : '';
 	}
@@ -1166,12 +1290,27 @@ class Transcode extends Component
 	 * Generate all configured poster formats for a video.
 	 *
 	 * @param Asset|string $filePath
+	 * @param callable|null $progressCallback
 	 * @return array
 	 * @throws InvalidConfigException
 	 */
-	public function generateVideoPosters(Asset|string $filePath): array
+	public function generateVideoPosters(Asset|string $filePath, ?callable $progressCallback = null): array
 	{
-		return $this->getVideoPosterUrls($filePath, true);
+		$result = [];
+		$formats = $this->getVideoPosterFormats();
+		$total = count($formats);
+		$current = 0;
+
+		foreach ($formats as $formatHandle => $format) {
+			$current++;
+			if ($progressCallback !== null) {
+				$progressCallback($formatHandle, $current, $total);
+			}
+
+			$result[$formatHandle] = $this->getVideoPosterUrl($filePath, $formatHandle, true, true);
+		}
+
+		return $result;
 	}
 
 	/**
@@ -2387,6 +2526,12 @@ class Transcode extends Component
 			];
 		}
 
+		if ($this->isVideoPosterStatusActive($status)
+			&& (empty($status['lockFile']) || !is_file($status['lockFile']))
+		) {
+			return $this->sanitizeVideoStatus($status);
+		}
+
 		if (!empty($status['encodedFile']) && is_file($status['encodedFile']) && filesize($status['encodedFile']) > 0) {
 			$lockFile = $status['lockFile'] ?? null;
 			$progressFile = $status['progressFile'] ?? null;
@@ -2749,6 +2894,35 @@ class Transcode extends Component
 		unset($status['encodedFile'], $status['lockFile'], $status['progressFile'], $status['publicUrl']);
 
 		return $status;
+	}
+
+	/**
+	 * Return whether poster generation is currently queued or running.
+	 *
+	 * @param array $status
+	 * @return bool
+	 */
+	protected function isVideoPosterStatusActive(array $status): bool
+	{
+		return in_array($status['posterStatus'] ?? null, ['queued', 'generating'], true);
+	}
+
+	/**
+	 * Return poster status fields that should survive video status writes.
+	 *
+	 * @param array $status
+	 * @return array
+	 */
+	protected function getVideoPosterStatusFields(array $status): array
+	{
+		return array_intersect_key($status, array_flip([
+			'posterStatus',
+			'posterProgress',
+			'posterMessage',
+			'posterJobId',
+			'posterError',
+			'posterUrls',
+		]));
 	}
 
 	/**

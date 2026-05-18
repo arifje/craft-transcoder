@@ -83,11 +83,6 @@ class EncodeVideo extends BaseJob
                 $this->waitForVideoEncode($queue, $asset, is_array($status) ? $status : []);
             }
 
-            if ($settings->enableVideoPosters) {
-                $this->setProgress($queue, $settings->enableVideoEncoding ? 0.99 : 0, Craft::t('transcoder', 'Generating video posters'));
-                Transcoder::$plugin->transcode->generateVideoPosters($asset);
-            }
-
             $this->setProgress($queue, 1, Craft::t('transcoder', 'Video encode complete'));
         } catch (Throwable $e) {
             Craft::error($e->getMessage(), __METHOD__);
