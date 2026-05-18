@@ -63,6 +63,9 @@ return [
     // Determines whether video poster generation should be enabled
     'enableVideoPosters' => true,
 
+    // Adds a blurred cover background behind fitted video posters to avoid black bars
+    'preventVideoPosterBlackBars' => false,
+
     // Determines whether GIF to mp4 encoding should be enabled
     'enableGifEncoding' => true,
 

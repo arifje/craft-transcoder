@@ -1129,6 +1129,7 @@ class Transcode extends Component
 
 		$options = $this->coalesceOptions('defaultThumbnailOptions', $formats[$formatHandle]);
 		$options['posterFormat'] = $formatHandle;
+		$options['preventBlackBars'] = (bool)Transcoder::$plugin->getSettings()->preventVideoPosterBlackBars;
 
 		$url = $this->getVideoThumbnailUrl($filePath, $options, $generate);
 
@@ -2286,6 +2287,24 @@ class Transcode extends Component
 	protected function addScalingFfmpegArgs(array $options, string $ffmpegCmd): string
 	{
 		if (!empty($options['width']) && !empty($options['height'])) {
+			$sharpen = '';
+			if (!empty($options['sharpen']) && ($options['sharpen'] !== false)) {
+				$sharpen = ',unsharp=5:5:1.0:5:5:0.0';
+			}
+
+			if (!empty($options['preventBlackBars'])) {
+				$ffmpegCmd .= ' -vf "split=2[bg][fg];'
+					. '[bg]scale=' . $options['width'] . ':' . $options['height'] . ':force_original_aspect_ratio=increase'
+					. ',crop=' . $options['width'] . ':' . $options['height']
+					. ',boxblur=20:1[bg];'
+					. '[fg]scale=' . $options['width'] . ':' . $options['height'] . ':force_original_aspect_ratio=decrease[fg];'
+					. '[bg][fg]overlay=(W-w)/2:(H-h)/2'
+					. $sharpen
+					. '"';
+
+				return $ffmpegCmd;
+			}
+
 			// Handle "none", "crop", and "letterbox" aspectRatios
 			$aspectRatio = '';
 			if (!empty($options['aspectRatio'])) {
@@ -2311,10 +2330,6 @@ class Transcode extends Component
 						$options['aspectRatio'] = 'none';
 						break;
 				}
-			}
-			$sharpen = '';
-			if (!empty($options['sharpen']) && ($options['sharpen'] !== false)) {
-				$sharpen = ',unsharp=5:5:1.0:5:5:0.0';
 			}
 			$ffmpegCmd .= ' -vf "scale='
 				. $options['width'] . ':' . $options['height']

@@ -56,6 +56,15 @@
         on: settings.enableVideoPosters,
     }) }}
 
+    {{ forms.lightswitchField({
+        label: 'Prevent black bars'|t('transcoder'),
+        instructions: 'Add a blurred cover background behind fitted video posters, so portrait videos look better in wide poster formats.'|t('transcoder'),
+        warning: macros.configWarning('preventVideoPosterBlackBars', 'transcoder'),
+        id: 'preventVideoPosterBlackBars',
+        name: 'preventVideoPosterBlackBars',
+        on: settings.preventVideoPosterBlackBars,
+    }) }}
+
     {{ forms.editableTableField({
         label: 'Video poster formats'|t('transcoder'),
         instructions: 'Define the poster images Transcoder should generate for each queued video. Leave width or height empty to use the original video dimension.'|t('transcoder'),

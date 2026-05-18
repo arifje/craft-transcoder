@@ -19,6 +19,8 @@ return [
     'Allow Transcoder to encode uploaded videos and queue missing encodes from Twig/admin previews. Disable this to serve original videos while keeping other plugin helpers available.' => 'Allow Transcoder to encode uploaded videos and queue missing encodes from Twig/admin previews. Disable this to serve original videos while keeping other plugin helpers available.',
     'Enable video posters' => 'Enable video posters',
     'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.' => 'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.',
+    'Prevent black bars' => 'Prevent black bars',
+    'Add a blurred cover background behind fitted video posters, so portrait videos look better in wide poster formats.' => 'Add a blurred cover background behind fitted video posters, so portrait videos look better in wide poster formats.',
     'Enable download file endpoint' => 'Enable download file endpoint',
     'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.' => 'Allow anonymous frontend access to the Transcoder download endpoint. Only enable this if generated files are intended to be downloadable.',
     'Queue videos on asset upload' => 'Queue videos on asset upload',

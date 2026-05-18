@@ -91,6 +91,11 @@ class Settings extends Model
     public bool $enableVideoPosters = true;
 
     /**
+     * @var bool Adds a blurred cover background behind fitted video posters to avoid black bars
+     */
+    public bool $preventVideoPosterBlackBars = false;
+
+    /**
      * @var bool Determines whether GIF encoding should be enabled
      */
     public bool $enableGifEncoding = true;
@@ -393,6 +398,7 @@ class Settings extends Model
             ['enableDownloadFileEndpoint', 'boolean'],
             ['enableVideoEncoding', 'boolean'],
             ['enableVideoPosters', 'boolean'],
+            ['preventVideoPosterBlackBars', 'boolean'],
             ['enableGifEncoding', 'boolean'],
             ['useHashedNames', 'boolean'],
             ['videoFilenameStrategy', 'in', 'range' => ['source', 'options']],
