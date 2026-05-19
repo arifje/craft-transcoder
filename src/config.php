@@ -60,6 +60,9 @@ return [
     // Determines whether video encoding should be enabled
     'enableVideoEncoding' => true,
 
+    // Detect and crop black bars from uploaded videos before encoding
+    'autoCropVideoBlackBars' => false,
+
     // Determines whether video poster generation should be enabled
     'enableVideoPosters' => true,
 

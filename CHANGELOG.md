@@ -1,5 +1,9 @@
 # Transcoder Changelog
 
+## 4.3.2 - 2026.05.19
+### Added
+* Add an optional video black-bar crop detection setting for video encodes.
+
 ## 4.3.1 - 2026.05.19
 ### Added
 * Add a CP Utility runtime switch for enabling/disabling all encoding work.

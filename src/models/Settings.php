@@ -86,6 +86,11 @@ class Settings extends Model
     public bool $enableVideoEncoding = true;
 
     /**
+     * @var bool Detect and crop black bars from uploaded videos before encoding
+     */
+    public bool $autoCropVideoBlackBars = false;
+
+    /**
      * @var bool Determines whether video poster generation should be enabled
      */
     public bool $enableVideoPosters = true;
@@ -397,6 +402,7 @@ class Settings extends Model
             ['transcoderUrls', ArrayValidator::class],
             ['enableDownloadFileEndpoint', 'boolean'],
             ['enableVideoEncoding', 'boolean'],
+            ['autoCropVideoBlackBars', 'boolean'],
             ['enableVideoPosters', 'boolean'],
             ['preventVideoPosterBlackBars', 'boolean'],
             ['enableGifEncoding', 'boolean'],

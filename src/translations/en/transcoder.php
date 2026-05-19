@@ -25,6 +25,8 @@ return [
     'Could not save Transcoder runtime settings.' => 'Could not save Transcoder runtime settings.',
     'Enable video encoding' => 'Enable video encoding',
     'Allow Transcoder to encode uploaded videos and queue missing encodes from Twig/admin previews. Disable this to serve original videos while keeping other plugin helpers available.' => 'Allow Transcoder to encode uploaded videos and queue missing encodes from Twig/admin previews. Disable this to serve original videos while keeping other plugin helpers available.',
+    'Auto crop black bars' => 'Auto crop black bars',
+    'Detect black bars in uploaded videos and crop them before encoding. This is conservative and only crops when ffmpeg reports a stable, sensible crop area.' => 'Detect black bars in uploaded videos and crop them before encoding. This is conservative and only crops when ffmpeg reports a stable, sensible crop area.',
     'Enable video posters' => 'Enable video posters',
     'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.' => 'Generate configured video poster images when videos are queued. Templates can read poster URLs without starting ffmpeg work.',
     'Prevent black bars' => 'Prevent black bars',

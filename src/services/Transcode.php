@@ -74,6 +74,7 @@ class Transcode extends Component
 		'sharpen',
 		'synchronous',
 		'stripMetadata',
+		'preVideoFilters',
 		'videoBitRate',
 		'videoCodecOptions',
 	];
@@ -227,6 +228,7 @@ class Transcode extends Component
 		$videoEncoders = $settings['videoEncoders'];
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+		$videoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
 
 		$videoFilenameInput = $filePath instanceof Asset ? $filePath : ($filePathResolved ?? '');
 		$destVideoFile = $this->getFilename($videoFilenameInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions));
@@ -377,6 +379,14 @@ class Transcode extends Component
 		//     $ffmpegCmd .= ' -b:v ' . $videoOptions['videoBitRate']
 		//         . ' -maxrate ' . $videoOptions['videoBitRate'];
 		// }
+
+		if ($generate && $settings->autoCropVideoBlackBars && $filePathResolved !== null) {
+			$cropFilter = $this->detectVideoBlackBarCrop($filePathResolved);
+			if ($cropFilter !== null) {
+				$videoOptions['preVideoFilters'][] = $cropFilter;
+				Craft::info("Transcoder: applying detected video crop filter $cropFilter for $filePathResolved", __METHOD__);
+			}
+		}
 
 		$ffmpegCmd = $this->addScalingFfmpegArgs($videoOptions, $ffmpegCmd);
 
@@ -1704,6 +1714,7 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+		$videoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
 
 		return $this->getFilename($filePath, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions));
 	}
@@ -2524,6 +2535,8 @@ class Transcode extends Component
 	 */
 	protected function addScalingFfmpegArgs(array $options, string $ffmpegCmd): string
 	{
+		$preFilters = $this->getPreVideoFilters($options);
+
 		if (!empty($options['width']) && !empty($options['height'])) {
 			$sharpen = '';
 			if (!empty($options['sharpen']) && ($options['sharpen'] !== false)) {
@@ -2531,7 +2544,7 @@ class Transcode extends Component
 			}
 
 			if (!empty($options['preventBlackBars'])) {
-				$ffmpegCmd .= ' -vf "split=2[bg][fg];'
+				$ffmpegCmd .= ' -vf "' . $this->joinVideoFilters(array_merge($preFilters, ['split=2[bg][fg]'])) . ';'
 					. '[bg]scale=' . $options['width'] . ':' . $options['height'] . ':force_original_aspect_ratio=increase'
 					. ',crop=' . $options['width'] . ':' . $options['height']
 					. ',boxblur=20:1[bg];'
@@ -2569,14 +2582,183 @@ class Transcode extends Component
 						break;
 				}
 			}
-			$ffmpegCmd .= ' -vf "scale='
-				. $options['width'] . ':' . $options['height']
-				. $aspectRatio
-				. $sharpen
-				. '"';
+			$filters = array_merge($preFilters, [
+				'scale=' . $options['width'] . ':' . $options['height'] . $aspectRatio . $sharpen,
+			]);
+			$ffmpegCmd .= ' -vf "' . $this->joinVideoFilters($filters) . '"';
+		} elseif (!empty($preFilters)) {
+			$ffmpegCmd .= ' -vf "' . $this->joinVideoFilters($preFilters) . '"';
 		}
 
 		return $ffmpegCmd;
+	}
+
+	/**
+	 * Return video filters that should run before scaling.
+	 *
+	 * @param array $options
+	 * @return array
+	 */
+	protected function getPreVideoFilters(array $options): array
+	{
+		$filters = $options['preVideoFilters'] ?? [];
+		if (is_string($filters) && $filters !== '') {
+			$filters = [$filters];
+		}
+		if (!is_array($filters)) {
+			return [];
+		}
+
+		return array_values(array_filter($filters, static fn($filter) => is_string($filter) && $filter !== ''));
+	}
+
+	/**
+	 * Join ffmpeg video filters into a single filter chain.
+	 *
+	 * @param array $filters
+	 * @return string
+	 */
+	protected function joinVideoFilters(array $filters): string
+	{
+		return implode(',', array_values(array_filter($filters)));
+	}
+
+	/**
+	 * Detect a safe crop filter for videos with black bars.
+	 *
+	 * @param string $filePath
+	 * @return string|null
+	 * @throws InvalidConfigException
+	 */
+	protected function detectVideoBlackBarCrop(string $filePath): ?string
+	{
+		$info = $this->getFileInfo($filePath, true) ?? [];
+		$sourceWidth = (int)($info['width'] ?? 0);
+		$sourceHeight = (int)($info['height'] ?? 0);
+		$duration = (float)($info['duration'] ?? 0);
+
+		if ($sourceWidth <= 0 || $sourceHeight <= 0) {
+			Craft::warning("Transcoder: could not detect source dimensions for auto crop: $filePath", __METHOD__);
+			return null;
+		}
+
+		$crops = [];
+		foreach ($this->getCropDetectSampleTimes($duration) as $sampleTime) {
+			$crop = $this->detectVideoBlackBarCropAtTime($filePath, $sampleTime);
+			if ($crop !== null && $this->isDetectedCropSafe($crop, $sourceWidth, $sourceHeight)) {
+				$key = implode(':', $crop);
+				$crops[$key] = ($crops[$key] ?? 0) + 1;
+			}
+		}
+
+		if (empty($crops)) {
+			Craft::info("Transcoder: no safe black-bar crop detected for $filePath", __METHOD__);
+			return null;
+		}
+
+		arsort($crops);
+		[$width, $height, $x, $y] = array_map('intval', explode(':', (string)array_key_first($crops)));
+
+		return "crop=$width:$height:$x:$y";
+	}
+
+	/**
+	 * Return representative sample times for ffmpeg cropdetect.
+	 *
+	 * @param float $duration
+	 * @return array
+	 */
+	protected function getCropDetectSampleTimes(float $duration): array
+	{
+		if ($duration <= 0) {
+			return [0.5, 2.0, 5.0];
+		}
+
+		$latest = max(0.5, $duration - 1.0);
+		$sampleTimes = [
+			1.0,
+			min(3.0, $latest),
+			$duration * 0.25,
+			$duration * 0.5,
+			$duration * 0.75,
+		];
+
+		$sampleTimes = array_map(static fn($time) => round(max(0.2, min($time, $latest)), 2), $sampleTimes);
+
+		return array_values(array_unique($sampleTimes));
+	}
+
+	/**
+	 * Run ffmpeg cropdetect at a single timestamp.
+	 *
+	 * @param string $filePath
+	 * @param float $sampleTime
+	 * @return array|null
+	 */
+	protected function detectVideoBlackBarCropAtTime(string $filePath, float $sampleTime): ?array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$command = $settings['ffmpegPath']
+			. ' -hide_banner -nostdin'
+			. ' -ss ' . escapeshellarg((string)$sampleTime)
+			. ' -i ' . escapeshellarg($filePath)
+			. ' -t 1 -vf cropdetect=24:16:0 -f null - 2>&1';
+
+		$output = $this->executeShellCommand($command);
+		Craft::info("Transcoder cropdetect command: $command", __METHOD__);
+
+		if (!preg_match_all('/crop=(\d+):(\d+):(\d+):(\d+)/', $output, $matches, PREG_SET_ORDER)) {
+			return null;
+		}
+
+		$lastMatch = end($matches);
+		if (!is_array($lastMatch)) {
+			return null;
+		}
+
+		return [
+			(int)$lastMatch[1],
+			(int)$lastMatch[2],
+			(int)$lastMatch[3],
+			(int)$lastMatch[4],
+		];
+	}
+
+	/**
+	 * Only apply cropdetect results that look intentional and safe.
+	 *
+	 * @param array $crop
+	 * @param int $sourceWidth
+	 * @param int $sourceHeight
+	 * @return bool
+	 */
+	protected function isDetectedCropSafe(array $crop, int $sourceWidth, int $sourceHeight): bool
+	{
+		[$width, $height, $x, $y] = $crop;
+		if ($width <= 0 || $height <= 0 || $x < 0 || $y < 0) {
+			return false;
+		}
+
+		if ($width > $sourceWidth || $height > $sourceHeight || ($x + $width) > ($sourceWidth + 2) || ($y + $height) > ($sourceHeight + 2)) {
+			return false;
+		}
+
+		$removedWidth = $sourceWidth - $width;
+		$removedHeight = $sourceHeight - $height;
+		$removesMeaningfulBars = $removedWidth >= max(16, $sourceWidth * 0.04)
+			|| $removedHeight >= max(16, $sourceHeight * 0.04);
+		if (!$removesMeaningfulBars) {
+			return false;
+		}
+
+		$keepsEnoughImage = ($width / $sourceWidth) >= 0.25
+			&& ($height / $sourceHeight) >= 0.25
+			&& (($width * $height) / ($sourceWidth * $sourceHeight)) >= 0.2;
+		if (!$keepsEnoughImage) {
+			return false;
+		}
+
+		return $width % 2 === 0 && $height % 2 === 0;
 	}
 
 	// Protected Methods
@@ -2711,6 +2893,7 @@ class Transcode extends Component
 		$videoEncoders = $settings['videoEncoders'];
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+		$videoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
 		$destVideoFile = $this->getFilename(
 			$filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''),
 			$videoOptions,

@@ -24,6 +24,15 @@
     }) }}
 
     {{ forms.lightswitchField({
+        label: 'Auto crop black bars'|t('transcoder'),
+        instructions: 'Detect black bars in uploaded videos and crop them before encoding. This is conservative and only crops when ffmpeg reports a stable, sensible crop area.'|t('transcoder'),
+        warning: macros.configWarning('autoCropVideoBlackBars', 'transcoder'),
+        id: 'autoCropVideoBlackBars',
+        name: 'autoCropVideoBlackBars',
+        on: settings.autoCropVideoBlackBars,
+    }) }}
+
+    {{ forms.lightswitchField({
         label: 'Queue videos on asset upload'|t('transcoder'),
         instructions: 'Queue video encoding and poster generation when a new video asset is uploaded. This requires a working Craft queue runner for reliable background processing.'|t('transcoder'),
         warning: macros.configWarning('queueVideosOnSave', 'transcoder'),
