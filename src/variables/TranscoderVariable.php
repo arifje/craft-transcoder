@@ -35,7 +35,8 @@ class TranscoderVariable implements ViteVariableInterface
      */
     public function isVideoEncodingEnabled(): bool
     {
-        return (bool)Transcoder::$plugin->getSettings()->enableVideoEncoding;
+        return Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()
+            && (bool)Transcoder::$plugin->getSettings()->enableVideoEncoding;
     }
 
     /**
@@ -45,7 +46,8 @@ class TranscoderVariable implements ViteVariableInterface
      */
     public function isVideoPostersEnabled(): bool
     {
-        return (bool)Transcoder::$plugin->getSettings()->enableVideoPosters;
+        return Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()
+            && (bool)Transcoder::$plugin->getSettings()->enableVideoPosters;
     }
 
     /**
@@ -65,7 +67,8 @@ class TranscoderVariable implements ViteVariableInterface
      */
     public function isGifEncodingEnabled(): bool
     {
-        return (bool)Transcoder::$plugin->getSettings()->enableGifEncoding;
+        return Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()
+            && (bool)Transcoder::$plugin->getSettings()->enableGifEncoding;
     }
 
     /**

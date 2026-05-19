@@ -15,6 +15,14 @@
  */
 return [
     'Transcoder caches' => 'Transcoder caches',
+    'Transcoder Encoding' => 'Transcoder Encoding',
+    'Encoding enabled' => 'Encoding enabled',
+    'When disabled, Transcoder will not start video, GIF, or poster encoding from uploads, queue jobs, or templates. Frontend helpers return disabled so templates can serve original assets.' => 'When disabled, Transcoder will not start video, GIF, or poster encoding from uploads, queue jobs, or templates. Frontend helpers return disabled so templates can serve original assets.',
+    'Encoding disabled' => 'Encoding disabled',
+    'Encoding stopped by runtime switch.' => 'Encoding stopped by runtime switch.',
+    'Transcoder runtime settings saved.' => 'Transcoder runtime settings saved.',
+    'Transcoder runtime settings saved. Stopped {count} active encode(s).' => 'Transcoder runtime settings saved. Stopped {count} active encode(s).',
+    'Could not save Transcoder runtime settings.' => 'Could not save Transcoder runtime settings.',
     'Enable video encoding' => 'Enable video encoding',
     'Allow Transcoder to encode uploaded videos and queue missing encodes from Twig/admin previews. Disable this to serve original videos while keeping other plugin helpers available.' => 'Allow Transcoder to encode uploaded videos and queue missing encodes from Twig/admin previews. Disable this to serve original videos while keeping other plugin helpers available.',
     'Enable video posters' => 'Enable video posters',
@@ -59,5 +67,5 @@ return [
     '{name} cache directory cleared' => '{name} cache directory cleared',
     'Queued {count} video encode(s) for entry {id}' => 'Queued {count} video encode(s) for entry {id}',
     'Manifest file not found at: {manifestPath}' => 'Manifest file not found at: {manifestPath}',
-    'Module does not exist in the manifest: {moduleName}' => 'Module does not exist in the manifest: {moduleName}'
+    'Module does not exist in the manifest: {moduleName}' => 'Module does not exist in the manifest: {moduleName}',
 ];

@@ -51,6 +51,21 @@ class EncodeVideo extends BaseJob
             return;
         }
 
+        if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
+            Transcoder::$plugin->transcode->writeVideoStatus(
+                $asset,
+                $this->videoOptions,
+                [
+                    'status' => 'disabled',
+                    'url' => '',
+                    'progress' => 0,
+                ],
+                $this->encodingOptions
+            );
+            $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+            return;
+        }
+
         try {
             $settings = Transcoder::$plugin->getSettings();
 

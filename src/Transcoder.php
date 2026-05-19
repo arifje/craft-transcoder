@@ -20,6 +20,7 @@ use craft\events\ElementEvent;
 use craft\events\ModelEvent;
 use craft\events\PluginEvent;
 use craft\events\RegisterCacheOptionsEvent;
+use craft\events\RegisterComponentTypesEvent;
 use craft\events\RegisterUrlRulesEvent;
 use craft\events\TemplateEvent;
 use craft\helpers\Assets as AssetsHelper;
@@ -28,12 +29,14 @@ use craft\helpers\UrlHelper;
 use craft\services\Assets;
 use craft\services\Elements;
 use craft\services\Plugins;
+use craft\services\Utilities;
 use craft\utilities\ClearCaches;
 use craft\web\twig\variables\CraftVariable;
 use craft\web\UrlManager;
 use craft\web\View;
 use nystudio107\transcoder\models\Settings;
 use nystudio107\transcoder\services\ServicesTrait;
+use nystudio107\transcoder\utilities\EncodingUtility;
 use nystudio107\transcoder\variables\TranscoderVariable;
 use Throwable;
 use yii\base\ErrorException;
@@ -89,7 +92,7 @@ class Transcoder extends Plugin
     /**
      * @var string
      */
-    public string $schemaVersion = '1.0.0';
+    public string $schemaVersion = '1.1.0';
 
     // Public Methods
     // =========================================================================
@@ -113,6 +116,8 @@ class Transcoder extends Plugin
         $this->installEventHandlers();
         // Register settings page tabs
         $this->registerSettingsTabs();
+        // Register CP utilities
+        $this->registerUtilities();
         // We've loaded!
         Craft::info(
             Craft::t(
@@ -228,6 +233,24 @@ class Transcoder extends Plugin
                         ],
                     ];
                 }
+            }
+        );
+    }
+
+    /**
+     * Register CP utilities.
+     */
+    protected function registerUtilities(): void
+    {
+        $eventName = defined(Utilities::class . '::EVENT_REGISTER_UTILITIES')
+            ? Utilities::EVENT_REGISTER_UTILITIES
+            : Utilities::EVENT_REGISTER_UTILITY_TYPES;
+
+        Event::on(
+            Utilities::class,
+            $eventName,
+            static function (RegisterComponentTypesEvent $event) {
+                $event->types[] = EncodingUtility::class;
             }
         );
     }

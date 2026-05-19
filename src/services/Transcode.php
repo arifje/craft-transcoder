@@ -104,6 +104,61 @@ class Transcode extends Component
 	// =========================================================================
 
 	/**
+	 * Return whether runtime encoding is enabled from the CP Utility switch.
+	 *
+	 * @return bool
+	 */
+	public function isRuntimeEncodingEnabled(): bool
+	{
+		return Transcoder::$plugin->runtimeSettings->isEncodingEnabled();
+	}
+
+	/**
+	 * Stop active ffmpeg processes that Transcoder is tracking.
+	 *
+	 * @return int
+	 */
+	public function stopActiveEncodingProcesses(): int
+	{
+		$stopped = 0;
+		$statusFiles = glob($this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . '*.json') ?: [];
+
+		foreach ($statusFiles as $statusFile) {
+			$status = JsonHelper::decodeIfJson((string)@file_get_contents($statusFile), true);
+			if (!is_array($status)) {
+				continue;
+			}
+
+			$lockFile = $status['lockFile'] ?? null;
+			$progressFile = $status['progressFile'] ?? null;
+			if (!$lockFile || !is_file($lockFile)) {
+				continue;
+			}
+
+			$pid = trim((string)@file_get_contents($lockFile));
+			if ($pid === '' || !ctype_digit($pid) || !$this->isProcessRunningFromLockFile($lockFile)) {
+				$this->removeEncodeTempFiles($lockFile, $progressFile);
+				continue;
+			}
+
+			exec('kill -TERM ' . $pid . ' 2>&1', $output, $exitCode);
+			if ($exitCode === 0 || !$this->isProcessRunningFromLockFile($lockFile)) {
+				$stopped++;
+				$this->removeEncodeTempFiles($lockFile, $progressFile);
+				$status['status'] = 'disabled';
+				$status['url'] = '';
+				$status['progress'] = 0;
+				$status['error'] = Craft::t('transcoder', 'Encoding stopped by runtime switch.');
+				if (!empty($status['key'])) {
+					$this->writeVideoStatusByKey((string)$status['key'], $status);
+				}
+			}
+		}
+
+		return $stopped;
+	}
+
+	/**
 	 * Returns a JSON-encoded status response for a transcoded video.
 	 *
 	 * @param string|Asset $filePath path to the original video -OR- an Asset
@@ -118,7 +173,7 @@ class Transcode extends Component
 	public function getVideoUrl(string|Asset $filePath, array $videoOptions, bool $generate = true, array $encodingOptions = []): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
-		if (!$settings->enableVideoEncoding) {
+		if (!$this->isRuntimeEncodingEnabled() || !$settings->enableVideoEncoding) {
 			return JsonHelper::encode([
 				'status' => 'disabled',
 				'url' => '',
@@ -439,6 +494,13 @@ class Transcode extends Component
 	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
 	{
 		$settings = Transcoder::$plugin->getSettings();
+		if (!$this->isRuntimeEncodingEnabled()) {
+			return [
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
 		if (!$this->isVideoAsset($asset)) {
 			return [
 				'status' => 'error',
@@ -518,6 +580,14 @@ class Transcode extends Component
 	 */
 	public function queueVideoPosters(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
 	{
+		if (!$this->isRuntimeEncodingEnabled()) {
+			return [
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
 		if (!$this->isVideoAsset($asset)) {
 			return [
 				'status' => 'error',
@@ -599,7 +669,8 @@ class Transcode extends Component
 	{
 		$settings = Transcoder::$plugin->getSettings();
 
-		return ($settings->queueVideosOnSave || $settings->queueVideosOnEntrySave)
+		return $this->isRuntimeEncodingEnabled()
+			&& ($settings->queueVideosOnSave || $settings->queueVideosOnEntrySave)
 			&& ($settings->enableVideoEncoding || $settings->enableVideoPosters);
 	}
 
@@ -612,7 +683,8 @@ class Transcode extends Component
 	{
 		$settings = Transcoder::$plugin->getSettings();
 
-		return ($settings->queueGifsOnSave || $settings->queueGifsOnEntrySave)
+		return $this->isRuntimeEncodingEnabled()
+			&& ($settings->queueGifsOnSave || $settings->queueGifsOnEntrySave)
 			&& $settings->enableGifEncoding;
 	}
 
@@ -675,6 +747,14 @@ class Transcode extends Component
 	 */
 	public function queueGifEncode(Asset $asset, array $gifOptions = [], int $delay = 0): array
 	{
+		if (!$this->isRuntimeEncodingEnabled()) {
+			return [
+				'status' => 'disabled',
+				'url' => '',
+				'progress' => 0,
+			];
+		}
+
 		if (!$this->isGifAsset($asset)) {
 			return [
 				'status' => 'error',
@@ -731,11 +811,13 @@ class Transcode extends Component
 	{
 		$status = $this->getVideoStatusData($filePath, $videoOptions, $encodingOptions);
 		$missingPosters = $filePath instanceof Asset
+			&& $this->isRuntimeEncodingEnabled()
 			&& Transcoder::$plugin->getSettings()->enableVideoPosters
 			&& $this->hasMissingVideoPosters($filePath);
 
 		if ($queueIfMissing
 			&& $filePath instanceof Asset
+			&& $this->isRuntimeEncodingEnabled()
 			&& (
 				($status['status'] ?? null) === 'pending'
 				|| (($status['status'] ?? null) === 'ok' && $missingPosters)
@@ -775,7 +857,7 @@ class Transcode extends Component
 	 */
 	public function getVideoStatusData(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): array
 	{
-		if (!Transcoder::$plugin->getSettings()->enableVideoEncoding) {
+		if (!$this->isRuntimeEncodingEnabled() || !Transcoder::$plugin->getSettings()->enableVideoEncoding) {
 			return [
 				'status' => 'disabled',
 				'url' => '',
@@ -1116,6 +1198,10 @@ class Transcode extends Component
 	 */
 	public function getVideoThumbnailUrl(Asset|string $filePath, array $thumbnailOptions, bool $generate = true, bool $asPath = false, bool $synchronous = false): string|false|null
 	{
+		if ($generate && !$this->isRuntimeEncodingEnabled()) {
+			return false;
+		}
+
 		$result = null;
 		$settings = Transcoder::$plugin->getSettings();
 		$subfolder = $this->getSubfolderFromPath($filePath);
@@ -1250,7 +1336,7 @@ class Transcode extends Component
 	 */
 	public function getVideoPosterUrl(Asset|string $filePath, string $formatHandle, bool $generate = false, bool $synchronous = false): string
 	{
-		if (!Transcoder::$plugin->getSettings()->enableVideoPosters) {
+		if (!$this->isRuntimeEncodingEnabled() || !Transcoder::$plugin->getSettings()->enableVideoPosters) {
 			return '';
 		}
 
@@ -1678,6 +1764,10 @@ class Transcode extends Component
 	 */
 	public function handleGetAssetThumbPath(DefineAssetThumbUrlEvent $event): null|false|string
 	{
+		if (!$this->isRuntimeEncodingEnabled()) {
+			return null;
+		}
+
 		$options = [
 			'width' => $event->width,
 			'height' => $event->height,
@@ -1702,6 +1792,7 @@ class Transcode extends Component
 		$status = $this->getGifStatusData($filePath, $gifOptions);
 		if ($queueIfMissing
 			&& $filePath instanceof Asset
+			&& $this->isRuntimeEncodingEnabled()
 			&& ($status['status'] ?? null) === 'pending'
 		) {
 			$settings = Transcoder::$plugin->getSettings();
@@ -1736,7 +1827,7 @@ class Transcode extends Component
 	 */
 	public function getGifStatusData(Asset|string $filePath, array $gifOptions = []): array
 	{
-		if (!Transcoder::$plugin->getSettings()->enableGifEncoding) {
+		if (!$this->isRuntimeEncodingEnabled() || !Transcoder::$plugin->getSettings()->enableGifEncoding) {
 			return [
 				'status' => 'disabled',
 				'url' => '',
@@ -2015,7 +2106,7 @@ class Transcode extends Component
 	public function getGifUrl(Asset|string $filePath, array $gifOptions, bool $generate = true): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
-		if (!$settings->enableGifEncoding) {
+		if (!$this->isRuntimeEncodingEnabled() || !$settings->enableGifEncoding) {
 			return JsonHelper::encode([
 				'status' => 'disabled',
 				'url' => '',

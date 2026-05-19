@@ -48,6 +48,24 @@ class GenerateVideoPosters extends BaseJob
             return;
         }
 
+        if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
+            Transcoder::$plugin->transcode->writeVideoPosterStatus(
+                $asset,
+                $this->videoOptions,
+                [
+                    'status' => 'disabled',
+                    'url' => '',
+                    'progress' => 0,
+                    'posterStatus' => 'disabled',
+                    'posterProgress' => 0,
+                    'posterMessage' => Craft::t('transcoder', 'Encoding disabled'),
+                ],
+                $this->encodingOptions
+            );
+            $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+            return;
+        }
+
         try {
             Transcoder::$plugin->transcode->writeVideoPosterStatus(
                 $asset,

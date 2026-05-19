@@ -1,5 +1,10 @@
 # Transcoder Changelog
 
+## 4.3.1 - 2026.05.19
+### Added
+* Add a CP Utility runtime switch for enabling/disabling all encoding work.
+* Stop tracked active ffmpeg processes when encoding is disabled from the utility.
+
 ## 4.3.0 - 2026.05.17
 ### Added
 * Add queue-based GIF encoding with queue-aware Twig status helpers.

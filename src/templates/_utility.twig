@@ -1,0 +1,17 @@
+{% import '_includes/forms' as forms %}
+
+<form method="post" accept-charset="UTF-8">
+    {{ actionInput('transcoder/runtime-settings/save') }}
+    {{ redirectInput('utilities/transcoder-encoding') }}
+    {{ csrfInput() }}
+
+    {{ forms.lightswitchField({
+        label: 'Encoding enabled'|t('transcoder'),
+        id: 'enabled',
+        name: 'enabled',
+        on: enabled,
+        instructions: 'When disabled, Transcoder will not start video, GIF, or poster encoding from uploads, queue jobs, or templates. Frontend helpers return disabled so templates can serve original assets.'|t('transcoder'),
+    }) }}
+
+    <input type="submit" class="btn submit" value="{{ 'Save'|t('app') }}">
+</form>

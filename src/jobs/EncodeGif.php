@@ -46,6 +46,20 @@ class EncodeGif extends BaseJob
             return;
         }
 
+        if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
+            Transcoder::$plugin->transcode->writeGifStatus(
+                $asset,
+                $this->gifOptions,
+                [
+                    'status' => 'disabled',
+                    'url' => '',
+                    'progress' => 0,
+                ]
+            );
+            $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+            return;
+        }
+
         try {
             $this->setProgress($queue, 0, Craft::t('transcoder', 'Starting GIF encode'));
             Transcoder::$plugin->transcode->writeGifStatus(

@@ -19,6 +19,7 @@ use yii\base\InvalidConfigException;
  * @package   Transcode
  * @since     1.2.23
  *
+ * @property RuntimeSettingsService $runtimeSettings
  * @property Transcode $transcode
  * @property VitePluginService $vite
  */
@@ -34,6 +35,7 @@ trait ServicesTrait
     {
         return [
             'components' => [
+                'runtimeSettings' => RuntimeSettingsService::class,
                 'transcode' => Transcode::class,
                 // Register the vite service
                 'vite' => [
@@ -62,6 +64,17 @@ trait ServicesTrait
     public function getTranscode(): Transcode
     {
         return $this->get('transcode');
+    }
+
+    /**
+     * Returns the runtime settings service
+     *
+     * @return RuntimeSettingsService The runtime settings service
+     * @throws InvalidConfigException
+     */
+    public function getRuntimeSettings(): RuntimeSettingsService
+    {
+        return $this->get('runtimeSettings');
     }
 
     /**
