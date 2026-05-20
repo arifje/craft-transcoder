@@ -1,5 +1,9 @@
 # Transcoder Changelog
 
+## 4.3.4 - 2026.05.20
+### Changed
+* Add detailed video auto-crop logging and status metadata for detected crop filters.
+
 ## 4.3.3 - 2026.05.20
 ### Fixed
 * Improve video black-bar auto crop detection for TikTok-style videos with text in the black wrapper area.

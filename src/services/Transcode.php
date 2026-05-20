@@ -380,11 +380,15 @@ class Transcode extends Component
 		//         . ' -maxrate ' . $videoOptions['videoBitRate'];
 		// }
 
+		$detectedCropFilter = null;
 		if ($generate && $settings->autoCropVideoBlackBars && $filePathResolved !== null) {
-			$cropFilter = $this->detectVideoBlackBarCrop($filePathResolved);
-			if ($cropFilter !== null) {
-				$videoOptions['preVideoFilters'][] = $cropFilter;
-				Craft::info("Transcoder: applying detected video crop filter $cropFilter for $filePathResolved", __METHOD__);
+			Craft::info("Transcoder: video black-bar auto crop enabled for $filePathResolved", __METHOD__);
+			$detectedCropFilter = $this->detectVideoBlackBarCrop($filePathResolved);
+			if ($detectedCropFilter !== null) {
+				$videoOptions['preVideoFilters'][] = $detectedCropFilter;
+				Craft::info("Transcoder: applying detected video crop filter $detectedCropFilter for $filePathResolved", __METHOD__);
+			} else {
+				Craft::info("Transcoder: no video crop filter applied for $filePathResolved", __METHOD__);
 			}
 		}
 
@@ -424,12 +428,18 @@ class Transcode extends Component
 			}
 
 			Craft::info("Started ffmpeg PID $pid: $ffmpegCmd", __METHOD__);
-			return JsonHelper::encode([
+			$status = [
 				'status' => 'encoding',
 				'url' => '',
 				'info' => 'Encoding started',
 				'ffmpegCommand' => $ffmpegCommand,
-			]);
+			];
+			if ($detectedCropFilter !== null) {
+				$status['detectedCrop'] = $detectedCropFilter;
+				$status['detectedCropSource'] = 'cropdetect';
+			}
+
+			return JsonHelper::encode($status);
 		}
 
 		if ($isDev) {
@@ -2636,6 +2646,7 @@ class Transcode extends Component
 		$sourceWidth = (int)($info['width'] ?? 0);
 		$sourceHeight = (int)($info['height'] ?? 0);
 		$duration = (float)($info['duration'] ?? 0);
+		Craft::info("Transcoder: cropdetect source dimensions for $filePath: {$sourceWidth}x{$sourceHeight}, duration {$duration}", __METHOD__);
 
 		if ($sourceWidth <= 0 || $sourceHeight <= 0) {
 			Craft::warning("Transcoder: could not detect source dimensions for auto crop: $filePath", __METHOD__);
@@ -2658,8 +2669,9 @@ class Transcode extends Component
 
 		arsort($crops);
 		[$width, $height, $x, $y] = array_map('intval', explode(':', (string)array_key_first($crops)));
+		Craft::info('Transcoder: selected video crop for ' . $filePath . ': crop=' . $this->formatCrop($width, $height, $x, $y) . ' from candidates ' . JsonHelper::encode($crops), __METHOD__);
 
-		return "crop=$width:$height:$x:$y";
+		return 'crop=' . $this->formatCrop($width, $height, $x, $y);
 	}
 
 	/**
@@ -2710,6 +2722,7 @@ class Transcode extends Component
 		Craft::info("Transcoder cropdetect command: $command", __METHOD__);
 
 		if (!preg_match_all('/crop=(\d+):(\d+):(\d+):(\d+)/', $output, $matches, PREG_SET_ORDER)) {
+			Craft::info('Transcoder: cropdetect produced no crop output at sample ' . $sampleTime . 's for ' . $filePath, __METHOD__);
 			return null;
 		}
 
@@ -2718,14 +2731,24 @@ class Transcode extends Component
 			return null;
 		}
 
-		$crop = [
+		$rawCrop = [
 			(int)$lastMatch[1],
 			(int)$lastMatch[2],
 			(int)$lastMatch[3],
 			(int)$lastMatch[4],
 		];
+		$crop = $this->adjustDetectedCropToWideContentBand($rawCrop, $sourceWidth, $sourceHeight);
+		Craft::info(
+			'Transcoder: cropdetect sample '
+			. $sampleTime
+			. 's raw crop='
+			. $this->formatCrop(...$rawCrop)
+			. ', adjusted crop='
+			. $this->formatCrop(...$crop),
+			__METHOD__
+		);
 
-		return $this->adjustDetectedCropToWideContentBand($crop, $sourceWidth, $sourceHeight);
+		return $crop;
 	}
 
 	/**
@@ -2761,6 +2784,20 @@ class Transcode extends Component
 		}
 
 		return $crop;
+	}
+
+	/**
+	 * Format crop values for ffmpeg.
+	 *
+	 * @param int $width
+	 * @param int $height
+	 * @param int $x
+	 * @param int $y
+	 * @return string
+	 */
+	protected function formatCrop(int $width, int $height, int $x, int $y): string
+	{
+		return $width . ':' . $height . ':' . $x . ':' . $y;
 	}
 
 	/**
