@@ -2644,7 +2644,7 @@ class Transcode extends Component
 
 		$crops = [];
 		foreach ($this->getCropDetectSampleTimes($duration) as $sampleTime) {
-			$crop = $this->detectVideoBlackBarCropAtTime($filePath, $sampleTime);
+			$crop = $this->detectVideoBlackBarCropAtTime($filePath, $sampleTime, $sourceWidth, $sourceHeight);
 			if ($crop !== null && $this->isDetectedCropSafe($crop, $sourceWidth, $sourceHeight)) {
 				$key = implode(':', $crop);
 				$crops[$key] = ($crops[$key] ?? 0) + 1;
@@ -2693,9 +2693,11 @@ class Transcode extends Component
 	 *
 	 * @param string $filePath
 	 * @param float $sampleTime
+	 * @param int $sourceWidth
+	 * @param int $sourceHeight
 	 * @return array|null
 	 */
-	protected function detectVideoBlackBarCropAtTime(string $filePath, float $sampleTime): ?array
+	protected function detectVideoBlackBarCropAtTime(string $filePath, float $sampleTime, int $sourceWidth, int $sourceHeight): ?array
 	{
 		$settings = Transcoder::$plugin->getSettings();
 		$command = $settings['ffmpegPath']
@@ -2716,12 +2718,49 @@ class Transcode extends Component
 			return null;
 		}
 
-		return [
+		$crop = [
 			(int)$lastMatch[1],
 			(int)$lastMatch[2],
 			(int)$lastMatch[3],
 			(int)$lastMatch[4],
 		];
+
+		return $this->adjustDetectedCropToWideContentBand($crop, $sourceWidth, $sourceHeight);
+	}
+
+	/**
+	 * Convert a full-width TikTok-style crop to the embedded 16:9 video band.
+	 *
+	 * @param array $crop
+	 * @param int $sourceWidth
+	 * @param int $sourceHeight
+	 * @return array
+	 */
+	protected function adjustDetectedCropToWideContentBand(array $crop, int $sourceWidth, int $sourceHeight): array
+	{
+		[$width, $height, $x, $y] = $crop;
+		if ($width <= 0 || $height <= 0) {
+			return $crop;
+		}
+
+		$aspectRatio = $width / $height;
+		if ($aspectRatio >= 1.45 && $aspectRatio <= 2.15) {
+			return $crop;
+		}
+
+		$targetAspectRatio = 16 / 9;
+		$targetHeight = (int)round(($width / $targetAspectRatio) / 2) * 2;
+		$isPortraitSource = $sourceHeight > $sourceWidth;
+		$isFullWidthCrop = abs($width - $sourceWidth) <= 4 && $x <= 4;
+		$hasRoomForWideBand = $targetHeight > 0 && $targetHeight < $height;
+
+		if ($isPortraitSource && $isFullWidthCrop && $hasRoomForWideBand) {
+			$newY = (int)floor((($y + $height - $targetHeight) / 2)) * 2;
+			$newY = max(0, min($newY, $sourceHeight - $targetHeight));
+			return [$width, $targetHeight, $x, $newY];
+		}
+
+		return $crop;
 	}
 
 	/**

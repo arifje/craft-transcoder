@@ -1,5 +1,9 @@
 # Transcoder Changelog
 
+## 4.3.3 - 2026.05.20
+### Fixed
+* Improve video black-bar auto crop detection for TikTok-style videos with text in the black wrapper area.
+
 ## 4.3.2 - 2026.05.19
 ### Added
 * Add an optional video black-bar crop detection setting for video encodes.
