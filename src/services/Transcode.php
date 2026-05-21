@@ -2024,7 +2024,7 @@ class Transcode extends Component
 			$lockFile = $status['lockFile'] ?? null;
 			$progressFile = $status['progressFile'] ?? null;
 			if (!$lockFile || !is_file($lockFile) || $this->isEncodeLockStale($lockFile, $progressFile)) {
-				$failure = $this->getVideoEncodeFailure($status, $status);
+				$failure = $this->getGifEncodeFailure($status, $status);
 				if ($failure) {
 					$this->removeEncodeTempFiles($lockFile, $progressFile);
 					@unlink($status['encodedFile']);
@@ -2681,11 +2681,31 @@ class Transcode extends Component
 			return null;
 		}
 
+		$width = $this->normalizeWatermarkDimension($settings->videoWatermarkWidth);
+		$height = $this->normalizeWatermarkDimension($settings->videoWatermarkHeight);
+		$rasterizedSvg = false;
+		if ($extension === 'svg') {
+			try {
+				$watermarkPath = $this->rasterizeSvgWatermark(
+					$watermarkPath,
+					$assetId,
+					$width,
+					$height,
+					$settings->videoWatermarkAnimation
+				);
+				$rasterizedSvg = true;
+			} catch (Throwable $e) {
+				Craft::error('Transcoder: could not rasterize SVG watermark asset ' . $assetId . ': ' . $e->getMessage(), __METHOD__);
+				throw $e;
+			}
+		}
+
 		return [
 			'assetId' => $assetId,
 			'path' => $watermarkPath,
-			'width' => $this->normalizeWatermarkDimension($settings->videoWatermarkWidth),
-			'height' => $this->normalizeWatermarkDimension($settings->videoWatermarkHeight),
+			'width' => $width,
+			'height' => $height,
+			'rasterizedSvg' => $rasterizedSvg,
 			'position' => in_array($settings->videoWatermarkPosition, self::WATERMARK_POSITIONS, true)
 				? $settings->videoWatermarkPosition
 				: 'bottom-right',
@@ -2841,16 +2861,19 @@ class Transcode extends Component
 	{
 		$filters = ['format=rgba'];
 		$scaleFilter = $this->getWatermarkScaleFilter($watermarkConfig);
-		if ($scaleFilter !== null) {
+		if ($scaleFilter !== null && !($watermarkConfig['rasterizedSvg'] && in_array($watermarkConfig['animation'], ['rotate', 'pulse'], true))) {
 			$filters[] = $scaleFilter;
 		}
 
 		switch ($watermarkConfig['animation']) {
 			case 'rotate':
 				$filters[] = 'rotate=2*PI*t/10:c=none:ow=rotw(iw):oh=roth(ih)';
+				if (!empty($watermarkConfig['rasterizedSvg']) && $scaleFilter !== null) {
+					$filters[] = $scaleFilter;
+				}
 				break;
 			case 'pulse':
-				$filters[] = 'scale=iw*(1+0.04*sin(2*PI*t/3)):ih*(1+0.04*sin(2*PI*t/3)):eval=frame';
+				$filters[] = $this->getWatermarkPulseScaleFilter($watermarkConfig);
 				break;
 			case 'fade-in':
 				$filters[] = 'fade=t=in:st=0:d=1:alpha=1';
@@ -2873,6 +2896,33 @@ class Transcode extends Component
 		}
 
 		return $filters;
+	}
+
+	/**
+	 * Return a dynamic pulse scale filter that keeps the configured ratio.
+	 *
+	 * @param array $watermarkConfig
+	 * @return string
+	 */
+	protected function getWatermarkPulseScaleFilter(array $watermarkConfig): string
+	{
+		$pulse = '(1+0.04*sin(2*PI*t/3))';
+		$width = $watermarkConfig['width'];
+		$height = $watermarkConfig['height'];
+
+		if ($width !== null && $height !== null) {
+			return 'scale=' . $width . '*' . $pulse . ':' . $height . '*' . $pulse . ':eval=frame';
+		}
+
+		if ($width !== null) {
+			return 'scale=' . $width . '*' . $pulse . ':-1:eval=frame';
+		}
+
+		if ($height !== null) {
+			return 'scale=-1:' . $height . '*' . $pulse . ':eval=frame';
+		}
+
+		return 'scale=iw*' . $pulse . ':ih*' . $pulse . ':eval=frame';
 	}
 
 	/**
@@ -3000,6 +3050,245 @@ class Transcode extends Component
 
 		$value = (int)$value;
 		return $value > 0 ? $value : null;
+	}
+
+	/**
+	 * Rasterize an SVG watermark to PNG because many ffmpeg builds cannot decode SVG streams.
+	 *
+	 * @param string $svgPath
+	 * @param int $assetId
+	 * @param int|null $width
+	 * @param int|null $height
+	 * @param string $animation
+	 * @return string
+	 */
+	protected function rasterizeSvgWatermark(string $svgPath, int $assetId, ?int $width, ?int $height, string $animation): string
+	{
+		$svg = @file_get_contents($svgPath);
+		if ($svg === false || trim($svg) === '') {
+			throw new \RuntimeException("SVG watermark file could not be read at $svgPath");
+		}
+
+		[$rasterWidth, $rasterHeight] = $this->getSvgWatermarkRasterDimensions($svg, $width, $height);
+		$sourceStamp = $this->isUrl($svgPath) ? sha1($svg) : (string)@filemtime($svgPath);
+		$cacheKey = sha1($svgPath . '|' . $sourceStamp . '|' . $rasterWidth . 'x' . $rasterHeight . '|' . $animation);
+		$pngPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $assetId . '-' . $cacheKey . '.png';
+
+		if (is_file($pngPath) && filesize($pngPath) > 0) {
+			return $pngPath;
+		}
+
+		if ($this->rasterizeSvgWithImagick($svg, $pngPath, $rasterWidth, $rasterHeight)) {
+			return $pngPath;
+		}
+
+		$tempSvgPath = $svgPath;
+		if ($this->isUrl($svgPath)) {
+			$tempSvgPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $assetId . '-' . $cacheKey . '.svg';
+			file_put_contents($tempSvgPath, $svg);
+		}
+
+		if ($this->rasterizeSvgWithCommand($tempSvgPath, $pngPath, $rasterWidth, $rasterHeight)) {
+			return $pngPath;
+		}
+
+		throw new \RuntimeException('SVG watermark could not be rasterized. Install the PHP Imagick extension, rsvg-convert, or ImageMagick on the encoding server.');
+	}
+
+	/**
+	 * Rasterize SVG using PHP Imagick when available.
+	 *
+	 * @param string $svg
+	 * @param string $pngPath
+	 * @param int $width
+	 * @param int $height
+	 * @return bool
+	 */
+	protected function rasterizeSvgWithImagick(string $svg, string $pngPath, int $width, int $height): bool
+	{
+		if (!class_exists('Imagick') || !class_exists('ImagickPixel')) {
+			return false;
+		}
+
+		try {
+			$image = new \Imagick();
+			$image->setBackgroundColor(new \ImagickPixel('transparent'));
+			$image->setResolution(384, 384);
+			$image->setSize($width, $height);
+			$image->readImageBlob($svg);
+			$image->setImageFormat('png32');
+			$image->resizeImage($width, $height, \Imagick::FILTER_LANCZOS, 1, false);
+			$image->writeImage($pngPath);
+			$image->clear();
+			$image->destroy();
+
+			return is_file($pngPath) && filesize($pngPath) > 0;
+		} catch (Throwable $e) {
+			Craft::warning('Transcoder: Imagick could not rasterize SVG watermark: ' . $e->getMessage(), __METHOD__);
+			return false;
+		}
+	}
+
+	/**
+	 * Rasterize SVG using an installed command-line renderer.
+	 *
+	 * @param string $svgPath
+	 * @param string $pngPath
+	 * @param int $width
+	 * @param int $height
+	 * @return bool
+	 */
+	protected function rasterizeSvgWithCommand(string $svgPath, string $pngPath, int $width, int $height): bool
+	{
+		$rsvg = $this->findExecutable('rsvg-convert');
+		if ($rsvg !== null) {
+			$command = escapeshellcmd($rsvg)
+				. ' -w ' . $width
+				. ' -h ' . $height
+				. ' -f png'
+				. ' -o ' . escapeshellarg($pngPath)
+				. ' ' . escapeshellarg($svgPath)
+				. ' 2>&1';
+			exec($command, $output, $exitCode);
+			if ($exitCode === 0 && is_file($pngPath) && filesize($pngPath) > 0) {
+				return true;
+			}
+			Craft::warning('Transcoder: rsvg-convert could not rasterize SVG watermark: ' . implode("\n", $output), __METHOD__);
+		}
+
+		foreach (['magick', 'convert'] as $binary) {
+			$executable = $this->findExecutable($binary);
+			if ($executable === null) {
+				continue;
+			}
+
+			$command = escapeshellcmd($executable)
+				. ' -background none'
+				. ' -density 384'
+				. ' ' . escapeshellarg($svgPath)
+				. ' -resize ' . escapeshellarg($width . 'x' . $height . '!')
+				. ' ' . escapeshellarg($pngPath)
+				. ' 2>&1';
+			exec($command, $output, $exitCode);
+			if ($exitCode === 0 && is_file($pngPath) && filesize($pngPath) > 0) {
+				return true;
+			}
+			Craft::warning('Transcoder: ' . $binary . ' could not rasterize SVG watermark: ' . implode("\n", $output), __METHOD__);
+		}
+
+		return false;
+	}
+
+	/**
+	 * Resolve an executable from PATH.
+	 *
+	 * @param string $binary
+	 * @return string|null
+	 */
+	protected function findExecutable(string $binary): ?string
+	{
+		$output = [];
+		$exitCode = 1;
+		exec('command -v ' . escapeshellarg($binary) . ' 2>/dev/null', $output, $exitCode);
+		if ($exitCode !== 0 || empty($output[0])) {
+			return null;
+		}
+
+		return trim($output[0]);
+	}
+
+	/**
+	 * Return the PNG raster dimensions for an SVG watermark.
+	 *
+	 * @param string $svg
+	 * @param int|null $width
+	 * @param int|null $height
+	 * @return array
+	 */
+	protected function getSvgWatermarkRasterDimensions(string $svg, ?int $width, ?int $height): array
+	{
+		[$sourceWidth, $sourceHeight] = $this->getSvgIntrinsicDimensions($svg);
+		$scale = ($width !== null || $height !== null) ? 4 : 1;
+
+		if ($width !== null && $height !== null) {
+			return [max(1, $width * $scale), max(1, $height * $scale)];
+		}
+
+		if ($width !== null) {
+			return [
+				max(1, $width * $scale),
+				max(1, (int)round(($width * $sourceHeight / max(1, $sourceWidth)) * $scale)),
+			];
+		}
+
+		if ($height !== null) {
+			return [
+				max(1, (int)round(($height * $sourceWidth / max(1, $sourceHeight)) * $scale)),
+				max(1, $height * $scale),
+			];
+		}
+
+		return [max(1, (int)round($sourceWidth)), max(1, (int)round($sourceHeight))];
+	}
+
+	/**
+	 * Extract intrinsic SVG dimensions from width/height or viewBox.
+	 *
+	 * @param string $svg
+	 * @return array
+	 */
+	protected function getSvgIntrinsicDimensions(string $svg): array
+	{
+		$width = null;
+		$height = null;
+
+		if (preg_match('/<svg\b[^>]*\swidth=(["\'])(.*?)\1/i', $svg, $match)) {
+			$width = $this->parseSvgLength($match[2]);
+		}
+		if (preg_match('/<svg\b[^>]*\sheight=(["\'])(.*?)\1/i', $svg, $match)) {
+			$height = $this->parseSvgLength($match[2]);
+		}
+
+		if (preg_match('/<svg\b[^>]*\sviewBox=(["\'])(.*?)\1/i', $svg, $match)) {
+			$parts = preg_split('/[\s,]+/', trim($match[2]));
+			if (count($parts) === 4) {
+				$viewBoxWidth = (float)$parts[2];
+				$viewBoxHeight = (float)$parts[3];
+				$width ??= $viewBoxWidth > 0 ? $viewBoxWidth : null;
+				$height ??= $viewBoxHeight > 0 ? $viewBoxHeight : null;
+			}
+		}
+
+		return [
+			$width ?? 512.0,
+			$height ?? 512.0,
+		];
+	}
+
+	/**
+	 * Parse an SVG length into pixels.
+	 *
+	 * @param string $value
+	 * @return float|null
+	 */
+	protected function parseSvgLength(string $value): ?float
+	{
+		$value = trim($value);
+		if (!preg_match('/^([0-9.]+)\s*(px|pt|pc|in|cm|mm)?$/i', $value, $match)) {
+			return null;
+		}
+
+		$number = (float)$match[1];
+		$unit = strtolower($match[2] ?? 'px');
+
+		return match ($unit) {
+			'pt' => $number * 96 / 72,
+			'pc' => $number * 16,
+			'in' => $number * 96,
+			'cm' => $number * 96 / 2.54,
+			'mm' => $number * 96 / 25.4,
+			default => $number,
+		};
 	}
 
 	/**
@@ -3324,7 +3613,7 @@ class Transcode extends Component
 			$lockFile = $status['lockFile'] ?? null;
 			$progressFile = $status['progressFile'] ?? null;
 			if (!$lockFile || !is_file($lockFile) || $this->isEncodeLockStale($lockFile, $progressFile)) {
-				$failure = $this->getGifEncodeFailure($status, $status);
+				$failure = $this->getVideoEncodeFailure($status, $status);
 				if ($failure) {
 					$this->removeEncodeTempFiles($lockFile, $progressFile);
 					@unlink($status['encodedFile']);
@@ -3349,13 +3638,13 @@ class Transcode extends Component
 			&& !empty($status['lockFile'])
 			&& $this->isEncodeLockStale($status['lockFile'], $status['progressFile'] ?? null)
 		) {
-			$failure = $this->getGifEncodeFailure($status, $status);
+			$failure = $this->getVideoEncodeFailure($status, $status);
 			$this->removeEncodeTempFiles($status['lockFile'], $status['progressFile'] ?? null);
 			$status = array_merge($status, [
 				'status' => 'error',
 				'url' => '',
 				'progress' => 0,
-				'error' => 'GIF encoding failed due to a server error (process crashed, ffmpeg error)',
+				'error' => Craft::t('transcoder', 'Video encoding failed due to a server error (process crashed, ffmpeg error)'),
 			], $failure ?? []);
 			$this->writeVideoStatusByKey($key, $status);
 			return $this->sanitizeVideoStatus($status);
