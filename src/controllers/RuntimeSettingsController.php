@@ -28,7 +28,7 @@ class RuntimeSettingsController extends Controller
      */
     public function actionSave(): Response
     {
-        $this->requireAdmin();
+        $this->requirePermission('utility:transcoder-encoding');
         $this->requirePostRequest();
 
         $enabled = (bool)Craft::$app->getRequest()->getBodyParam('enabled');
