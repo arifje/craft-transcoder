@@ -2,7 +2,7 @@
 
 # Transcoder plugin for Craft CMS 4.x
 
-Transcode video & audio files to various formats, and provide video thumbnails
+Transcode video & audio files to various formats, convert GIFs to mp4, generate video posters, and optionally watermark encoded videos.
 
 ![Screenshot](./docs/docs/resources/img/plugin-banner.jpg)
 
@@ -11,6 +11,15 @@ Transcode video & audio files to various formats, and provide video thumbnails
 ## Requirements
 
 This plugin requires Craft CMS 4.0.0 or later.
+
+Transcoder also needs [ffmpeg](https://ffmpeg.org/) and [ffprobe](https://ffmpeg.org/ffprobe.html) on every server that runs encoding work. On Ubuntu, you can install them with:
+
+    sudo apt-get update
+    sudo apt-get install ffmpeg
+
+If you use SVG images for video watermarks, install `librsvg2-bin` on the server that runs the encoding queue so Transcoder can rasterize the SVG before passing it to ffmpeg:
+
+    sudo apt-get install librsvg2-bin
 
 ## Installation
 
@@ -30,18 +39,127 @@ You can also install Transcoder via the **Plugin Store** in the Craft Control Pa
 
 Transcoder works on Craft 4.x.
 
-You will also need [ffmpeg](https://ffmpeg.org/) installed for Transcoder to work. On Ubuntu 16.04, you can do just:
-
-    sudo apt-get update
-    sudo apt-get install ffmpeg
-
-If you use SVG images for video watermarks, install `librsvg2-bin` on the server that runs the encoding queue so Transcoder can rasterize the SVG before passing it to ffmpeg:
-
-    sudo apt-get install librsvg2-bin
-
 To install `ffmpeg` on Centos 6/7, you can follow the guide [How to Install FFmpeg on CentOS](https://www.vultr.com/docs/how-to-install-ffmpeg-on-centos)
 
 If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.
+
+## Features
+
+Settings are split into separate Control Panel tabs for video encoding, video posters, GIF encoding, and watermarks.
+
+### Video Encoding
+
+Transcoder can encode uploaded video assets to mp4/webm using the configured ffmpeg options.
+
+Recent additions include:
+
+* Enable/disable video encoding from plugin settings.
+* Queue video encoding when a video asset is uploaded or saved.
+* Only queue video encoding for video assets.
+* Queue a missing encode from Twig/admin preview when enabled.
+* Keep Craft queue jobs alive while ffmpeg runs, with queue progress updates.
+* Detect failed or suspicious ffmpeg output and show the ffmpeg command/log in queue errors.
+* Detect and clean up stale `.lock`/`.progress` files from crashed encodes.
+* Optional black-bar auto-cropping for videos that were uploaded inside a black canvas.
+* Configurable filename strategy: stable source-based filenames or option-based filenames.
+* Legacy filename checks so existing encoded files are reused instead of accidentally re-encoding archive content.
+* Prefer local asset paths when available, with asset URL fallback for multi-server setups where files are not mounted locally.
+
+### Video Posters
+
+Video poster generation is separate from video encoding.
+
+You can configure poster formats in the **Video posters** settings tab:
+
+* Enable/disable video poster generation independently.
+* Define multiple poster formats by handle, width, height, and timestamp.
+* Leave width/height empty for original/auto dimensions.
+* Generate missing posters in a separate queue job.
+* Generate posters from the original video, independently from the video encode.
+* Retrieve generated posters in Twig with `craft.transcoder.getVideoPosterUrl(asset, 'handle')`.
+* Retrieve all generated posters with `craft.transcoder.getVideoPosterUrls(asset)`.
+* Optionally prevent black bars in wide poster formats by adding a blurred cover layer behind fitted portrait videos.
+
+### GIF Encoding
+
+GIF assets can be converted to mp4 so frontend templates can render them as lightweight looping video.
+
+The GIF settings include:
+
+* Enable/disable GIF encoding independently.
+* Queue GIF encoding when GIF assets are uploaded or saved.
+* Only queue GIF encoding for `image/gif` assets.
+* Spread large GIF batches with a configurable queue delay.
+* Fallback to the original GIF when encoding is disabled or unavailable.
+* Queue a missing GIF encode from Twig/admin preview when enabled.
+* Poll queue-aware GIF status with `craft.transcoder.getGifStatus()` and `craft.transcoder.getGifStatusUrl()`.
+
+### Watermarks
+
+Encoded videos can receive a configurable image watermark.
+
+The **Watermark** settings tab supports:
+
+* Enable/disable watermarking.
+* Select a Craft image asset as the watermark.
+* PNG, JPG, and SVG source images.
+* Width/height settings, with empty values meaning auto/original.
+* Position options for all corners, edge centers, and center.
+* Top/right/bottom/left padding.
+* Opacity percentage.
+* Subtle animations: fade in, fade out, fade in/out, slow rotate, and small zoom pulse.
+* Optional repositioning during playback by cycling between selected positions.
+
+SVG watermarks are rasterized to a temporary transparent PNG before ffmpeg receives them. Install `librsvg2-bin` for reliable SVG support.
+
+### Runtime Kill Switch
+
+The Control Panel utility **Transcoder Encoding** lets admins disable encoding at runtime without changing project config.
+
+When runtime encoding is disabled:
+
+* Upload/save events do not start video, poster, or GIF encoding.
+* Twig helpers report encoding as disabled.
+* Frontend templates can show original video/GIF assets instead of generated encodes.
+* Active tracked ffmpeg processes can be stopped when disabling encoding.
+
+This is intended as an emergency switch if ffmpeg jobs start overloading a server.
+
+## Twig Helpers
+
+Useful helper checks:
+
+```twig
+{% set videoEncodingEnabled = craft.transcoder.isVideoEncodingEnabled() %}
+{% set videoPostersEnabled = craft.transcoder.isVideoPostersEnabled() %}
+{% set videoQueueEnabled = craft.transcoder.isVideoQueueEnabled() %}
+{% set gifEncodingEnabled = craft.transcoder.isGifEncodingEnabled() %}
+{% set gifQueueEnabled = craft.transcoder.isGifQueueEnabled() %}
+```
+
+Queue-aware video status:
+
+```twig
+{% set videoOptions = {} %}
+{% set encodingOptions = {} %}
+{% set encodedVideoData = craft.transcoder.getVideoStatus(video, videoOptions, encodingOptions, true) | json_decode %}
+{% set progressUrl = craft.transcoder.getVideoStatusUrl(video, videoOptions, encodingOptions) %}
+```
+
+Video posters:
+
+```twig
+{% set poster = craft.transcoder.getVideoPosterUrl(video, '16_9') %}
+{% set posters = craft.transcoder.getVideoPosterUrls(video) %}
+```
+
+Queue-aware GIF status:
+
+```twig
+{% set gifOptions = {} %}
+{% set encodedGifData = craft.transcoder.getGifStatus(image, gifOptions, true) | json_decode %}
+{% set progressUrl = craft.transcoder.getGifStatusUrl(image, gifOptions) %}
+```
 
 ## Documentation
 
