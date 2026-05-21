@@ -91,6 +91,81 @@ class Settings extends Model
     public bool $autoCropVideoBlackBars = false;
 
     /**
+     * @var bool Determines whether encoded videos should receive a watermark
+     */
+    public bool $enableVideoWatermark = false;
+
+    /**
+     * @var int|string|array|null Selected Craft asset ID for the video watermark image
+     */
+    public int|string|array|null $videoWatermarkAsset = null;
+
+    /**
+     * @var int|string Watermark width in pixels, or empty for original width
+     */
+    public int|string $videoWatermarkWidth = '';
+
+    /**
+     * @var int|string Watermark height in pixels, or empty for original height
+     */
+    public int|string $videoWatermarkHeight = '';
+
+    /**
+     * @var string Watermark placement on the encoded video
+     */
+    public string $videoWatermarkPosition = 'bottom-right';
+
+    /**
+     * @var int Watermark top padding in pixels
+     */
+    public int $videoWatermarkPaddingTop = 24;
+
+    /**
+     * @var int Watermark right padding in pixels
+     */
+    public int $videoWatermarkPaddingRight = 24;
+
+    /**
+     * @var int Watermark bottom padding in pixels
+     */
+    public int $videoWatermarkPaddingBottom = 24;
+
+    /**
+     * @var int Watermark left padding in pixels
+     */
+    public int $videoWatermarkPaddingLeft = 24;
+
+    /**
+     * @var int Watermark opacity percentage
+     */
+    public int $videoWatermarkOpacity = 100;
+
+    /**
+     * @var string Watermark animation style
+     */
+    public string $videoWatermarkAnimation = 'none';
+
+    /**
+     * @var bool Move the watermark between positions during the video
+     */
+    public bool $videoWatermarkReposition = false;
+
+    /**
+     * @var int Seconds between watermark position changes
+     */
+    public int $videoWatermarkRepositionInterval = 10;
+
+    /**
+     * @var array Positions to cycle through when watermark repositioning is enabled
+     */
+    public array $videoWatermarkRepositionPositions = [
+        'top-left',
+        'top-right',
+        'bottom-right',
+        'bottom-left',
+    ];
+
+    /**
      * @var bool Determines whether video poster generation should be enabled
      */
     public bool $enableVideoPosters = true;
@@ -403,6 +478,46 @@ class Settings extends Model
             ['enableDownloadFileEndpoint', 'boolean'],
             ['enableVideoEncoding', 'boolean'],
             ['autoCropVideoBlackBars', 'boolean'],
+            ['enableVideoWatermark', 'boolean'],
+            ['videoWatermarkAsset', 'safe'],
+            [['videoWatermarkWidth', 'videoWatermarkHeight'], 'safe'],
+            ['videoWatermarkPosition', 'in', 'range' => [
+                'top-left',
+                'top-center',
+                'top-right',
+                'center-left',
+                'center',
+                'center-right',
+                'bottom-left',
+                'bottom-center',
+                'bottom-right',
+            ]],
+            [[
+                'videoWatermarkPaddingTop',
+                'videoWatermarkPaddingRight',
+                'videoWatermarkPaddingBottom',
+                'videoWatermarkPaddingLeft',
+                'videoWatermarkOpacity',
+                'videoWatermarkRepositionInterval',
+            ], 'integer'],
+            [[
+                'videoWatermarkPaddingTop',
+                'videoWatermarkPaddingRight',
+                'videoWatermarkPaddingBottom',
+                'videoWatermarkPaddingLeft',
+                'videoWatermarkRepositionInterval',
+            ], 'number', 'min' => 0],
+            ['videoWatermarkOpacity', 'number', 'min' => 0, 'max' => 100],
+            ['videoWatermarkAnimation', 'in', 'range' => [
+                'none',
+                'fade-in',
+                'fade-out',
+                'fade-in-out',
+                'rotate',
+                'pulse',
+            ]],
+            ['videoWatermarkReposition', 'boolean'],
+            ['videoWatermarkRepositionPositions', ArrayValidator::class],
             ['enableVideoPosters', 'boolean'],
             ['preventVideoPosterBlackBars', 'boolean'],
             ['enableGifEncoding', 'boolean'],

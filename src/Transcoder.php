@@ -224,6 +224,10 @@ class Transcoder extends Plugin
                             'url' => '#settings-tab-video',
                         ],
                         [
+                            'label' => Craft::t('transcoder', 'Watermark'),
+                            'url' => '#settings-tab-watermark',
+                        ],
+                        [
                             'label' => Craft::t('transcoder', 'Video posters'),
                             'url' => '#settings-tab-video-posters',
                         ],

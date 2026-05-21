@@ -4,6 +4,21 @@
 {% import '_includes/forms' as forms %}
 {% import 'transcoder/_includes/macros.twig' as macros %}
 
+{% set watermarkAssetValue = settings.videoWatermarkAsset %}
+{% set watermarkAssetIds = watermarkAssetValue is iterable ? watermarkAssetValue : (watermarkAssetValue ? [watermarkAssetValue] : []) %}
+{% set watermarkAssets = watermarkAssetIds ? craft.assets.id(watermarkAssetIds).all() : [] %}
+{% set watermarkPositions = [
+    { label: 'Top left'|t('transcoder'), value: 'top-left' },
+    { label: 'Top center'|t('transcoder'), value: 'top-center' },
+    { label: 'Top right'|t('transcoder'), value: 'top-right' },
+    { label: 'Center left'|t('transcoder'), value: 'center-left' },
+    { label: 'Center'|t('transcoder'), value: 'center' },
+    { label: 'Center right'|t('transcoder'), value: 'center-right' },
+    { label: 'Bottom left'|t('transcoder'), value: 'bottom-left' },
+    { label: 'Bottom center'|t('transcoder'), value: 'bottom-center' },
+    { label: 'Bottom right'|t('transcoder'), value: 'bottom-right' },
+] %}
+
 <div id="tab-video">
     {{ forms.lightswitchField({
         label: 'Enable video encoding'|t('transcoder'),
@@ -52,6 +67,178 @@
             { label: 'Source asset'|t('transcoder'), value: 'source' },
             { label: 'Encoding options'|t('transcoder'), value: 'options' },
         ],
+    }) }}
+</div>
+
+<div id="tab-watermark" class="hidden">
+    {{ forms.lightswitchField({
+        label: 'Enable video watermark'|t('transcoder'),
+        instructions: 'Overlay the selected image on encoded videos. Existing encoded files are left alone until they are regenerated.'|t('transcoder'),
+        warning: macros.configWarning('enableVideoWatermark', 'transcoder'),
+        id: 'enableVideoWatermark',
+        name: 'enableVideoWatermark',
+        on: settings.enableVideoWatermark,
+    }) }}
+
+    {{ forms.elementSelectField({
+        label: 'Watermark image'|t('transcoder'),
+        instructions: 'Choose a PNG, JPG, or SVG asset to overlay on encoded videos.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkAsset', 'transcoder'),
+        id: 'videoWatermarkAsset',
+        name: 'videoWatermarkAsset',
+        elementType: 'craft\\elements\\Asset',
+        elements: watermarkAssets,
+        sources: '*',
+        criteria: {
+            kind: ['image'],
+        },
+        limit: 1,
+        viewMode: 'list',
+    }) }}
+
+    {{ forms.textField({
+        label: 'Watermark width'|t('transcoder'),
+        instructions: 'Width in pixels. Leave empty to use the original image width or preserve the ratio from height.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkWidth', 'transcoder'),
+        id: 'videoWatermarkWidth',
+        name: 'videoWatermarkWidth',
+        value: settings.videoWatermarkWidth,
+        type: 'number',
+        min: 0,
+        placeholder: 'auto',
+        size: 6,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Watermark height'|t('transcoder'),
+        instructions: 'Height in pixels. Leave empty to use the original image height or preserve the ratio from width.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkHeight', 'transcoder'),
+        id: 'videoWatermarkHeight',
+        name: 'videoWatermarkHeight',
+        value: settings.videoWatermarkHeight,
+        type: 'number',
+        min: 0,
+        placeholder: 'auto',
+        size: 6,
+    }) }}
+
+    {{ forms.selectField({
+        label: 'Watermark position'|t('transcoder'),
+        instructions: 'Choose where the watermark should appear on the encoded video.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkPosition', 'transcoder'),
+        id: 'videoWatermarkPosition',
+        name: 'videoWatermarkPosition',
+        value: settings.videoWatermarkPosition,
+        options: watermarkPositions,
+    }) }}
+
+    <div class="field">
+        <div class="heading">
+            <label>{{ 'Watermark padding'|t('transcoder') }}</label>
+            {{ macros.configWarning('videoWatermarkPaddingTop', 'transcoder') }}
+        </div>
+        <div class="instructions">
+            <p>{{ 'Space around the watermark in pixels.'|t('transcoder') }}</p>
+        </div>
+        <div class="flex">
+            {{ forms.text({
+                id: 'videoWatermarkPaddingTop',
+                name: 'videoWatermarkPaddingTop',
+                value: settings.videoWatermarkPaddingTop,
+                type: 'number',
+                min: 0,
+                size: 5,
+                placeholder: 'top'|t('transcoder'),
+            }) }}
+            {{ forms.text({
+                id: 'videoWatermarkPaddingRight',
+                name: 'videoWatermarkPaddingRight',
+                value: settings.videoWatermarkPaddingRight,
+                type: 'number',
+                min: 0,
+                size: 5,
+                placeholder: 'right'|t('transcoder'),
+            }) }}
+            {{ forms.text({
+                id: 'videoWatermarkPaddingBottom',
+                name: 'videoWatermarkPaddingBottom',
+                value: settings.videoWatermarkPaddingBottom,
+                type: 'number',
+                min: 0,
+                size: 5,
+                placeholder: 'bottom'|t('transcoder'),
+            }) }}
+            {{ forms.text({
+                id: 'videoWatermarkPaddingLeft',
+                name: 'videoWatermarkPaddingLeft',
+                value: settings.videoWatermarkPaddingLeft,
+                type: 'number',
+                min: 0,
+                size: 5,
+                placeholder: 'left'|t('transcoder'),
+            }) }}
+        </div>
+    </div>
+
+    {{ forms.textField({
+        label: 'Watermark opacity'|t('transcoder'),
+        instructions: 'Opacity percentage for the watermark image.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkOpacity', 'transcoder'),
+        id: 'videoWatermarkOpacity',
+        name: 'videoWatermarkOpacity',
+        value: settings.videoWatermarkOpacity,
+        type: 'number',
+        min: 0,
+        max: 100,
+        size: 5,
+    }) }}
+
+    {{ forms.selectField({
+        label: 'Watermark animation'|t('transcoder'),
+        instructions: 'Optional subtle animation applied to the watermark.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkAnimation', 'transcoder'),
+        id: 'videoWatermarkAnimation',
+        name: 'videoWatermarkAnimation',
+        value: settings.videoWatermarkAnimation,
+        options: [
+            { label: 'None'|t('transcoder'), value: 'none' },
+            { label: 'Fade in'|t('transcoder'), value: 'fade-in' },
+            { label: 'Fade out'|t('transcoder'), value: 'fade-out' },
+            { label: 'Fade in and out'|t('transcoder'), value: 'fade-in-out' },
+            { label: 'Slow rotate'|t('transcoder'), value: 'rotate' },
+            { label: 'Small zoom pulse'|t('transcoder'), value: 'pulse' },
+        ],
+    }) }}
+
+    {{ forms.lightswitchField({
+        label: 'Reposition during video'|t('transcoder'),
+        instructions: 'Move the watermark between selected positions while the video plays.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkReposition', 'transcoder'),
+        id: 'videoWatermarkReposition',
+        name: 'videoWatermarkReposition',
+        on: settings.videoWatermarkReposition,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Reposition interval'|t('transcoder'),
+        instructions: 'Seconds before the watermark moves to the next selected position.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkRepositionInterval', 'transcoder'),
+        id: 'videoWatermarkRepositionInterval',
+        name: 'videoWatermarkRepositionInterval',
+        value: settings.videoWatermarkRepositionInterval,
+        type: 'number',
+        min: 1,
+        size: 5,
+    }) }}
+
+    {{ forms.checkboxSelectField({
+        label: 'Reposition positions'|t('transcoder'),
+        instructions: 'Positions used when the watermark is moved during playback.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkRepositionPositions', 'transcoder'),
+        id: 'videoWatermarkRepositionPositions',
+        name: 'videoWatermarkRepositionPositions',
+        values: settings.videoWatermarkRepositionPositions,
+        options: watermarkPositions,
     }) }}
 </div>
 

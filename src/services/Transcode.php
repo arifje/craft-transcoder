@@ -79,6 +79,18 @@ class Transcode extends Component
 		'videoCodecOptions',
 	];
 
+	protected const WATERMARK_POSITIONS = [
+		'top-left',
+		'top-center',
+		'top-right',
+		'center-left',
+		'center',
+		'center-right',
+		'bottom-left',
+		'bottom-center',
+		'bottom-right',
+	];
+
 	// Mappings for getFileInfo() summary values
 	protected const INFO_SUMMARY = [
 		'format' => [
@@ -363,9 +375,28 @@ class Transcode extends Component
 			}
 		}
 
+		$detectedCropFilter = null;
+		if ($generate && $settings->autoCropVideoBlackBars && $filePathResolved !== null) {
+			Craft::info("Transcoder: video black-bar auto crop enabled for $filePathResolved", __METHOD__);
+			$detectedCropFilter = $this->detectVideoBlackBarCrop($filePathResolved);
+			if ($detectedCropFilter !== null) {
+				$videoOptions['preVideoFilters'][] = $detectedCropFilter;
+				Craft::info("Transcoder: applying detected video crop filter $detectedCropFilter for $filePathResolved", __METHOD__);
+			} else {
+				Craft::info("Transcoder: no video crop filter applied for $filePathResolved", __METHOD__);
+			}
+		}
+
+		$watermarkConfig = $this->getVideoWatermarkConfig($encodingOptions);
+
 		$ffmpegCmd = $settings['ffmpegPath']
-			. ' -i ' . escapeshellarg($filePathResolved)
-			. ' -vcodec ' . $thisEncoder['videoCodec']
+			. ' -i ' . escapeshellarg($filePathResolved);
+
+		if ($watermarkConfig !== null) {
+			$ffmpegCmd .= ' -loop 1 -i ' . escapeshellarg($watermarkConfig['path']);
+		}
+
+		$ffmpegCmd .= ' -vcodec ' . $thisEncoder['videoCodec']
 			. ' ' . $thisEncoder['videoCodecOptions']
 			. ' -bufsize 1000k'
 			. ' -threads ' . $thisEncoder['threads'];
@@ -380,19 +411,15 @@ class Transcode extends Component
 		//         . ' -maxrate ' . $videoOptions['videoBitRate'];
 		// }
 
-		$detectedCropFilter = null;
-		if ($generate && $settings->autoCropVideoBlackBars && $filePathResolved !== null) {
-			Craft::info("Transcoder: video black-bar auto crop enabled for $filePathResolved", __METHOD__);
-			$detectedCropFilter = $this->detectVideoBlackBarCrop($filePathResolved);
-			if ($detectedCropFilter !== null) {
-				$videoOptions['preVideoFilters'][] = $detectedCropFilter;
-				Craft::info("Transcoder: applying detected video crop filter $detectedCropFilter for $filePathResolved", __METHOD__);
-			} else {
-				Craft::info("Transcoder: no video crop filter applied for $filePathResolved", __METHOD__);
-			}
+		if ($watermarkConfig !== null) {
+			$filterComplex = $this->buildVideoWatermarkFilterComplex($videoOptions, $watermarkConfig, $filePathResolved);
+			$ffmpegCmd .= ' -filter_complex ' . escapeshellarg($filterComplex)
+				. ' -map ' . escapeshellarg('[vout]')
+				. ' -map ' . escapeshellarg('0:a?');
+			Craft::info("Transcoder: applying video watermark asset {$watermarkConfig['assetId']} with filter graph: $filterComplex", __METHOD__);
+		} else {
+			$ffmpegCmd = $this->addScalingFfmpegArgs($videoOptions, $ffmpegCmd);
 		}
-
-		$ffmpegCmd = $this->addScalingFfmpegArgs($videoOptions, $ffmpegCmd);
 
 		if (empty($videoOptions['audioBitRate']) && empty($videoOptions['audioSampleRate']) && empty($videoOptions['audioChannels'])) {
 			$ffmpegCmd .= ' -c:a copy';
@@ -437,6 +464,9 @@ class Transcode extends Component
 			if ($detectedCropFilter !== null) {
 				$status['detectedCrop'] = $detectedCropFilter;
 				$status['detectedCropSource'] = 'cropdetect';
+			}
+			if ($watermarkConfig !== null) {
+				$status['watermarkAssetId'] = $watermarkConfig['assetId'];
 			}
 
 			return JsonHelper::encode($status);
@@ -2601,6 +2631,415 @@ class Transcode extends Component
 		}
 
 		return $ffmpegCmd;
+	}
+
+	/**
+	 * Return watermark configuration for video encodes, or null when disabled.
+	 *
+	 * @param array $encodingOptions
+	 * @return array|null
+	 * @throws InvalidConfigException
+	 */
+	protected function getVideoWatermarkConfig(array $encodingOptions = []): ?array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		if (!$settings->enableVideoWatermark) {
+			return null;
+		}
+
+		if (array_key_exists('watermark', $encodingOptions) && empty($encodingOptions['watermark'])) {
+			return null;
+		}
+
+		$assetId = $this->getVideoWatermarkAssetId($settings->videoWatermarkAsset);
+		if ($assetId === null) {
+			Craft::warning('Transcoder: video watermarking is enabled, but no watermark asset is selected.', __METHOD__);
+			return null;
+		}
+
+		$asset = Asset::find()->id($assetId)->one();
+		if (!$asset instanceof Asset) {
+			Craft::warning("Transcoder: video watermark asset $assetId could not be found.", __METHOD__);
+			return null;
+		}
+
+		$extension = strtolower(pathinfo($asset->filename, PATHINFO_EXTENSION));
+		if (!in_array($extension, ['svg', 'jpg', 'jpeg', 'png'], true)) {
+			Craft::warning("Transcoder: video watermark asset $assetId has unsupported extension .$extension.", __METHOD__);
+			return null;
+		}
+
+		$normalized = $this->normalizeFilePath($asset);
+		$watermarkPath = $normalized['path'] ?? ($normalized['url'] ?? '');
+		if ($watermarkPath === '') {
+			Craft::warning("Transcoder: video watermark asset $assetId did not resolve to a path or URL.", __METHOD__);
+			return null;
+		}
+
+		if (!$this->isUrl($watermarkPath) && !file_exists($watermarkPath)) {
+			Craft::warning("Transcoder: video watermark file not found at $watermarkPath.", __METHOD__);
+			return null;
+		}
+
+		return [
+			'assetId' => $assetId,
+			'path' => $watermarkPath,
+			'width' => $this->normalizeWatermarkDimension($settings->videoWatermarkWidth),
+			'height' => $this->normalizeWatermarkDimension($settings->videoWatermarkHeight),
+			'position' => in_array($settings->videoWatermarkPosition, self::WATERMARK_POSITIONS, true)
+				? $settings->videoWatermarkPosition
+				: 'bottom-right',
+			'paddingTop' => max(0, (int)$settings->videoWatermarkPaddingTop),
+			'paddingRight' => max(0, (int)$settings->videoWatermarkPaddingRight),
+			'paddingBottom' => max(0, (int)$settings->videoWatermarkPaddingBottom),
+			'paddingLeft' => max(0, (int)$settings->videoWatermarkPaddingLeft),
+			'opacity' => min(100, max(0, (int)$settings->videoWatermarkOpacity)),
+			'animation' => in_array($settings->videoWatermarkAnimation, ['none', 'fade-in', 'fade-out', 'fade-in-out', 'rotate', 'pulse'], true)
+				? $settings->videoWatermarkAnimation
+				: 'none',
+			'reposition' => (bool)$settings->videoWatermarkReposition,
+			'repositionInterval' => max(1, (int)$settings->videoWatermarkRepositionInterval),
+			'repositionPositions' => $this->normalizeWatermarkPositions($settings->videoWatermarkRepositionPositions, $settings->videoWatermarkPosition),
+		];
+	}
+
+	/**
+	 * Build the ffmpeg filter_complex graph for applying a watermark.
+	 *
+	 * @param array $videoOptions
+	 * @param array $watermarkConfig
+	 * @param string|null $sourcePath
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	protected function buildVideoWatermarkFilterComplex(array $videoOptions, array $watermarkConfig, ?string $sourcePath = null): string
+	{
+		$parts = [];
+		$baseLabel = '[0:v]';
+		$baseGraph = $this->buildBaseVideoFilterGraph($videoOptions, '[0:v]', '[vbase]');
+		if ($baseGraph !== null) {
+			$parts[] = $baseGraph;
+			$baseLabel = '[vbase]';
+		}
+
+		$duration = null;
+		if ($sourcePath !== null && in_array($watermarkConfig['animation'], ['fade-out', 'fade-in-out'], true)) {
+			$fileInfo = $this->getFileInfo($sourcePath, true) ?? [];
+			if (!empty($fileInfo['duration'])) {
+				$duration = (float)$fileInfo['duration'];
+			}
+		}
+
+		$watermarkFilters = $this->getWatermarkImageFilters($watermarkConfig, $duration);
+		$parts[] = '[1:v]' . $this->joinVideoFilters($watermarkFilters) . '[wm]';
+
+		[$x, $y] = $this->getWatermarkOverlayExpressions($watermarkConfig);
+		$parts[] = $baseLabel . '[wm]overlay=x=' . $x . ':y=' . $y . ':eval=frame:shortest=1[vout]';
+
+		return implode(';', $parts);
+	}
+
+	/**
+	 * Build a labeled base video filter graph from existing scaling/crop options.
+	 *
+	 * @param array $options
+	 * @param string $inputLabel
+	 * @param string $outputLabel
+	 * @return string|null
+	 */
+	protected function buildBaseVideoFilterGraph(array $options, string $inputLabel, string $outputLabel): ?string
+	{
+		$preFilters = $this->getPreVideoFilters($options);
+
+		if (!empty($options['width']) && !empty($options['height']) && !empty($options['preventBlackBars'])) {
+			$sharpen = '';
+			if (!empty($options['sharpen']) && ($options['sharpen'] !== false)) {
+				$sharpen = ',unsharp=5:5:1.0:5:5:0.0';
+			}
+
+			$prefix = $inputLabel;
+			if (!empty($preFilters)) {
+				$prefix .= $this->joinVideoFilters($preFilters) . ',';
+			}
+
+			return $prefix . 'split=2[bg][fg];'
+				. '[bg]scale=' . $options['width'] . ':' . $options['height'] . ':force_original_aspect_ratio=increase'
+				. ',crop=' . $options['width'] . ':' . $options['height']
+				. ',boxblur=20:1[bg];'
+				. '[fg]scale=' . $options['width'] . ':' . $options['height'] . ':force_original_aspect_ratio=decrease[fg];'
+				. '[bg][fg]overlay=(W-w)/2:(H-h)/2'
+				. $sharpen
+				. $outputLabel;
+		}
+
+		$filterChain = $this->getSimpleVideoFilterChain($options);
+		if ($filterChain === null) {
+			return null;
+		}
+
+		return $inputLabel . $filterChain . $outputLabel;
+	}
+
+	/**
+	 * Build the existing simple video filter chain without labels.
+	 *
+	 * @param array $options
+	 * @return string|null
+	 */
+	protected function getSimpleVideoFilterChain(array $options): ?string
+	{
+		$preFilters = $this->getPreVideoFilters($options);
+
+		if (!empty($options['width']) && !empty($options['height'])) {
+			$sharpen = '';
+			if (!empty($options['sharpen']) && ($options['sharpen'] !== false)) {
+				$sharpen = ',unsharp=5:5:1.0:5:5:0.0';
+			}
+
+			$aspectRatio = '';
+			if (!empty($options['aspectRatio'])) {
+				switch ($options['aspectRatio']) {
+					case 'letterbox':
+						$letterboxColor = '';
+						if (!empty($options['letterboxColor'])) {
+							$letterboxColor = ':color=' . $options['letterboxColor'];
+						}
+						$aspectRatio = ':force_original_aspect_ratio=decrease'
+							. ',pad=' . $options['width'] . ':' . $options['height'] . ':(ow-iw)/2:(oh-ih)/2'
+							. $letterboxColor;
+						break;
+					case 'crop':
+						$aspectRatio = ':force_original_aspect_ratio=increase'
+							. ',crop=' . $options['width'] . ':' . $options['height'];
+						break;
+					default:
+						$aspectRatio = ':force_original_aspect_ratio=disable';
+						break;
+				}
+			}
+
+			return $this->joinVideoFilters(array_merge($preFilters, [
+				'scale=' . $options['width'] . ':' . $options['height'] . $aspectRatio . $sharpen,
+			]));
+		}
+
+		if (!empty($preFilters)) {
+			return $this->joinVideoFilters($preFilters);
+		}
+
+		return null;
+	}
+
+	/**
+	 * Build filters for the watermark image input.
+	 *
+	 * @param array $watermarkConfig
+	 * @param float|null $duration
+	 * @return array
+	 */
+	protected function getWatermarkImageFilters(array $watermarkConfig, ?float $duration = null): array
+	{
+		$filters = ['format=rgba'];
+		$scaleFilter = $this->getWatermarkScaleFilter($watermarkConfig);
+		if ($scaleFilter !== null) {
+			$filters[] = $scaleFilter;
+		}
+
+		switch ($watermarkConfig['animation']) {
+			case 'rotate':
+				$filters[] = 'rotate=2*PI*t/10:c=none:ow=rotw(iw):oh=roth(ih)';
+				break;
+			case 'pulse':
+				$filters[] = 'scale=iw*(1+0.04*sin(2*PI*t/3)):ih*(1+0.04*sin(2*PI*t/3)):eval=frame';
+				break;
+			case 'fade-in':
+				$filters[] = 'fade=t=in:st=0:d=1:alpha=1';
+				break;
+			case 'fade-out':
+				if ($duration !== null && $duration > 1) {
+					$filters[] = 'fade=t=out:st=' . max(0, round($duration - 1, 3)) . ':d=1:alpha=1';
+				}
+				break;
+			case 'fade-in-out':
+				$filters[] = 'fade=t=in:st=0:d=1:alpha=1';
+				if ($duration !== null && $duration > 1) {
+					$filters[] = 'fade=t=out:st=' . max(0, round($duration - 1, 3)) . ':d=1:alpha=1';
+				}
+				break;
+		}
+
+		if ($watermarkConfig['opacity'] < 100) {
+			$filters[] = 'colorchannelmixer=aa=' . rtrim(rtrim(number_format($watermarkConfig['opacity'] / 100, 3, '.', ''), '0'), '.');
+		}
+
+		return $filters;
+	}
+
+	/**
+	 * Return a watermark image scale filter from configured dimensions.
+	 *
+	 * @param array $watermarkConfig
+	 * @return string|null
+	 */
+	protected function getWatermarkScaleFilter(array $watermarkConfig): ?string
+	{
+		$width = $watermarkConfig['width'];
+		$height = $watermarkConfig['height'];
+
+		if ($width === null && $height === null) {
+			return null;
+		}
+
+		if ($width !== null && $height !== null) {
+			return 'scale=' . $width . ':' . $height;
+		}
+
+		if ($width !== null) {
+			return 'scale=' . $width . ':-1';
+		}
+
+		return 'scale=-1:' . $height;
+	}
+
+	/**
+	 * Return overlay x/y expressions for the watermark.
+	 *
+	 * @param array $watermarkConfig
+	 * @return array
+	 */
+	protected function getWatermarkOverlayExpressions(array $watermarkConfig): array
+	{
+		if (empty($watermarkConfig['reposition'])) {
+			return $this->getWatermarkPositionExpressions($watermarkConfig['position'], $watermarkConfig);
+		}
+
+		$positions = $watermarkConfig['repositionPositions'];
+		if (count($positions) <= 1) {
+			return $this->getWatermarkPositionExpressions($positions[0] ?? $watermarkConfig['position'], $watermarkConfig);
+		}
+
+		$xExpressions = [];
+		$yExpressions = [];
+		foreach ($positions as $position) {
+			[$x, $y] = $this->getWatermarkPositionExpressions($position, $watermarkConfig);
+			$xExpressions[] = $x;
+			$yExpressions[] = $y;
+		}
+
+		return [
+			$this->buildWatermarkCycleExpression($xExpressions, $watermarkConfig['repositionInterval']),
+			$this->buildWatermarkCycleExpression($yExpressions, $watermarkConfig['repositionInterval']),
+		];
+	}
+
+	/**
+	 * Return x/y expressions for one configured position.
+	 *
+	 * @param string $position
+	 * @param array $watermarkConfig
+	 * @return array
+	 */
+	protected function getWatermarkPositionExpressions(string $position, array $watermarkConfig): array
+	{
+		$top = (string)$watermarkConfig['paddingTop'];
+		$right = (string)$watermarkConfig['paddingRight'];
+		$bottom = (string)$watermarkConfig['paddingBottom'];
+		$left = (string)$watermarkConfig['paddingLeft'];
+
+		return match ($position) {
+			'top-left' => [$left, $top],
+			'top-center' => ['(W-w)/2', $top],
+			'top-right' => ['W-w-' . $right, $top],
+			'center-left' => [$left, '(H-h)/2'],
+			'center' => ['(W-w)/2', '(H-h)/2'],
+			'center-right' => ['W-w-' . $right, '(H-h)/2'],
+			'bottom-left' => [$left, 'H-h-' . $bottom],
+			'bottom-center' => ['(W-w)/2', 'H-h-' . $bottom],
+			default => ['W-w-' . $right, 'H-h-' . $bottom],
+		};
+	}
+
+	/**
+	 * Build a time-based ffmpeg expression that cycles through values.
+	 *
+	 * @param array $values
+	 * @param int $interval
+	 * @return string
+	 */
+	protected function buildWatermarkCycleExpression(array $values, int $interval): string
+	{
+		$values = array_values($values);
+		$count = count($values);
+		if ($count <= 1) {
+			return $values[0] ?? '0';
+		}
+
+		$indexExpression = 'mod(floor(t/' . max(1, $interval) . ')\\,' . $count . ')';
+		$expression = $values[$count - 1];
+		for ($i = $count - 2; $i >= 0; $i--) {
+			$expression = 'if(eq(' . $indexExpression . '\\,' . $i . ')\\,' . $values[$i] . '\\,' . $expression . ')';
+		}
+
+		return $expression;
+	}
+
+	/**
+	 * Normalize watermark dimensions from settings.
+	 *
+	 * @param int|string|null $value
+	 * @return int|null
+	 */
+	protected function normalizeWatermarkDimension(int|string|null $value): ?int
+	{
+		if (is_string($value)) {
+			$value = trim($value);
+			if ($value === '' || in_array(strtolower($value), ['auto', 'original'], true)) {
+				return null;
+			}
+		}
+
+		$value = (int)$value;
+		return $value > 0 ? $value : null;
+	}
+
+	/**
+	 * Normalize selected watermark positions.
+	 *
+	 * @param mixed $positions
+	 * @param string $fallback
+	 * @return array
+	 */
+	protected function normalizeWatermarkPositions(mixed $positions, string $fallback): array
+	{
+		if (is_string($positions)) {
+			$positions = [$positions];
+		}
+		if (!is_array($positions)) {
+			$positions = [];
+		}
+
+		$positions = array_values(array_filter($positions, static fn($position) => in_array($position, self::WATERMARK_POSITIONS, true)));
+		if (!empty($positions)) {
+			return $positions;
+		}
+
+		return in_array($fallback, self::WATERMARK_POSITIONS, true) ? [$fallback] : ['bottom-right'];
+	}
+
+	/**
+	 * Extract the selected watermark asset ID from the settings value.
+	 *
+	 * @param mixed $value
+	 * @return int|null
+	 */
+	protected function getVideoWatermarkAssetId(mixed $value): ?int
+	{
+		if (is_array($value)) {
+			$value = reset($value);
+		}
+
+		$value = (int)$value;
+		return $value > 0 ? $value : null;
 	}
 
 	/**

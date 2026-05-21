@@ -63,6 +63,41 @@ return [
     // Detect and crop black bars from uploaded videos before encoding
     'autoCropVideoBlackBars' => false,
 
+    // Add a watermark image to encoded videos
+    'enableVideoWatermark' => false,
+
+    // Craft Asset ID selected as the video watermark image
+    'videoWatermarkAsset' => null,
+
+    // Watermark dimensions in pixels. Leave empty for original image size
+    'videoWatermarkWidth' => '',
+    'videoWatermarkHeight' => '',
+
+    // Watermark position: top-left, top-center, top-right, center-left, center, center-right, bottom-left, bottom-center, bottom-right
+    'videoWatermarkPosition' => 'bottom-right',
+
+    // Watermark padding in pixels
+    'videoWatermarkPaddingTop' => 24,
+    'videoWatermarkPaddingRight' => 24,
+    'videoWatermarkPaddingBottom' => 24,
+    'videoWatermarkPaddingLeft' => 24,
+
+    // Watermark opacity percentage
+    'videoWatermarkOpacity' => 100,
+
+    // Watermark animation: none, fade-in, fade-out, fade-in-out, rotate, pulse
+    'videoWatermarkAnimation' => 'none',
+
+    // Move the watermark between positions while the video plays
+    'videoWatermarkReposition' => false,
+    'videoWatermarkRepositionInterval' => 10,
+    'videoWatermarkRepositionPositions' => [
+        'top-left',
+        'top-right',
+        'bottom-right',
+        'bottom-left',
+    ],
+
     // Determines whether video poster generation should be enabled
     'enableVideoPosters' => true,
 
