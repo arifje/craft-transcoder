@@ -35,6 +35,10 @@ You will also need [ffmpeg](https://ffmpeg.org/) installed for Transcoder to wor
     sudo apt-get update
     sudo apt-get install ffmpeg
 
+If you use SVG images for video watermarks, install `librsvg2-bin` on the server that runs the encoding queue so Transcoder can rasterize the SVG before passing it to ffmpeg:
+
+    sudo apt-get install librsvg2-bin
+
 To install `ffmpeg` on Centos 6/7, you can follow the guide [How to Install FFmpeg on CentOS](https://www.vultr.com/docs/how-to-install-ffmpeg-on-centos)
 
 If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.

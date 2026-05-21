@@ -3078,7 +3078,8 @@ class Transcode extends Component
 			return $pngPath;
 		}
 
-		if ($this->rasterizeSvgWithImagick($svg, $pngPath, $rasterWidth, $rasterHeight)) {
+		$failureReasons = [];
+		if ($this->rasterizeSvgWithImagick($svg, $pngPath, $rasterWidth, $rasterHeight, $failureReasons)) {
 			return $pngPath;
 		}
 
@@ -3088,11 +3089,15 @@ class Transcode extends Component
 			file_put_contents($tempSvgPath, $svg);
 		}
 
-		if ($this->rasterizeSvgWithCommand($tempSvgPath, $pngPath, $rasterWidth, $rasterHeight)) {
+		if ($this->rasterizeSvgWithCommand($tempSvgPath, $pngPath, $rasterWidth, $rasterHeight, $failureReasons)) {
 			return $pngPath;
 		}
 
-		throw new \RuntimeException('SVG watermark could not be rasterized. Install the PHP Imagick extension, rsvg-convert, or ImageMagick on the encoding server.');
+		throw new \RuntimeException(
+			'SVG watermark could not be rasterized. Attempts: '
+			. implode(' | ', $failureReasons)
+			. '. Install/configure PHP Imagick with SVG support, rsvg-convert, or ImageMagick on the encoding server.'
+		);
 	}
 
 	/**
@@ -3102,15 +3107,26 @@ class Transcode extends Component
 	 * @param string $pngPath
 	 * @param int $width
 	 * @param int $height
+	 * @param array $failureReasons
 	 * @return bool
 	 */
-	protected function rasterizeSvgWithImagick(string $svg, string $pngPath, int $width, int $height): bool
+	protected function rasterizeSvgWithImagick(string $svg, string $pngPath, int $width, int $height, array &$failureReasons): bool
 	{
 		if (!class_exists('Imagick') || !class_exists('ImagickPixel')) {
+			$failureReasons[] = 'Imagick PHP classes are not available to the PHP process';
 			return false;
 		}
 
 		try {
+			$formats = array_unique(array_merge(
+				\Imagick::queryFormats('SVG*') ?: [],
+				\Imagick::queryFormats('MSVG') ?: []
+			));
+			if (empty($formats)) {
+				$failureReasons[] = 'Imagick is installed, but ImageMagick reports no SVG/MSVG coder support';
+				return false;
+			}
+
 			$image = new \Imagick();
 			$image->setBackgroundColor(new \ImagickPixel('transparent'));
 			$image->setResolution(384, 384);
@@ -3124,6 +3140,7 @@ class Transcode extends Component
 
 			return is_file($pngPath) && filesize($pngPath) > 0;
 		} catch (Throwable $e) {
+			$failureReasons[] = 'Imagick failed: ' . $e->getMessage();
 			Craft::warning('Transcoder: Imagick could not rasterize SVG watermark: ' . $e->getMessage(), __METHOD__);
 			return false;
 		}
@@ -3136,9 +3153,10 @@ class Transcode extends Component
 	 * @param string $pngPath
 	 * @param int $width
 	 * @param int $height
+	 * @param array $failureReasons
 	 * @return bool
 	 */
-	protected function rasterizeSvgWithCommand(string $svgPath, string $pngPath, int $width, int $height): bool
+	protected function rasterizeSvgWithCommand(string $svgPath, string $pngPath, int $width, int $height, array &$failureReasons): bool
 	{
 		$rsvg = $this->findExecutable('rsvg-convert');
 		if ($rsvg !== null) {
@@ -3153,14 +3171,20 @@ class Transcode extends Component
 			if ($exitCode === 0 && is_file($pngPath) && filesize($pngPath) > 0) {
 				return true;
 			}
-			Craft::warning('Transcoder: rsvg-convert could not rasterize SVG watermark: ' . implode("\n", $output), __METHOD__);
+			$message = 'rsvg-convert failed with exit code ' . $exitCode . ': ' . trim(implode("\n", $output));
+			$failureReasons[] = $message;
+			Craft::warning('Transcoder: ' . $message, __METHOD__);
+		} else {
+			$failureReasons[] = 'rsvg-convert was not found in PATH';
 		}
 
+		$foundImageMagick = false;
 		foreach (['magick', 'convert'] as $binary) {
 			$executable = $this->findExecutable($binary);
 			if ($executable === null) {
 				continue;
 			}
+			$foundImageMagick = true;
 
 			$command = escapeshellcmd($executable)
 				. ' -background none'
@@ -3173,7 +3197,13 @@ class Transcode extends Component
 			if ($exitCode === 0 && is_file($pngPath) && filesize($pngPath) > 0) {
 				return true;
 			}
-			Craft::warning('Transcoder: ' . $binary . ' could not rasterize SVG watermark: ' . implode("\n", $output), __METHOD__);
+			$message = $binary . ' failed with exit code ' . $exitCode . ': ' . trim(implode("\n", $output));
+			$failureReasons[] = $message;
+			Craft::warning('Transcoder: ' . $message, __METHOD__);
+		}
+
+		if (!$foundImageMagick) {
+			$failureReasons[] = 'ImageMagick command-line tools (magick/convert) were not found in PATH';
 		}
 
 		return false;
