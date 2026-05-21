@@ -857,7 +857,7 @@ class Transcode extends Component
 	 * @return string
 	 * @throws InvalidConfigException
 	 */
-	public function getVideoStatus(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = [], bool $queueIfMissing = false): string
+	public function getVideoStatus(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = [], bool $queueIfMissing = false, bool $includeDebug = false): string
 	{
 		$status = $this->getVideoStatusData($filePath, $videoOptions, $encodingOptions);
 		$missingPosters = $filePath instanceof Asset
@@ -875,6 +875,10 @@ class Transcode extends Component
 			)
 		) {
 			$status = $this->queueVideoEncode($filePath, $videoOptions, $encodingOptions);
+		}
+
+		if ($includeDebug) {
+			$status['debug'] = $this->getVideoStatusDebug($filePath, $videoOptions, $encodingOptions);
 		}
 
 		return JsonHelper::encode($status);
@@ -918,12 +922,6 @@ class Transcode extends Component
 		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
 		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 		$storedStatus = $this->readVideoStatus($statusKey);
-
-		if ($this->isVideoPosterStatusActive($storedStatus)
-			&& !is_file($outputInfo['lockFile'])
-		) {
-			return $this->sanitizeVideoStatus($storedStatus);
-		}
 
 		if (is_file($outputInfo['encodedFile'])
 			&& filesize($outputInfo['encodedFile']) > 0
@@ -4002,6 +4000,96 @@ class Transcode extends Component
 		unset($status['encodedFile'], $status['lockFile'], $status['progressFile'], $status['publicUrl']);
 
 		return $status;
+	}
+
+	/**
+	 * Return admin-only debug data for queue-aware video status.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @return array
+	 */
+	protected function getVideoStatusDebug(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): array
+	{
+		try {
+			$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+			$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
+			$storedStatus = $this->readVideoStatus($statusKey);
+			$storedStatusForDebug = $storedStatus;
+			unset($storedStatusForDebug['debug']);
+
+			$settings = Transcoder::$plugin->getSettings();
+			$resolvedVideoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
+			$videoEncoders = $settings['videoEncoders'];
+			if (isset($videoEncoders[$resolvedVideoOptions['videoEncoder']])) {
+				$thisEncoder = $videoEncoders[$resolvedVideoOptions['videoEncoder']];
+				$resolvedVideoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+			}
+			$resolvedVideoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
+
+			$destVideoPath = rtrim(dirname($outputInfo['encodedFile']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+			$candidateFiles = [];
+			foreach ($this->getVideoFilenameCandidates($filePath, $outputInfo['source'] ?? null, $resolvedVideoOptions, $outputInfo['filename']) as $filename) {
+				$candidateFiles[] = array_merge(
+					['filename' => $filename],
+					$this->getFileDebugInfo($destVideoPath . $filename)
+				);
+			}
+
+			return [
+				'hostname' => gethostname() ?: '',
+				'schemaVersion' => Transcoder::$plugin->schemaVersion,
+				'runtimeEncodingEnabled' => $this->isRuntimeEncodingEnabled(),
+				'videoEncodingEnabled' => (bool)$settings->enableVideoEncoding,
+				'videoPostersEnabled' => (bool)$settings->enableVideoPosters,
+				'videoQueueEnabled' => $this->isVideoQueueEnabled(),
+				'statusKey' => $statusKey,
+				'source' => $outputInfo['source'] ?? null,
+				'originalExists' => $outputInfo['originalExists'],
+				'filename' => $outputInfo['filename'],
+				'encodedFile' => $this->getFileDebugInfo($outputInfo['encodedFile']),
+				'publicUrl' => [
+					'url' => $outputInfo['publicUrl'],
+					'exists' => $this->doesRemoteFileExist($outputInfo['publicUrl'], 1, 1),
+				],
+				'lockFile' => array_merge(
+					$this->getFileDebugInfo($outputInfo['lockFile']),
+					['processRunning' => is_file($outputInfo['lockFile']) && $this->isProcessRunningFromLockFile($outputInfo['lockFile'])]
+				),
+				'progressFile' => $this->getFileDebugInfo($outputInfo['progressFile']),
+				'candidateFiles' => $candidateFiles,
+				'storedStatusAgeSeconds' => isset($storedStatus['updatedAt']) ? max(0, time() - (int)$storedStatus['updatedAt']) : null,
+				'storedStatus' => $storedStatusForDebug,
+				'sysTempDir' => sys_get_temp_dir(),
+				'documentRoot' => $_SERVER['DOCUMENT_ROOT'] ?? null,
+			];
+		} catch (Throwable $e) {
+			return [
+				'error' => $e->getMessage(),
+			];
+		}
+	}
+
+	/**
+	 * Return filesystem checks for a path.
+	 *
+	 * @param string|null $path
+	 * @return array
+	 */
+	protected function getFileDebugInfo(?string $path): array
+	{
+		$exists = $path !== null && is_file($path);
+		$directory = $path !== null ? dirname($path) : null;
+
+		return [
+			'path' => $path,
+			'exists' => $exists,
+			'size' => $exists ? @filesize($path) : null,
+			'isReadable' => $exists && is_readable($path),
+			'directoryExists' => $directory !== null && is_dir($directory),
+			'directoryWritable' => $directory !== null && is_dir($directory) && is_writable($directory),
+		];
 	}
 
 	/**
