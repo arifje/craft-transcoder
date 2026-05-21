@@ -1676,8 +1676,8 @@ class Transcode extends Component
 						// Stream info
 						case 'streams':
 							foreach ($topLevelValue as $stream) {
-								$infoSummaryType = $stream['codec_type'];
-								if (in_array($infoSummaryType, self::INFO_SUMMARY, false)) {
+								$infoSummaryType = $stream['codec_type'] ?? null;
+								if ($infoSummaryType !== null && array_key_exists($infoSummaryType, self::INFO_SUMMARY)) {
 									foreach (self::INFO_SUMMARY[$infoSummaryType] as $settingKey => $settingValue) {
 										if (!empty($stream[$settingKey])) {
 											$summaryResult[$settingValue] = $stream[$settingKey];

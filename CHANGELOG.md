@@ -1,5 +1,9 @@
 # Transcoder Changelog
 
+## 4.3.5 - 2026.05.21
+### Fixed
+* Fix ffprobe summary parsing so video dimensions are available to auto-crop detection.
+
 ## 4.3.4 - 2026.05.20
 ### Changed
 * Add detailed video auto-crop logging and status metadata for detected crop filters.
