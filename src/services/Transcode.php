@@ -3834,9 +3834,36 @@ class Transcode extends Component
 		string $primaryFilename
 	): array {
 		$candidates = [$primaryFilename];
-		$legacyInput = $filePathResolved ?? ($filePath instanceof Asset ? $filePath : '');
+		$legacyInputs = [$filePath];
 
-		if ($legacyInput !== '') {
+		if ($filePathResolved !== null && $filePathResolved !== '') {
+			$legacyInputs[] = $filePathResolved;
+		}
+
+		if ($filePath instanceof Asset) {
+			$assetUrl = $filePath->getUrl();
+			if ($assetUrl) {
+				$legacyInputs[] = $assetUrl;
+			}
+			if ($filePath->filename) {
+				$legacyInputs[] = $filePath->filename;
+			}
+		}
+
+		$seenInputs = [];
+		foreach ($legacyInputs as $legacyInput) {
+			if ($legacyInput === '') {
+				continue;
+			}
+
+			$inputKey = $legacyInput instanceof Asset
+				? 'asset:' . ($legacyInput->id ?: spl_object_id($legacyInput))
+				: 'string:' . $legacyInput;
+			if (isset($seenInputs[$inputKey])) {
+				continue;
+			}
+			$seenInputs[$inputKey] = true;
+
 			$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'source'));
 			$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'options'));
 			$candidates[] = $this->getFilename(
