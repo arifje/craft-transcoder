@@ -2482,11 +2482,11 @@ class Transcode extends Component
 	 * @return string
 	 * @throws InvalidConfigException
 	 */
-	protected function getFilename(Asset|string $filePath, array $options, ?array $excludeParams = null): string
+	protected function getFilename(Asset|string $filePath, array $options, ?array $excludeParams = null, bool $includeAssetId = false): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
 		$excludeParams ??= self::EXCLUDE_PARAMS;
-		$assetId = $filePath instanceof Asset ? $filePath->id : null;
+		$assetId = $includeAssetId && $filePath instanceof Asset ? $filePath->id : null;
 		$filePath = $this->getAssetPath($filePath);
 
 		$validator = new UrlValidator();
@@ -3871,6 +3871,17 @@ class Transcode extends Component
 				$videoOptions,
 				array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate']))
 			);
+
+			if ($legacyInput instanceof Asset) {
+				$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'source'), true);
+				$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'options'), true);
+				$candidates[] = $this->getFilename(
+					$legacyInput,
+					$videoOptions,
+					array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate'])),
+					true
+				);
+			}
 		}
 
 		return array_values(array_unique(array_filter($candidates)));
@@ -3921,7 +3932,7 @@ class Transcode extends Component
 		string $primaryFilename
 	): array {
 		$candidates = [$primaryFilename];
-		$legacyInputs = [];
+		$legacyInputs = [$filePath];
 
 		if ($filePathResolved !== null && $filePathResolved !== '') {
 			$legacyInputs[] = $filePathResolved;
@@ -3934,13 +3945,36 @@ class Transcode extends Component
 			}
 		}
 
-		foreach (array_unique($legacyInputs) as $legacyInput) {
+		$seenInputs = [];
+		foreach ($legacyInputs as $legacyInput) {
+			if ($legacyInput === '') {
+				continue;
+			}
+
+			$inputKey = $legacyInput instanceof Asset
+				? 'asset:' . ($legacyInput->id ?: spl_object_id($legacyInput))
+				: 'string:' . $legacyInput;
+			if (isset($seenInputs[$inputKey])) {
+				continue;
+			}
+			$seenInputs[$inputKey] = true;
+
 			$candidates[] = $this->getFilename($legacyInput, $gifOptions);
 			$candidates[] = $this->getFilename(
 				$legacyInput,
 				$gifOptions,
 				array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate']))
 			);
+
+			if ($legacyInput instanceof Asset) {
+				$candidates[] = $this->getFilename($legacyInput, $gifOptions, null, true);
+				$candidates[] = $this->getFilename(
+					$legacyInput,
+					$gifOptions,
+					array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate'])),
+					true
+				);
+			}
 		}
 
 		return array_values(array_unique(array_filter($candidates)));
@@ -3991,7 +4025,7 @@ class Transcode extends Component
 		string $primaryFilename
 	): array {
 		$candidates = [$primaryFilename];
-		$legacyInputs = [];
+		$legacyInputs = [$filePath];
 
 		if ($filePathResolved !== null && $filePathResolved !== '') {
 			$legacyInputs[] = $filePathResolved;
@@ -4007,7 +4041,20 @@ class Transcode extends Component
 		$thumbnailOptionsWithoutPosterFormat = $thumbnailOptions;
 		unset($thumbnailOptionsWithoutPosterFormat['posterFormat']);
 
-		foreach (array_unique($legacyInputs) as $legacyInput) {
+		$seenInputs = [];
+		foreach ($legacyInputs as $legacyInput) {
+			if ($legacyInput === '') {
+				continue;
+			}
+
+			$inputKey = $legacyInput instanceof Asset
+				? 'asset:' . ($legacyInput->id ?: spl_object_id($legacyInput))
+				: 'string:' . $legacyInput;
+			if (isset($seenInputs[$inputKey])) {
+				continue;
+			}
+			$seenInputs[$inputKey] = true;
+
 			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions);
 			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat);
 			$candidates[] = $this->getFilename(
@@ -4015,6 +4062,17 @@ class Transcode extends Component
 				$thumbnailOptions,
 				array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat'])))
 			);
+
+			if ($legacyInput instanceof Asset) {
+				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions, null, true);
+				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat, null, true);
+				$candidates[] = $this->getFilename(
+					$legacyInput,
+					$thumbnailOptions,
+					array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat']))),
+					true
+				);
+			}
 		}
 
 		return array_values(array_unique(array_filter($candidates)));
