@@ -57,6 +57,7 @@ Recent additions include:
 * Queue video encoding when a video asset is uploaded or saved.
 * Only queue video encoding for video assets.
 * Queue a missing encode from Twig/admin preview when enabled.
+* Restrict which web server names are allowed to start new encoding work.
 * Keep Craft queue jobs alive while ffmpeg runs, with queue progress updates.
 * Detect failed or suspicious ffmpeg output and show the ffmpeg command/log in queue errors.
 * Detect and clean up stale `.lock`/`.progress` files from crashed encodes.
@@ -130,11 +131,28 @@ This is intended as an emergency switch if ffmpeg jobs start overloading a serve
 Useful helper checks:
 
 ```twig
+{% set canEncode = craft.transcoder.canEncode() %}
 {% set videoEncodingEnabled = craft.transcoder.isVideoEncodingEnabled() %}
 {% set videoPostersEnabled = craft.transcoder.isVideoPostersEnabled() %}
 {% set videoQueueEnabled = craft.transcoder.isVideoQueueEnabled() %}
 {% set gifEncodingEnabled = craft.transcoder.isGifEncodingEnabled() %}
 {% set gifQueueEnabled = craft.transcoder.isGifQueueEnabled() %}
+```
+
+Use `canEncode` when templates are allowed to queue/start missing encodes only on a dedicated backend:
+
+```twig
+{% set canEncode = craft.transcoder.canEncode() %}
+{% set queueMissingVideo = canEncode and craft.transcoder.isVideoQueueEnabled() %}
+{% set encodedVideoData = craft.transcoder.getVideoStatus(video, {}, {}, queueMissingVideo) | json_decode %}
+```
+
+Configure the allowed encoding web servers in `config/transcoder.php`. Leave the setting empty to allow all servers. Console queue workers are always allowed, and entries may also come from environment variables:
+
+```php
+'encodingServerNames' => [
+    'redactie.skoften.net',
+],
 ```
 
 Queue-aware video status:

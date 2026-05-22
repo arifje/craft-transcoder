@@ -82,6 +82,16 @@ class TranscoderVariable implements ViteVariableInterface
     }
 
     /**
+     * Returns whether the current request may start new encode work.
+     *
+     * @return bool
+     */
+    public function canEncode(): bool
+    {
+        return Transcoder::$plugin->transcode->canStartEncodingFromCurrentRequest();
+    }
+
+    /**
      * Returns a JSON-encoded status response for a transcoded video.
      *
      * @param $filePath

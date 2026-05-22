@@ -181,6 +181,11 @@ class Settings extends Model
     public bool $enableGifEncoding = true;
 
     /**
+     * @var array|string Server names allowed to start encode work from web requests.
+     */
+    public array|string $encodingServerNames = [];
+
+    /**
      * Use a md5 hash for the filenames instead of parameterized naming
      *
      * @var bool
@@ -521,6 +526,7 @@ class Settings extends Model
             ['enableVideoPosters', 'boolean'],
             ['preventVideoPosterBlackBars', 'boolean'],
             ['enableGifEncoding', 'boolean'],
+            ['encodingServerNames', 'safe'],
             ['useHashedNames', 'boolean'],
             ['videoFilenameStrategy', 'in', 'range' => ['source', 'options']],
             ['createSubfolders', 'boolean'],

@@ -127,6 +127,40 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return whether this request is allowed to start new encode work.
+	 *
+	 * Empty `encodingServerNames` keeps the original behavior and allows every
+	 * server. Console requests are allowed so queued jobs can run without a host.
+	 *
+	 * @return bool
+	 */
+	public function canStartEncodingFromCurrentRequest(): bool
+	{
+		$allowedServerNames = $this->getAllowedEncodingServerNames();
+		if (empty($allowedServerNames)) {
+			return true;
+		}
+
+		$request = Craft::$app->getRequest();
+		if ($request->getIsConsoleRequest()) {
+			return true;
+		}
+
+		$serverName = strtolower((string)$request->getServerName());
+		if ($serverName === '') {
+			return false;
+		}
+
+		foreach ($allowedServerNames as $allowedServerName) {
+			if ($this->serverNameMatches($serverName, $allowedServerName)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Stop active ffmpeg processes that Transcoder is tracking.
 	 *
 	 * @return int
@@ -375,6 +409,16 @@ class Transcode extends Component
 			]);
 		}
 
+		if ($generate && !$this->canStartEncodingFromCurrentRequest()) {
+			Craft::info('Transcoder: video encoding not started because this server is not allowed to start encode work.', __METHOD__);
+			return JsonHelper::encode([
+				'status' => 'pending',
+				'url' => '',
+				'progress' => 0,
+				'info' => 'Encoding is not allowed on this server',
+			]);
+		}
+
 		// --- Case 4: encode new file ---
 		if (!is_dir($destVideoPath)) {
 			try {
@@ -578,6 +622,14 @@ class Transcode extends Component
 				'progress' => 0,
 			];
 		}
+		if (!$this->canStartEncodingFromCurrentRequest()) {
+			return [
+				'status' => 'pending',
+				'url' => '',
+				'progress' => 0,
+				'info' => 'Encoding is not allowed on this server',
+			];
+		}
 
 		$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
@@ -666,6 +718,14 @@ class Transcode extends Component
 				'progress' => 0,
 			];
 		}
+		if (!$this->canStartEncodingFromCurrentRequest()) {
+			return [
+				'status' => 'pending',
+				'url' => '',
+				'progress' => 0,
+				'info' => 'Encoding is not allowed on this server',
+			];
+		}
 
 		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
 		if (!$this->hasMissingVideoPosters($asset) || $this->isVideoPosterStatusActive($status)) {
@@ -732,6 +792,7 @@ class Transcode extends Component
 		$settings = Transcoder::$plugin->getSettings();
 
 		return $this->isRuntimeEncodingEnabled()
+			&& $this->canStartEncodingFromCurrentRequest()
 			&& ($settings->queueVideosOnSave || $settings->queueVideosOnEntrySave)
 			&& ($settings->enableVideoEncoding || $settings->enableVideoPosters);
 	}
@@ -746,6 +807,7 @@ class Transcode extends Component
 		$settings = Transcoder::$plugin->getSettings();
 
 		return $this->isRuntimeEncodingEnabled()
+			&& $this->canStartEncodingFromCurrentRequest()
 			&& ($settings->queueGifsOnSave || $settings->queueGifsOnEntrySave)
 			&& $settings->enableGifEncoding;
 	}
@@ -830,6 +892,14 @@ class Transcode extends Component
 				'status' => 'disabled',
 				'url' => '',
 				'progress' => 0,
+			];
+		}
+		if (!$this->canStartEncodingFromCurrentRequest()) {
+			return [
+				'status' => 'pending',
+				'url' => '',
+				'progress' => 0,
+				'info' => 'Encoding is not allowed on this server',
 			];
 		}
 
@@ -1409,6 +1479,10 @@ class Transcode extends Component
 	public function getVideoPosterUrl(Asset|string $filePath, string $formatHandle, bool $generate = false, bool $synchronous = false): string
 	{
 		if (!$this->isRuntimeEncodingEnabled() || !Transcoder::$plugin->getSettings()->enableVideoPosters) {
+			return '';
+		}
+		if ($generate && !$this->canStartEncodingFromCurrentRequest()) {
+			Craft::info('Transcoder: video poster generation not started because this server is not allowed to start encode work.', __METHOD__);
 			return '';
 		}
 
@@ -2331,6 +2405,16 @@ class Transcode extends Component
 				'status' => 'error',
 				'url' => '',
 				'error' => $msg,
+			]);
+		}
+
+		if ($generate && !$this->canStartEncodingFromCurrentRequest()) {
+			Craft::info('Transcoder: GIF encoding not started because this server is not allowed to start encode work.', __METHOD__);
+			return JsonHelper::encode([
+				'status' => 'pending',
+				'url' => '',
+				'progress' => 0,
+				'info' => 'Encoding is not allowed on this server',
 			]);
 		}
 	
@@ -4097,6 +4181,54 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return normalized server names allowed to start encode work.
+	 *
+	 * @return array
+	 */
+	protected function getAllowedEncodingServerNames(): array
+	{
+		$serverNames = Transcoder::$plugin->getSettings()->encodingServerNames ?? [];
+		if (!is_array($serverNames)) {
+			$serverNames = [$serverNames];
+		}
+
+		$result = [];
+
+		foreach ($serverNames as $serverName) {
+			foreach (explode(',', (string)App::parseEnv((string)$serverName)) as $part) {
+				$part = strtolower(trim($part));
+				if ($part !== '') {
+					$result[] = $part;
+				}
+			}
+		}
+
+		return array_values(array_unique($result));
+	}
+
+	/**
+	 * Return whether a current server name matches an allowed pattern.
+	 *
+	 * @param string $serverName
+	 * @param string $allowedServerName
+	 * @return bool
+	 */
+	protected function serverNameMatches(string $serverName, string $allowedServerName): bool
+	{
+		if ($serverName === $allowedServerName) {
+			return true;
+		}
+
+		if (!str_contains($allowedServerName, '*')) {
+			return false;
+		}
+
+		$pattern = '/^' . str_replace('\\*', '.*', preg_quote($allowedServerName, '/')) . '$/';
+
+		return (bool)preg_match($pattern, $serverName);
+	}
+
+	/**
 	 * Return the internal status storage metadata for a video output.
 	 *
 	 * @param array $outputInfo
@@ -4235,6 +4367,9 @@ class Transcode extends Component
 				'hostname' => gethostname() ?: '',
 				'schemaVersion' => Transcoder::$plugin->schemaVersion,
 				'runtimeEncodingEnabled' => $this->isRuntimeEncodingEnabled(),
+				'canStartEncoding' => $this->canStartEncodingFromCurrentRequest(),
+				'currentServerName' => Craft::$app->getRequest()->getIsConsoleRequest() ? 'console' : Craft::$app->getRequest()->getServerName(),
+				'allowedEncodingServerNames' => $this->getAllowedEncodingServerNames(),
 				'videoEncodingEnabled' => (bool)$settings->enableVideoEncoding,
 				'videoPostersEnabled' => (bool)$settings->enableVideoPosters,
 				'videoQueueEnabled' => $this->isVideoQueueEnabled(),

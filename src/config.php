@@ -107,6 +107,10 @@ return [
     // Determines whether GIF to mp4 encoding should be enabled
     'enableGifEncoding' => true,
 
+    // Server names that are allowed to start new encode work from web requests.
+    // Leave empty to allow all servers. Console queue workers are always allowed.
+    'encodingServerNames' => [],
+
     // Use a md5 hash for the filenames instead of parameterized naming
     'useHashedNames' => false,
 
