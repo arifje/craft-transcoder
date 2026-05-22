@@ -244,6 +244,12 @@ class Transcode extends Component
 
 		$videoFilenameInput = $filePath instanceof Asset ? $filePath : ($filePathResolved ?? '');
 		$destVideoFile = $this->getFilename($videoFilenameInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions));
+		$videoFilenameCandidates = $this->getVideoFilenameCandidates(
+			$filePath,
+			$filePathResolved,
+			$videoOptions,
+			$destVideoFile
+		);
 		$destVideoFile = $this->getExistingVideoFilenameCandidate(
 			$destVideoPath,
 			$filePath,
@@ -256,6 +262,7 @@ class Transcode extends Component
 
 		$lockFile     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock';
 		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
+		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 
 		if ($isDev) {
 			Craft::info("Lock file: $lockFile", __METHOD__);
@@ -350,6 +357,11 @@ class Transcode extends Component
 					'info' => 'Encoding in progress (PID not yet available)',
 				]);
 			}
+		}
+
+		$activeStatus = $this->findActiveVideoStatusForFilenames($videoFilenameCandidates, $statusKey);
+		if (!empty($activeStatus)) {
+			return JsonHelper::encode($this->sanitizeVideoStatus($activeStatus));
 		}
 
 		// --- Case 3: original missing, encoded missing ---
@@ -983,6 +995,11 @@ class Transcode extends Component
 			return $this->sanitizeVideoStatus($status);
 		}
 
+		$activeStatus = $this->findActiveVideoStatusForFilenames($outputInfo['filenameCandidates'] ?? [$outputInfo['filename']], $statusKey);
+		if (!empty($activeStatus)) {
+			return $this->sanitizeVideoStatus($activeStatus);
+		}
+
 		if (!empty($storedStatus) && ($storedStatus['status'] ?? null) === 'ok') {
 			$storedStatus = [];
 		}
@@ -998,6 +1015,13 @@ class Transcode extends Component
 			if (!empty($storedStatus['progressFile'])) {
 				@unlink($storedStatus['progressFile']);
 			}
+			$storedStatus = [];
+		}
+
+		if (!empty($storedStatus)
+			&& ($storedStatus['status'] ?? null) === 'queued'
+			&& !$this->isRecentVideoStatus($storedStatus, 1800)
+		) {
 			$storedStatus = [];
 		}
 
@@ -3731,6 +3755,12 @@ class Transcode extends Component
 			$videoOptions,
 			$this->getVideoFilenameExcludeParams($videoOptions)
 		);
+		$videoFilenameCandidates = $this->getVideoFilenameCandidates(
+			$filePath,
+			$filePathResolved,
+			$videoOptions,
+			$destVideoFile
+		);
 		$destVideoFile = $this->getExistingVideoFilenameCandidate(
 			$destVideoPath,
 			$filePath,
@@ -3747,6 +3777,7 @@ class Transcode extends Component
 			'publicUrl' => $urlBase . '/' . $destVideoFile,
 			'lockFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock',
 			'progressFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress',
+			'filenameCandidates' => $videoFilenameCandidates,
 		];
 	}
 
@@ -3768,9 +3799,17 @@ class Transcode extends Component
 		array $videoOptions,
 		string $primaryFilename
 	): string {
-		foreach ($this->getVideoFilenameCandidates($filePath, $filePathResolved, $videoOptions, $primaryFilename) as $filename) {
+		$candidates = $this->getVideoFilenameCandidates($filePath, $filePathResolved, $videoOptions, $primaryFilename);
+		foreach ($candidates as $filename) {
 			$encodedFile = $destVideoPath . $filename;
 			if (is_file($encodedFile) && filesize($encodedFile) > 0) {
+				return $filename;
+			}
+		}
+
+		foreach ($candidates as $filename) {
+			$lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.lock';
+			if (is_file($lockFile) && $this->isProcessRunningFromLockFile($lockFile)) {
 				return $filename;
 			}
 		}
@@ -4000,6 +4039,76 @@ class Transcode extends Component
 		unset($status['encodedFile'], $status['lockFile'], $status['progressFile'], $status['publicUrl']);
 
 		return $status;
+	}
+
+	/**
+	 * Find a recent queued/running encode for any equivalent source/options filename candidate.
+	 *
+	 * @param array $filenames
+	 * @param string|null $excludeKey
+	 * @return array
+	 */
+	protected function findActiveVideoStatusForFilenames(array $filenames, ?string $excludeKey = null): array
+	{
+		$filenames = array_flip(array_filter(array_unique($filenames)));
+		if (empty($filenames)) {
+			return [];
+		}
+
+		$statusFiles = glob($this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . '*.json') ?: [];
+		foreach ($statusFiles as $statusFile) {
+			$status = JsonHelper::decodeIfJson((string)@file_get_contents($statusFile), true);
+			if (!is_array($status)) {
+				continue;
+			}
+
+			if ($excludeKey !== null && ($status['key'] ?? null) === $excludeKey) {
+				continue;
+			}
+
+			$state = $status['status'] ?? null;
+			if (!in_array($state, ['queued', 'encoding'], true)) {
+				continue;
+			}
+
+			$filename = $status['filename'] ?? null;
+			if (!$filename && !empty($status['encodedFile'])) {
+				$filename = basename((string)$status['encodedFile']);
+			}
+			if (!$filename || !isset($filenames[$filename])) {
+				continue;
+			}
+
+			$lockFile = $status['lockFile'] ?? null;
+			$progressFile = $status['progressFile'] ?? null;
+			if ($lockFile && is_file($lockFile) && $this->isProcessRunningFromLockFile($lockFile)) {
+				return array_merge($status, $this->getProgressData($filename));
+			}
+
+			if ($this->isRecentVideoStatus($status, $state === 'queued' ? 1800 : 60)) {
+				return $status;
+			}
+
+			$this->removeEncodeTempFiles($lockFile, $progressFile);
+		}
+
+		return [];
+	}
+
+	/**
+	 * Return whether a stored video status was updated recently enough to treat as active.
+	 *
+	 * @param array $status
+	 * @param int $maxAgeSeconds
+	 * @return bool
+	 */
+	protected function isRecentVideoStatus(array $status, int $maxAgeSeconds): bool
+	{
+		if (empty($status['updatedAt'])) {
+			return false;
+		}
+
+		return time() - (int)$status['updatedAt'] <= $maxAgeSeconds;
 	}
 
 	/**
