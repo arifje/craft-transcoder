@@ -1931,10 +1931,11 @@ class Transcode extends Component
 	 * @param Asset|string $filePath
 	 * @param array $gifOptions
 	 * @param bool $queueIfMissing
+	 * @param bool $includeDebug
 	 * @return string
 	 * @throws InvalidConfigException
 	 */
-	public function getGifStatus(Asset|string $filePath, array $gifOptions = [], bool $queueIfMissing = false): string
+	public function getGifStatus(Asset|string $filePath, array $gifOptions = [], bool $queueIfMissing = false, bool $includeDebug = false): string
 	{
 		$status = $this->getGifStatusData($filePath, $gifOptions);
 		if ($queueIfMissing
@@ -1944,6 +1945,10 @@ class Transcode extends Component
 		) {
 			$settings = Transcoder::$plugin->getSettings();
 			$status = $this->queueGifEncode($filePath, $gifOptions, max(0, (int)$settings->gifQueueDelaySeconds));
+		}
+
+		if ($includeDebug) {
+			$status['debug'] = $this->getGifStatusDebug($filePath, $gifOptions);
 		}
 
 		return JsonHelper::encode($status);
@@ -4373,6 +4378,75 @@ class Transcode extends Component
 				'videoEncodingEnabled' => (bool)$settings->enableVideoEncoding,
 				'videoPostersEnabled' => (bool)$settings->enableVideoPosters,
 				'videoQueueEnabled' => $this->isVideoQueueEnabled(),
+				'statusKey' => $statusKey,
+				'source' => $outputInfo['source'] ?? null,
+				'originalExists' => $outputInfo['originalExists'],
+				'filename' => $outputInfo['filename'],
+				'encodedFile' => $this->getFileDebugInfo($outputInfo['encodedFile']),
+				'publicUrl' => [
+					'url' => $outputInfo['publicUrl'],
+					'exists' => $this->doesRemoteFileExist($outputInfo['publicUrl'], 1, 1),
+				],
+				'lockFile' => array_merge(
+					$this->getFileDebugInfo($outputInfo['lockFile']),
+					['processRunning' => is_file($outputInfo['lockFile']) && $this->isProcessRunningFromLockFile($outputInfo['lockFile'])]
+				),
+				'progressFile' => $this->getFileDebugInfo($outputInfo['progressFile']),
+				'candidateFiles' => $candidateFiles,
+				'storedStatusAgeSeconds' => isset($storedStatus['updatedAt']) ? max(0, time() - (int)$storedStatus['updatedAt']) : null,
+				'storedStatus' => $storedStatusForDebug,
+				'sysTempDir' => sys_get_temp_dir(),
+				'documentRoot' => $_SERVER['DOCUMENT_ROOT'] ?? null,
+			];
+		} catch (Throwable $e) {
+			return [
+				'error' => $e->getMessage(),
+			];
+		}
+	}
+
+	/**
+	 * Return admin-only debug data for queue-aware GIF status.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $gifOptions
+	 * @return array
+	 */
+	protected function getGifStatusDebug(Asset|string $filePath, array $gifOptions = []): array
+	{
+		try {
+			$outputInfo = $this->getGifOutputInfo($filePath, $gifOptions);
+			$statusKey = $this->getGifStatusKey($filePath, $gifOptions);
+			$storedStatus = $this->readVideoStatus($statusKey);
+			$storedStatusForDebug = $storedStatus;
+			unset($storedStatusForDebug['debug']);
+
+			$settings = Transcoder::$plugin->getSettings();
+			$resolvedGifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
+			$videoEncoders = $settings['videoEncoders'];
+			if (isset($videoEncoders[$resolvedGifOptions['videoEncoder']])) {
+				$thisEncoder = $videoEncoders[$resolvedGifOptions['videoEncoder']];
+				$resolvedGifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
+			}
+
+			$destGifPath = rtrim(dirname($outputInfo['encodedFile']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+			$candidateFiles = [];
+			foreach ($this->getGifFilenameCandidates($filePath, $outputInfo['source'] ?? null, $resolvedGifOptions, $outputInfo['filename']) as $filename) {
+				$candidateFiles[] = array_merge(
+					['filename' => $filename],
+					$this->getFileDebugInfo($destGifPath . $filename)
+				);
+			}
+
+			return [
+				'hostname' => gethostname() ?: '',
+				'schemaVersion' => Transcoder::$plugin->schemaVersion,
+				'runtimeEncodingEnabled' => $this->isRuntimeEncodingEnabled(),
+				'canStartEncoding' => $this->canStartEncodingFromCurrentRequest(),
+				'currentServerName' => Craft::$app->getRequest()->getIsConsoleRequest() ? 'console' : Craft::$app->getRequest()->getServerName(),
+				'allowedEncodingServerNames' => $this->getAllowedEncodingServerNames(),
+				'gifEncodingEnabled' => (bool)$settings->enableGifEncoding,
+				'gifQueueEnabled' => $this->isGifQueueEnabled(),
 				'statusKey' => $statusKey,
 				'source' => $outputInfo['source'] ?? null,
 				'originalExists' => $outputInfo['originalExists'],

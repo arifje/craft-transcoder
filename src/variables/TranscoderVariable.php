@@ -295,12 +295,13 @@ class TranscoderVariable implements ViteVariableInterface
      * @param $filePath
      * @param array $gifOptions
      * @param bool $queueIfMissing
+     * @param bool $includeDebug
      * @return string
      * @throws InvalidConfigException
      */
-    public function getGifStatus($filePath, array $gifOptions = [], bool $queueIfMissing = false): string
+    public function getGifStatus($filePath, array $gifOptions = [], bool $queueIfMissing = false, bool $includeDebug = false): string
     {
-        return Transcoder::$plugin->transcode->getGifStatus($filePath, $gifOptions, $queueIfMissing);
+        return Transcoder::$plugin->transcode->getGifStatus($filePath, $gifOptions, $queueIfMissing, $includeDebug);
     }
 
     /**
