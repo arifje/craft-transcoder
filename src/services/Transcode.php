@@ -4125,10 +4125,17 @@ class Transcode extends Component
 			if ($assetUrl) {
 				$legacyInputs[] = $assetUrl;
 			}
+			if ($filePath->filename) {
+				$legacyInputs[] = $filePath->filename;
+			}
 		}
 
 		$thumbnailOptionsWithoutPosterFormat = $thumbnailOptions;
 		unset($thumbnailOptionsWithoutPosterFormat['posterFormat']);
+		$thumbnailOptionsWithoutPreventBlackBars = $thumbnailOptions;
+		unset($thumbnailOptionsWithoutPreventBlackBars['preventBlackBars']);
+		$thumbnailOptionsWithoutPosterRuntimeOptions = $thumbnailOptions;
+		unset($thumbnailOptionsWithoutPosterRuntimeOptions['posterFormat'], $thumbnailOptionsWithoutPosterRuntimeOptions['preventBlackBars']);
 
 		$seenInputs = [];
 		foreach ($legacyInputs as $legacyInput) {
@@ -4146,19 +4153,34 @@ class Transcode extends Component
 
 			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions);
 			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat);
+			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPreventBlackBars);
+			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterRuntimeOptions);
 			$candidates[] = $this->getFilename(
 				$legacyInput,
 				$thumbnailOptions,
 				array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat'])))
 			);
+			$candidates[] = $this->getFilename(
+				$legacyInput,
+				$thumbnailOptions,
+				array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat', 'preventBlackBars'])))
+			);
 
 			if ($legacyInput instanceof Asset) {
 				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions, null, true);
 				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat, null, true);
+				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPreventBlackBars, null, true);
+				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterRuntimeOptions, null, true);
 				$candidates[] = $this->getFilename(
 					$legacyInput,
 					$thumbnailOptions,
 					array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat']))),
+					true
+				);
+				$candidates[] = $this->getFilename(
+					$legacyInput,
+					$thumbnailOptions,
+					array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat', 'preventBlackBars']))),
 					true
 				);
 			}
