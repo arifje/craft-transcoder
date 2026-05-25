@@ -1389,6 +1389,9 @@ class Transcode extends Component
 				$thumbnailOptions,
 				$destThumbnailFile
 			);
+			if ($destThumbnailFile !== $this->getFilename($filePathResolved, $thumbnailOptions)) {
+				Craft::info('Transcoder: using existing legacy video poster/thumbnail filename ' . $destThumbnailFile . ' for ' . $filePathResolved, __METHOD__);
+			}
 
 			// Public URL
 			$publicUrl = $urlBase . '/' . $destThumbnailFile;
@@ -1430,6 +1433,12 @@ class Transcode extends Component
 
 			// Generate thumbnail if not exists
 			if (!file_exists($destThumbnailPath)) {
+				Craft::info(
+					'Transcoder: video poster/thumbnail file does not exist, checked candidates before generation: '
+					. JsonHelper::encode($this->getThumbnailCandidateDebug($filePath, $filePathResolved, $thumbnailOptions, dirname($destThumbnailPath) . DIRECTORY_SEPARATOR)),
+					__METHOD__
+				);
+
 				if ($generate) {
 					if ($synchronous) {
 						$shellOutput = $this->executeShellCommand($ffmpegCmd . ' 2>&1');
@@ -4415,6 +4424,7 @@ class Transcode extends Component
 				),
 				'progressFile' => $this->getFileDebugInfo($outputInfo['progressFile']),
 				'candidateFiles' => $candidateFiles,
+				'videoPosters' => $this->getVideoPosterStatusDebug($filePath),
 				'storedStatusAgeSeconds' => isset($storedStatus['updatedAt']) ? max(0, time() - (int)$storedStatus['updatedAt']) : null,
 				'storedStatus' => $storedStatusForDebug,
 				'sysTempDir' => sys_get_temp_dir(),
@@ -4494,6 +4504,91 @@ class Transcode extends Component
 				'error' => $e->getMessage(),
 			];
 		}
+	}
+
+	/**
+	 * Return debug data for configured video poster files.
+	 *
+	 * @param Asset|string $filePath
+	 * @return array
+	 */
+	protected function getVideoPosterStatusDebug(Asset|string $filePath): array
+	{
+		$result = [];
+		$settings = Transcoder::$plugin->getSettings();
+		$subfolder = $this->getSubfolderFromPath($filePath);
+		$normalized = $this->normalizeFilePath($filePath);
+		$filePathResolved = $normalized['url'] ?? ($normalized['path'] ?? null);
+
+		if ($filePathResolved === null || $filePathResolved === '') {
+			return [
+				'error' => 'Unable to resolve poster source path or URL.',
+			];
+		}
+
+		if (!empty($subfolder)) {
+			$destThumbnailPath = rtrim(App::parseEnv($settings['transcoderPaths']['thumbnail']), DIRECTORY_SEPARATOR)
+				. DIRECTORY_SEPARATOR
+				. trim($subfolder, DIRECTORY_SEPARATOR)
+				. DIRECTORY_SEPARATOR;
+
+			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['thumbnail']), '/')
+				. '/' . trim($subfolder, '/');
+		} else {
+			$destThumbnailPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR)
+				. DIRECTORY_SEPARATOR;
+
+			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
+		}
+
+		foreach ($this->getVideoPosterFormats() as $formatHandle => $format) {
+			$options = $this->coalesceOptions('defaultThumbnailOptions', $format);
+			$options['posterFormat'] = $formatHandle;
+			$options['preventBlackBars'] = (bool)$settings->preventVideoPosterBlackBars;
+			$primaryFilename = $this->getFilename($filePathResolved, $options);
+
+			$result[$formatHandle] = [
+				'options' => $options,
+				'primaryFilename' => $primaryFilename,
+				'destinationPath' => $destThumbnailPath,
+				'urlBase' => $urlBase,
+				'candidates' => $this->getThumbnailCandidateDebug($filePath, $filePathResolved, $options, $destThumbnailPath, $primaryFilename),
+			];
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Return candidate poster/thumbnail filenames with filesystem checks.
+	 *
+	 * @param Asset|string $filePath
+	 * @param string|null $filePathResolved
+	 * @param array $thumbnailOptions
+	 * @param string $destThumbnailPath
+	 * @param string|null $primaryFilename
+	 * @return array
+	 */
+	protected function getThumbnailCandidateDebug(
+		Asset|string $filePath,
+		?string $filePathResolved,
+		array $thumbnailOptions,
+		string $destThumbnailPath,
+		?string $primaryFilename = null
+	): array {
+		$primaryFilename ??= $filePathResolved !== null
+			? $this->getFilename($filePathResolved, $thumbnailOptions)
+			: '';
+
+		$candidates = [];
+		foreach ($this->getThumbnailFilenameCandidates($filePath, $filePathResolved, $thumbnailOptions, $primaryFilename) as $filename) {
+			$candidates[] = array_merge(
+				['filename' => $filename],
+				$this->getFileDebugInfo($destThumbnailPath . $filename)
+			);
+		}
+
+		return $candidates;
 	}
 
 	/**
