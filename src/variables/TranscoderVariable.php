@@ -182,6 +182,18 @@ class TranscoderVariable implements ViteVariableInterface
     }
 
     /**
+     * Returns debug data for configured video poster files.
+     *
+     * @param $filePath
+     *
+     * @return array
+     */
+    public function getVideoPosterDebug($filePath): array
+    {
+        return Transcoder::$plugin->transcode->getVideoPosterDebug($filePath);
+    }
+
+    /**
      * Return poster format rows for the settings UI.
      *
      * @return array

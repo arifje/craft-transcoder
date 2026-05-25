@@ -1380,8 +1380,14 @@ class Transcode extends Component
 			// Options
 			$thumbnailOptions = $this->coalesceOptions('defaultThumbnailOptions', $thumbnailOptions);
 
-			// Build the file name
-			$destThumbnailFile = $this->getFilename($filePathResolved, $thumbnailOptions);
+			// Build the file name. Poster handles and visual generation toggles should
+			// not change poster filenames; time/size/aspect options already separate them.
+			$primaryThumbnailFile = $this->getFilename(
+				$filePathResolved,
+				$thumbnailOptions,
+				$this->getThumbnailFilenameExcludeParams()
+			);
+			$destThumbnailFile = $primaryThumbnailFile;
 			$destThumbnailFile = $this->getExistingThumbnailFilenameCandidate(
 				$destThumbnailPath,
 				$filePath,
@@ -1389,7 +1395,7 @@ class Transcode extends Component
 				$thumbnailOptions,
 				$destThumbnailFile
 			);
-			if ($destThumbnailFile !== $this->getFilename($filePathResolved, $thumbnailOptions)) {
+			if ($destThumbnailFile !== $primaryThumbnailFile) {
 				Craft::info('Transcoder: using existing legacy video poster/thumbnail filename ' . $destThumbnailFile . ' for ' . $filePathResolved, __METHOD__);
 			}
 
@@ -1525,6 +1531,17 @@ class Transcode extends Component
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Return debug data for configured video poster files.
+	 *
+	 * @param Asset|string $filePath
+	 * @return array
+	 */
+	public function getVideoPosterDebug(Asset|string $filePath): array
+	{
+		return $this->getVideoPosterStatusDebug($filePath);
 	}
 
 	/**
@@ -4124,6 +4141,7 @@ class Transcode extends Component
 	): array {
 		$candidates = [$primaryFilename];
 		$legacyInputs = [$filePath];
+		$thumbnailFilenameExcludeParams = $this->getThumbnailFilenameExcludeParams();
 
 		if ($filePathResolved !== null && $filePathResolved !== '') {
 			$legacyInputs[] = $filePathResolved;
@@ -4160,6 +4178,7 @@ class Transcode extends Component
 			}
 			$seenInputs[$inputKey] = true;
 
+			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions, $thumbnailFilenameExcludeParams);
 			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions);
 			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat);
 			$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPreventBlackBars);
@@ -4176,6 +4195,7 @@ class Transcode extends Component
 			);
 
 			if ($legacyInput instanceof Asset) {
+				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions, $thumbnailFilenameExcludeParams, true);
 				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions, null, true);
 				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat, null, true);
 				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPreventBlackBars, null, true);
@@ -4196,6 +4216,19 @@ class Transcode extends Component
 		}
 
 		return array_values(array_unique(array_filter($candidates)));
+	}
+
+	/**
+	 * Return excluded option keys for poster/thumbnail filenames.
+	 *
+	 * @return array
+	 */
+	protected function getThumbnailFilenameExcludeParams(): array
+	{
+		return array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, [
+			'posterFormat',
+			'preventBlackBars',
+		])));
 	}
 
 	/**
@@ -4545,7 +4578,11 @@ class Transcode extends Component
 			$options = $this->coalesceOptions('defaultThumbnailOptions', $format);
 			$options['posterFormat'] = $formatHandle;
 			$options['preventBlackBars'] = (bool)$settings->preventVideoPosterBlackBars;
-			$primaryFilename = $this->getFilename($filePathResolved, $options);
+			$primaryFilename = $this->getFilename(
+				$filePathResolved,
+				$options,
+				$this->getThumbnailFilenameExcludeParams()
+			);
 
 			$result[$formatHandle] = [
 				'options' => $options,
@@ -4577,7 +4614,7 @@ class Transcode extends Component
 		?string $primaryFilename = null
 	): array {
 		$primaryFilename ??= $filePathResolved !== null
-			? $this->getFilename($filePathResolved, $thumbnailOptions)
+			? $this->getFilename($filePathResolved, $thumbnailOptions, $this->getThumbnailFilenameExcludeParams())
 			: '';
 
 		$candidates = [];
