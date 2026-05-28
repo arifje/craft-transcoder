@@ -118,13 +118,14 @@ For production environments where admins cannot access plugin settings, configur
 
 ```php
 return [
-    'videoWatermarkPath' => getenv('TRANSCODER_WATERMARK_PATH'),
-    // or, when the encoding server should fetch it remotely:
-    'videoWatermarkUrl' => getenv('TRANSCODER_WATERMARK_URL'),
+    'videoWatermarkPath' => getenv('TRANSCODER_WATERMARK_PATH') ?: '',
+    // Remote fallback, used when TRANSCODER_WATERMARK_URL is not set:
+    'videoWatermarkUrl' => getenv('TRANSCODER_WATERMARK_URL') ?: 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/icons/play-circle.svg',
 ];
 ```
 
 `videoWatermarkPath` is checked first, then `videoWatermarkUrl`, then the selected Craft asset from the settings screen.
+The example fallback uses a free MIT-licensed Bootstrap Icons SVG.
 
 ### Runtime Kill Switch
 

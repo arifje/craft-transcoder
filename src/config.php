@@ -71,8 +71,9 @@ return [
 
     // Optional environment/config overrides for the watermark source.
     // These are checked before the Craft Asset ID and are safer across environments.
-    'videoWatermarkPath' => '',
-    'videoWatermarkUrl' => '',
+    // The URL fallback is a free MIT-licensed Bootstrap Icons SVG placeholder.
+    'videoWatermarkPath' => getenv('TRANSCODER_WATERMARK_PATH') ?: '',
+    'videoWatermarkUrl' => getenv('TRANSCODER_WATERMARK_URL') ?: 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/icons/play-circle.svg',
 
     // Watermark dimensions in pixels. Leave empty for original image size
     'videoWatermarkWidth' => '',
