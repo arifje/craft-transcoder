@@ -472,7 +472,7 @@ class Transcode extends Component
 			$ffmpegCmd .= ' -filter_complex ' . escapeshellarg($filterComplex)
 				. ' -map ' . escapeshellarg('[vout]')
 				. ' -map ' . escapeshellarg('0:a?');
-			Craft::info("Transcoder: applying video watermark asset {$watermarkConfig['assetId']} with filter graph: $filterComplex", __METHOD__);
+			Craft::info("Transcoder: applying video watermark {$watermarkConfig['label']} with filter graph: $filterComplex", __METHOD__);
 		} else {
 			$ffmpegCmd = $this->addScalingFfmpegArgs($videoOptions, $ffmpegCmd);
 		}
@@ -523,6 +523,8 @@ class Transcode extends Component
 			}
 			if ($watermarkConfig !== null) {
 				$status['watermarkAssetId'] = $watermarkConfig['assetId'];
+				$status['watermarkSource'] = $watermarkConfig['source'];
+				$status['watermarkLabel'] = $watermarkConfig['label'];
 			}
 
 			return JsonHelper::encode($status);
@@ -2788,28 +2790,20 @@ class Transcode extends Component
 			return null;
 		}
 
-		$assetId = $this->getVideoWatermarkAssetId($settings->videoWatermarkAsset);
-		if ($assetId === null) {
-			Craft::warning('Transcoder: video watermarking is enabled, but no watermark asset is selected.', __METHOD__);
+		$watermarkSource = $this->getConfiguredVideoWatermarkSource();
+		if ($watermarkSource === null) {
+			$watermarkSource = $this->getAssetVideoWatermarkSource($settings->videoWatermarkAsset);
+		}
+
+		if ($watermarkSource === null) {
+			Craft::warning('Transcoder: video watermarking is enabled, but no watermark source is configured.', __METHOD__);
 			return null;
 		}
 
-		$asset = Asset::find()->id($assetId)->one();
-		if (!$asset instanceof Asset) {
-			Craft::warning("Transcoder: video watermark asset $assetId could not be found.", __METHOD__);
-			return null;
-		}
-
-		$extension = strtolower(pathinfo($asset->filename, PATHINFO_EXTENSION));
+		$watermarkPath = $watermarkSource['path'];
+		$extension = $this->getPathOrUrlExtension($watermarkPath);
 		if (!in_array($extension, ['svg', 'jpg', 'jpeg', 'png'], true)) {
-			Craft::warning("Transcoder: video watermark asset $assetId has unsupported extension .$extension.", __METHOD__);
-			return null;
-		}
-
-		$normalized = $this->normalizeFilePath($asset);
-		$watermarkPath = $normalized['path'] ?? ($normalized['url'] ?? '');
-		if ($watermarkPath === '') {
-			Craft::warning("Transcoder: video watermark asset $assetId did not resolve to a path or URL.", __METHOD__);
+			Craft::warning("Transcoder: video watermark source {$watermarkSource['label']} has unsupported extension .$extension.", __METHOD__);
 			return null;
 		}
 
@@ -2825,20 +2819,23 @@ class Transcode extends Component
 			try {
 				$watermarkPath = $this->rasterizeSvgWatermark(
 					$watermarkPath,
-					$assetId,
+					$watermarkSource['sourceId'],
 					$width,
 					$height,
 					$settings->videoWatermarkAnimation
 				);
 				$rasterizedSvg = true;
 			} catch (Throwable $e) {
-				Craft::error('Transcoder: could not rasterize SVG watermark asset ' . $assetId . ': ' . $e->getMessage(), __METHOD__);
+				Craft::error('Transcoder: could not rasterize SVG watermark source ' . $watermarkSource['label'] . ': ' . $e->getMessage(), __METHOD__);
 				throw $e;
 			}
 		}
 
 		return [
-			'assetId' => $assetId,
+			'assetId' => $watermarkSource['assetId'],
+			'source' => $watermarkSource['source'],
+			'sourceId' => $watermarkSource['sourceId'],
+			'label' => $watermarkSource['label'],
 			'path' => $watermarkPath,
 			'width' => $width,
 			'height' => $height,
@@ -3193,13 +3190,13 @@ class Transcode extends Component
 	 * Rasterize an SVG watermark to PNG because many ffmpeg builds cannot decode SVG streams.
 	 *
 	 * @param string $svgPath
-	 * @param int $assetId
+	 * @param int|string $sourceId
 	 * @param int|null $width
 	 * @param int|null $height
 	 * @param string $animation
 	 * @return string
 	 */
-	protected function rasterizeSvgWatermark(string $svgPath, int $assetId, ?int $width, ?int $height, string $animation): string
+	protected function rasterizeSvgWatermark(string $svgPath, int|string $sourceId, ?int $width, ?int $height, string $animation): string
 	{
 		$svg = @file_get_contents($svgPath);
 		if ($svg === false || trim($svg) === '') {
@@ -3207,9 +3204,10 @@ class Transcode extends Component
 		}
 
 		[$rasterWidth, $rasterHeight] = $this->getSvgWatermarkRasterDimensions($svg, $width, $height);
+		$sourceId = preg_replace('/[^A-Za-z0-9_-]+/', '-', (string)$sourceId) ?: 'source';
 		$sourceStamp = $this->isUrl($svgPath) ? sha1($svg) : (string)@filemtime($svgPath);
 		$cacheKey = sha1($svgPath . '|' . $sourceStamp . '|' . $rasterWidth . 'x' . $rasterHeight . '|' . $animation);
-		$pngPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $assetId . '-' . $cacheKey . '.png';
+		$pngPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $sourceId . '-' . $cacheKey . '.png';
 
 		if (is_file($pngPath) && filesize($pngPath) > 0) {
 			return $pngPath;
@@ -3222,7 +3220,7 @@ class Transcode extends Component
 
 		$tempSvgPath = $svgPath;
 		if ($this->isUrl($svgPath)) {
-			$tempSvgPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $assetId . '-' . $cacheKey . '.svg';
+			$tempSvgPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $sourceId . '-' . $cacheKey . '.svg';
 			file_put_contents($tempSvgPath, $svg);
 		}
 
@@ -3480,6 +3478,97 @@ class Transcode extends Component
 		}
 
 		return in_array($fallback, self::WATERMARK_POSITIONS, true) ? [$fallback] : ['bottom-right'];
+	}
+
+	/**
+	 * Return a configured watermark path/URL source, or null when not configured.
+	 *
+	 * @return array|null
+	 */
+	protected function getConfiguredVideoWatermarkSource(): ?array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$path = trim((string)App::parseEnv((string)$settings->videoWatermarkPath));
+		if ($path !== '') {
+			$resolvedPath = Craft::getAlias($path, false) ?: $path;
+
+			return [
+				'assetId' => null,
+				'source' => 'config:path',
+				'sourceId' => 'path-' . substr(sha1($resolvedPath), 0, 12),
+				'label' => $path,
+				'path' => $resolvedPath,
+			];
+		}
+
+		$url = trim((string)App::parseEnv((string)$settings->videoWatermarkUrl));
+		if ($url !== '') {
+			if (!$this->isUrl($url)) {
+				Craft::warning("Transcoder: configured video watermark URL is not a valid absolute URL: $url", __METHOD__);
+				return null;
+			}
+
+			return [
+				'assetId' => null,
+				'source' => 'config:url',
+				'sourceId' => 'url-' . substr(sha1($url), 0, 12),
+				'label' => $url,
+				'path' => $url,
+			];
+		}
+
+		return null;
+	}
+
+	/**
+	 * Return the selected watermark asset source, or null when unavailable.
+	 *
+	 * @param mixed $value
+	 * @return array|null
+	 * @throws InvalidConfigException
+	 */
+	protected function getAssetVideoWatermarkSource(mixed $value): ?array
+	{
+		$assetId = $this->getVideoWatermarkAssetId($value);
+		if ($assetId === null) {
+			return null;
+		}
+
+		$asset = Asset::find()->id($assetId)->one();
+		if (!$asset instanceof Asset) {
+			Craft::warning("Transcoder: video watermark asset $assetId could not be found.", __METHOD__);
+			return null;
+		}
+
+		$normalized = $this->normalizeFilePath($asset);
+		$watermarkPath = $normalized['path'] ?? ($normalized['url'] ?? '');
+		if ($watermarkPath === '') {
+			Craft::warning("Transcoder: video watermark asset $assetId did not resolve to a path or URL.", __METHOD__);
+			return null;
+		}
+
+		return [
+			'assetId' => $assetId,
+			'source' => 'asset',
+			'sourceId' => 'asset-' . $assetId,
+			'label' => 'asset ' . $assetId,
+			'path' => $watermarkPath,
+		];
+	}
+
+	/**
+	 * Return the lowercase extension from a local path or URL.
+	 *
+	 * @param string $path
+	 * @return string
+	 */
+	protected function getPathOrUrlExtension(string $path): string
+	{
+		$pathPart = $this->isUrl($path)
+			? (parse_url($path, PHP_URL_PATH) ?: '')
+			: $path;
+
+		return strtolower(pathinfo($pathPart, PATHINFO_EXTENSION));
 	}
 
 	/**

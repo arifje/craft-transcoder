@@ -82,7 +82,7 @@
 
     {{ forms.elementSelectField({
         label: 'Watermark image'|t('transcoder'),
-        instructions: 'Choose a PNG, JPG, or SVG asset to overlay on encoded videos.'|t('transcoder'),
+        instructions: 'Choose a PNG, JPG, or SVG asset to overlay on encoded videos. The configured path/URL below takes precedence when present.'|t('transcoder'),
         warning: macros.configWarning('videoWatermarkAsset', 'transcoder'),
         id: 'videoWatermarkAsset',
         name: 'videoWatermarkAsset',
@@ -94,6 +94,26 @@
         },
         limit: 1,
         viewMode: 'list',
+    }) }}
+
+    {{ forms.textField({
+        label: 'Watermark file path'|t('transcoder'),
+        instructions: 'Optional local path or alias, such as @webroot/content/general/watermark.svg. This is checked before the selected asset and is useful for production config.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkPath', 'transcoder'),
+        id: 'videoWatermarkPath',
+        name: 'videoWatermarkPath',
+        value: settings.videoWatermarkPath,
+        placeholder: '@webroot/content/general/watermark.svg',
+    }) }}
+
+    {{ forms.textField({
+        label: 'Watermark URL'|t('transcoder'),
+        instructions: 'Optional remote PNG, JPG, or SVG URL. Used when no watermark file path is configured, before falling back to the selected asset.'|t('transcoder'),
+        warning: macros.configWarning('videoWatermarkUrl', 'transcoder'),
+        id: 'videoWatermarkUrl',
+        name: 'videoWatermarkUrl',
+        value: settings.videoWatermarkUrl,
+        placeholder: 'https://files.example.com/general/watermark.svg',
     }) }}
 
     {{ forms.textField({

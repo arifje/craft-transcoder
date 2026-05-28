@@ -101,6 +101,16 @@ class Settings extends Model
     public int|string|array|null $videoWatermarkAsset = null;
 
     /**
+     * @var string|bool|null Optional local path/alias used before the selected asset
+     */
+    public string|bool|null $videoWatermarkPath = '';
+
+    /**
+     * @var string|bool|null Optional remote URL used before the selected asset
+     */
+    public string|bool|null $videoWatermarkUrl = '';
+
+    /**
      * @var int|string Watermark width in pixels, or empty for original width
      */
     public int|string $videoWatermarkWidth = '';
@@ -485,6 +495,7 @@ class Settings extends Model
             ['autoCropVideoBlackBars', 'boolean'],
             ['enableVideoWatermark', 'boolean'],
             ['videoWatermarkAsset', 'safe'],
+            [['videoWatermarkPath', 'videoWatermarkUrl'], 'safe'],
             [['videoWatermarkWidth', 'videoWatermarkHeight'], 'safe'],
             ['videoWatermarkPosition', 'in', 'range' => [
                 'top-left',

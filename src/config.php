@@ -69,6 +69,11 @@ return [
     // Craft Asset ID selected as the video watermark image
     'videoWatermarkAsset' => null,
 
+    // Optional environment/config overrides for the watermark source.
+    // These are checked before the Craft Asset ID and are safer across environments.
+    'videoWatermarkPath' => '',
+    'videoWatermarkUrl' => '',
+
     // Watermark dimensions in pixels. Leave empty for original image size
     'videoWatermarkWidth' => '',
     'videoWatermarkHeight' => '',

@@ -103,6 +103,7 @@ The **Watermark** settings tab supports:
 
 * Enable/disable watermarking.
 * Select a Craft image asset as the watermark.
+* Use an environment-specific watermark path or URL as an override before falling back to the selected asset.
 * PNG, JPG, and SVG source images.
 * Width/height settings, with empty values meaning auto/original.
 * Position options for all corners, edge centers, and center.
@@ -112,6 +113,18 @@ The **Watermark** settings tab supports:
 * Optional repositioning during playback by cycling between selected positions.
 
 SVG watermarks are rasterized to a temporary transparent PNG before ffmpeg receives them. Install `librsvg2-bin` for reliable SVG support.
+
+For production environments where admins cannot access plugin settings, configure the watermark source in `config/transcoder.php` instead of relying on a Craft asset ID:
+
+```php
+return [
+    'videoWatermarkPath' => getenv('TRANSCODER_WATERMARK_PATH'),
+    // or, when the encoding server should fetch it remotely:
+    'videoWatermarkUrl' => getenv('TRANSCODER_WATERMARK_URL'),
+];
+```
+
+`videoWatermarkPath` is checked first, then `videoWatermarkUrl`, then the selected Craft asset from the settings screen.
 
 ### Runtime Kill Switch
 
