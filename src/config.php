@@ -66,11 +66,11 @@ return [
     // Add a watermark image to encoded videos
     'enableVideoWatermark' => false,
 
-    // Craft Asset ID selected as the video watermark image
+    // Legacy Craft Asset ID fallback for the video watermark image
     'videoWatermarkAsset' => null,
 
     // Optional environment/config overrides for the watermark source.
-    // These are checked before the Craft Asset ID and are safer across environments.
+    // These are checked before the legacy Craft Asset ID and are safer across environments.
     // The URL fallback is a free MIT-licensed Bootstrap Icons SVG placeholder.
     'videoWatermarkPath' => getenv('TRANSCODER_WATERMARK_PATH') ?: '',
     'videoWatermarkUrl' => getenv('TRANSCODER_WATERMARK_URL') ?: 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/icons/play-circle.svg',

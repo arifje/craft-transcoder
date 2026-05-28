@@ -4,9 +4,6 @@
 {% import '_includes/forms' as forms %}
 {% import 'transcoder/_includes/macros.twig' as macros %}
 
-{% set watermarkAssetValue = settings.videoWatermarkAsset %}
-{% set watermarkAssetIds = watermarkAssetValue is iterable ? watermarkAssetValue : (watermarkAssetValue ? [watermarkAssetValue] : []) %}
-{% set watermarkAssets = watermarkAssetIds ? craft.assets.id(watermarkAssetIds).all() : [] %}
 {% set watermarkPositions = [
     { label: 'Top left'|t('transcoder'), value: 'top-left' },
     { label: 'Top center'|t('transcoder'), value: 'top-center' },
@@ -73,32 +70,16 @@
 <div id="tab-watermark" class="hidden">
     {{ forms.lightswitchField({
         label: 'Enable video watermark'|t('transcoder'),
-        instructions: 'Overlay the selected image on encoded videos. Existing encoded files are left alone until they are regenerated.'|t('transcoder'),
+        instructions: 'Overlay the configured image on encoded videos. Existing encoded files are left alone until they are regenerated.'|t('transcoder'),
         warning: macros.configWarning('enableVideoWatermark', 'transcoder'),
         id: 'enableVideoWatermark',
         name: 'enableVideoWatermark',
         on: settings.enableVideoWatermark,
     }) }}
 
-    {{ forms.elementSelectField({
-        label: 'Watermark image'|t('transcoder'),
-        instructions: 'Choose a PNG, JPG, or SVG asset to overlay on encoded videos. The configured path/URL below takes precedence when present.'|t('transcoder'),
-        warning: macros.configWarning('videoWatermarkAsset', 'transcoder'),
-        id: 'videoWatermarkAsset',
-        name: 'videoWatermarkAsset',
-        elementType: 'craft\\elements\\Asset',
-        elements: watermarkAssets,
-        sources: '*',
-        criteria: {
-            kind: ['image'],
-        },
-        limit: 1,
-        viewMode: 'list',
-    }) }}
-
     {{ forms.textField({
         label: 'Watermark file path'|t('transcoder'),
-        instructions: 'Optional local path or alias, such as @webroot/content/general/watermark.svg. This is checked before the selected asset and is useful for production config.'|t('transcoder'),
+        instructions: 'Optional local path or alias, such as @webroot/content/general/watermark.svg. This is checked before the watermark URL.'|t('transcoder'),
         warning: macros.configWarning('videoWatermarkPath', 'transcoder'),
         id: 'videoWatermarkPath',
         name: 'videoWatermarkPath',
@@ -108,7 +89,7 @@
 
     {{ forms.textField({
         label: 'Watermark URL'|t('transcoder'),
-        instructions: 'Optional remote PNG, JPG, or SVG URL. Used when no watermark file path is configured, before falling back to the selected asset.'|t('transcoder'),
+        instructions: 'Optional remote PNG, JPG, or SVG URL. Used when no watermark file path is configured.'|t('transcoder'),
         warning: macros.configWarning('videoWatermarkUrl', 'transcoder'),
         id: 'videoWatermarkUrl',
         name: 'videoWatermarkUrl',

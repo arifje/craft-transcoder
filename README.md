@@ -102,8 +102,7 @@ Encoded videos can receive a configurable image watermark.
 The **Watermark** settings tab supports:
 
 * Enable/disable watermarking.
-* Select a Craft image asset as the watermark.
-* Use an environment-specific watermark path or URL as an override before falling back to the selected asset.
+* Configure an environment-specific watermark path or URL.
 * PNG, JPG, and SVG source images.
 * Width/height settings, with empty values meaning auto/original.
 * Position options for all corners, edge centers, and center.
@@ -114,7 +113,7 @@ The **Watermark** settings tab supports:
 
 SVG watermarks are rasterized to a temporary transparent PNG before ffmpeg receives them. Install `librsvg2-bin` for reliable SVG support.
 
-For production environments where admins cannot access plugin settings, configure the watermark source in `config/transcoder.php` instead of relying on a Craft asset ID:
+For production environments where admins cannot access plugin settings, configure the watermark source in `config/transcoder.php`:
 
 ```php
 return [
@@ -124,7 +123,7 @@ return [
 ];
 ```
 
-`videoWatermarkPath` is checked first, then `videoWatermarkUrl`, then the selected Craft asset from the settings screen.
+`videoWatermarkPath` is checked first, then `videoWatermarkUrl`. Existing saved asset selections are still treated as a legacy fallback.
 The example fallback uses a free MIT-licensed Bootstrap Icons SVG.
 Admin/debug responses include watermark source diagnostics, including whether the selected path/URL/asset was active or skipped.
 

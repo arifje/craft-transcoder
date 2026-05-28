@@ -96,17 +96,17 @@ class Settings extends Model
     public bool $enableVideoWatermark = false;
 
     /**
-     * @var int|string|array|null Selected Craft asset ID for the video watermark image
+     * @var int|string|array|null Legacy selected Craft asset ID fallback for the video watermark image
      */
     public int|string|array|null $videoWatermarkAsset = null;
 
     /**
-     * @var string|bool|null Optional local path/alias used before the selected asset
+     * @var string|bool|null Optional local path/alias used before the URL and legacy asset fallback
      */
     public string|bool|null $videoWatermarkPath = '';
 
     /**
-     * @var string|bool|null Optional remote URL used before the selected asset
+     * @var string|bool|null Optional remote URL used before the legacy asset fallback
      */
     public string|bool|null $videoWatermarkUrl = '';
 
