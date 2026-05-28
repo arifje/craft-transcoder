@@ -126,6 +126,7 @@ return [
 
 `videoWatermarkPath` is checked first, then `videoWatermarkUrl`, then the selected Craft asset from the settings screen.
 The example fallback uses a free MIT-licensed Bootstrap Icons SVG.
+Admin/debug responses include watermark source diagnostics, including whether the selected path/URL/asset was active or skipped.
 
 ### Runtime Kill Switch
 

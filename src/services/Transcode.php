@@ -443,6 +443,7 @@ class Transcode extends Component
 			}
 		}
 
+		$watermarkDebug = $this->getVideoWatermarkStatusDebug($encodingOptions);
 		$watermarkConfig = $this->getVideoWatermarkConfig($encodingOptions);
 
 		$ffmpegCmd = $settings['ffmpegPath']
@@ -517,6 +518,14 @@ class Transcode extends Component
 				'info' => 'Encoding started',
 				'ffmpegCommand' => $ffmpegCommand,
 			];
+			if ($watermarkConfig === null
+				&& !empty($watermarkDebug['enabled'])
+				&& !empty($watermarkDebug['requested'])
+				&& !empty($watermarkDebug['skippedReason'])
+			) {
+				$status['watermarkWarning'] = 'Video watermark was skipped: ' . $watermarkDebug['skippedReason'];
+				$status['warning'] = $status['watermarkWarning'];
+			}
 			if ($detectedCropFilter !== null) {
 				$status['detectedCrop'] = $detectedCropFilter;
 				$status['detectedCropSource'] = 'cropdetect';
@@ -1035,6 +1044,12 @@ class Transcode extends Component
 			if (!$outputInfo['originalExists']) {
 				$status['warning'] = 'Original video missing, serving encoded version';
 			}
+			if (!empty($storedStatus['watermarkWarning'])) {
+				$status['warning'] = !empty($status['warning'])
+					? $status['warning'] . ' ' . $storedStatus['watermarkWarning']
+					: $storedStatus['watermarkWarning'];
+				$status['watermarkWarning'] = $storedStatus['watermarkWarning'];
+			}
 			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
 			return $this->sanitizeVideoStatus($status);
 		}
@@ -1060,6 +1075,10 @@ class Transcode extends Component
 					'progress' => 0,
 				],
 				!empty($storedStatus['ffmpegCommand']) ? ['ffmpegCommand' => $storedStatus['ffmpegCommand']] : [],
+				!empty($storedStatus['watermarkWarning']) ? [
+					'watermarkWarning' => $storedStatus['watermarkWarning'],
+					'warning' => $storedStatus['watermarkWarning'],
+				] : [],
 				$this->getVideoPosterStatusFields($storedStatus),
 				$this->getProgressData($outputInfo['filename'])
 			);
@@ -3481,6 +3500,123 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return debug information for watermark source resolution.
+	 *
+	 * @param array $encodingOptions
+	 * @return array
+	 */
+	protected function getVideoWatermarkStatusDebug(array $encodingOptions = []): array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$requested = !(array_key_exists('watermark', $encodingOptions) && empty($encodingOptions['watermark']));
+		$pathRaw = (string)$settings->videoWatermarkPath;
+		$pathParsed = trim((string)App::parseEnv($pathRaw));
+		$pathResolved = $pathParsed !== '' ? (Craft::getAlias($pathParsed, false) ?: $pathParsed) : '';
+		$urlRaw = (string)$settings->videoWatermarkUrl;
+		$urlParsed = trim((string)App::parseEnv($urlRaw));
+		$assetId = $this->getVideoWatermarkAssetId($settings->videoWatermarkAsset);
+
+		$result = [
+			'enabled' => (bool)$settings->enableVideoWatermark,
+			'requested' => $requested,
+			'active' => false,
+			'skippedReason' => null,
+			'sourcePreference' => [
+				'videoWatermarkPath',
+				'videoWatermarkUrl',
+				'videoWatermarkAsset',
+			],
+			'configuredPath' => [
+				'raw' => $pathRaw,
+				'parsed' => $pathParsed,
+				'resolved' => $pathResolved,
+				'configured' => $pathParsed !== '',
+				'extension' => $pathResolved !== '' ? $this->getPathOrUrlExtension($pathResolved) : '',
+				'exists' => $pathResolved !== '' && !$this->isUrl($pathResolved) ? file_exists($pathResolved) : null,
+			],
+			'configuredUrl' => [
+				'raw' => $urlRaw,
+				'parsed' => $urlParsed,
+				'configured' => $urlParsed !== '',
+				'valid' => $urlParsed !== '' ? $this->isUrl($urlParsed) : null,
+				'extension' => $urlParsed !== '' ? $this->getPathOrUrlExtension($urlParsed) : '',
+				'exists' => null,
+				'existsNote' => $urlParsed !== '' ? 'Remote watermark URLs are not preflighted; ffmpeg/rasterization will report fetch errors.' : null,
+			],
+			'asset' => [
+				'configuredValue' => $settings->videoWatermarkAsset,
+				'assetId' => $assetId,
+				'found' => null,
+				'filename' => null,
+				'path' => null,
+				'extension' => '',
+				'exists' => null,
+			],
+			'selectedSource' => null,
+			'allowedExtensions' => ['svg', 'jpg', 'jpeg', 'png'],
+		];
+
+		if ($assetId !== null) {
+			try {
+				$asset = Asset::find()->id($assetId)->one();
+				$result['asset']['found'] = $asset instanceof Asset;
+				if ($asset instanceof Asset) {
+					$normalized = $this->normalizeFilePath($asset);
+					$assetPath = $normalized['path'] ?? ($normalized['url'] ?? '');
+					$result['asset']['filename'] = $asset->filename;
+					$result['asset']['path'] = $assetPath;
+					$result['asset']['extension'] = $assetPath !== '' ? $this->getPathOrUrlExtension($assetPath) : '';
+					$result['asset']['exists'] = $assetPath !== '' && !$this->isUrl($assetPath) ? file_exists($assetPath) : null;
+				}
+			} catch (Throwable $e) {
+				$result['asset']['found'] = false;
+				$result['asset']['error'] = $e->getMessage();
+			}
+		}
+
+		if (!$result['enabled']) {
+			$result['skippedReason'] = 'Video watermarking is disabled in plugin settings.';
+			return $result;
+		}
+
+		if (!$requested) {
+			$result['skippedReason'] = 'Watermarking was disabled for this encode via encoding options.';
+			return $result;
+		}
+
+		$watermarkSource = $this->getConfiguredVideoWatermarkSource();
+		if ($watermarkSource === null) {
+			$watermarkSource = $this->getAssetVideoWatermarkSource($settings->videoWatermarkAsset);
+		}
+
+		if ($watermarkSource === null) {
+			$result['skippedReason'] = 'No watermark path, URL, or asset could be resolved.';
+			return $result;
+		}
+
+		$extension = $this->getPathOrUrlExtension($watermarkSource['path']);
+		$result['selectedSource'] = array_merge($watermarkSource, [
+			'extension' => $extension,
+			'isUrl' => $this->isUrl($watermarkSource['path']),
+			'exists' => !$this->isUrl($watermarkSource['path']) ? file_exists($watermarkSource['path']) : null,
+		]);
+
+		if (!in_array($extension, ['svg', 'jpg', 'jpeg', 'png'], true)) {
+			$result['skippedReason'] = "Selected watermark source has unsupported extension .$extension.";
+			return $result;
+		}
+
+		if (!$result['selectedSource']['isUrl'] && empty($result['selectedSource']['exists'])) {
+			$result['skippedReason'] = 'Selected watermark source file does not exist on this server.';
+			return $result;
+		}
+
+		$result['active'] = true;
+
+		return $result;
+	}
+
+	/**
 	 * Return a configured watermark path/URL source, or null when not configured.
 	 *
 	 * @return array|null
@@ -4547,6 +4683,7 @@ class Transcode extends Component
 				'progressFile' => $this->getFileDebugInfo($outputInfo['progressFile']),
 				'candidateFiles' => $candidateFiles,
 				'videoPosters' => $this->getVideoPosterStatusDebug($filePath),
+				'watermark' => $this->getVideoWatermarkStatusDebug($encodingOptions),
 				'storedStatusAgeSeconds' => isset($storedStatus['updatedAt']) ? max(0, time() - (int)$storedStatus['updatedAt']) : null,
 				'storedStatus' => $storedStatusForDebug,
 				'sysTempDir' => sys_get_temp_dir(),
