@@ -12,6 +12,7 @@ namespace nystudio107\transcoder\jobs;
 
 use Craft;
 use craft\elements\Asset;
+use craft\helpers\StringHelper;
 use craft\queue\BaseJob;
 use nystudio107\transcoder\Transcoder;
 use Throwable;
@@ -28,6 +29,11 @@ class EncodeVideo extends BaseJob
      * @var int|null
      */
     public ?int $assetId = null;
+
+    /**
+     * @var string|null
+     */
+    public ?string $ownerTitle = null;
 
     /**
      * @var array
@@ -201,6 +207,13 @@ class EncodeVideo extends BaseJob
      */
     protected function defaultDescription(): ?string
     {
-        return 'Encoding video asset #' . ($this->assetId ?? 'unknown');
+        $description = 'Encoding video asset #' . ($this->assetId ?? 'unknown');
+        $ownerTitle = trim((string)$this->ownerTitle);
+
+        if ($ownerTitle !== '') {
+            $description .= ' - ' . StringHelper::truncate($ownerTitle, 25);
+        }
+
+        return $description;
     }
 }

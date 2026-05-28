@@ -14,6 +14,8 @@ use Craft;
 use craft\base\Component;
 use craft\base\ElementInterface;
 use craft\elements\Asset;
+use craft\elements\Entry;
+use craft\elements\MatrixBlock;
 use craft\elements\db\ElementQueryInterface;
 use craft\events\DefineAssetThumbUrlEvent;
 use craft\fs\Local;
@@ -590,7 +592,12 @@ class Transcode extends Component
 				continue;
 			}
 
-			$status = $this->queueVideoEncode($asset, $event->videoOptions, $event->encodingOptions);
+			$status = $this->queueVideoEncode(
+				$asset,
+				$event->videoOptions,
+				$event->encodingOptions,
+				$this->getElementTitle($event->element)
+			);
 			if (($status['status'] ?? null) === 'queued') {
 				$queued++;
 			}
@@ -600,15 +607,134 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return the best available entry/owner title for a video asset.
+	 *
+	 * @param Asset $asset
+	 * @return string|null
+	 */
+	public function getAssetOwnerTitle(Asset $asset): ?string
+	{
+		if (!$asset->id) {
+			return null;
+		}
+
+		$title = $this->getMatrixBlockOwnerTitle($asset);
+		if ($title !== null) {
+			return $title;
+		}
+
+		return $this->getRelatedEntryTitle($asset);
+	}
+
+	/**
+	 * Return the owner entry title for an asset related through a Matrix block.
+	 *
+	 * @param Asset $asset
+	 * @return string|null
+	 */
+	protected function getMatrixBlockOwnerTitle(Asset $asset): ?string
+	{
+		if (!class_exists(MatrixBlock::class)) {
+			return null;
+		}
+
+		try {
+			$query = MatrixBlock::find();
+			$query->relatedTo(['targetElement' => $asset]);
+			$this->prepareOwnerLookupQuery($query);
+
+			$block = $query->one();
+			if ($block instanceof ElementInterface && method_exists($block, 'getOwner')) {
+				$owner = $block->getOwner();
+				if ($owner instanceof ElementInterface) {
+					return $this->getElementTitle($owner);
+				}
+			}
+		} catch (Throwable $e) {
+			Craft::debug('Unable to resolve Transcoder Matrix owner title for asset ' . $asset->id . ': ' . $e->getMessage(), __METHOD__);
+		}
+
+		return null;
+	}
+
+	/**
+	 * Return a directly related entry title for an asset.
+	 *
+	 * @param Asset $asset
+	 * @return string|null
+	 */
+	protected function getRelatedEntryTitle(Asset $asset): ?string
+	{
+		try {
+			$query = Entry::find();
+			$query->relatedTo(['targetElement' => $asset]);
+			$this->prepareOwnerLookupQuery($query);
+
+			$entry = $query->one();
+			return $entry instanceof ElementInterface ? $this->getElementTitle($entry) : null;
+		} catch (Throwable $e) {
+			Craft::debug('Unable to resolve Transcoder related entry title for asset ' . $asset->id . ': ' . $e->getMessage(), __METHOD__);
+		}
+
+		return null;
+	}
+
+	/**
+	 * Apply broad query options for owner lookups when available.
+	 *
+	 * @param ElementQueryInterface $query
+	 * @return void
+	 */
+	protected function prepareOwnerLookupQuery(ElementQueryInterface $query): void
+	{
+		if (method_exists($query, 'site')) {
+			$query->site('*');
+		}
+		if (method_exists($query, 'status')) {
+			$query->status(null);
+		}
+		if (method_exists($query, 'drafts')) {
+			$query->drafts(null);
+		}
+		if (method_exists($query, 'revisions')) {
+			$query->revisions(null);
+		}
+		if (method_exists($query, 'limit')) {
+			$query->limit(1);
+		}
+	}
+
+	/**
+	 * Return a trimmed title from any element that exposes one.
+	 *
+	 * @param ElementInterface|null $element
+	 * @return string|null
+	 */
+	protected function getElementTitle(?ElementInterface $element): ?string
+	{
+		if ($element === null) {
+			return null;
+		}
+
+		try {
+			$title = trim((string)($element->title ?? ''));
+			return $title !== '' ? $title : null;
+		} catch (Throwable) {
+			return null;
+		}
+	}
+
+	/**
 	 * Queue a single video encode.
 	 *
 	 * @param Asset $asset
 	 * @param array $videoOptions
 	 * @param array $encodingOptions
+	 * @param string|null $ownerTitle
 	 * @return array
 	 * @throws InvalidConfigException
 	 */
-	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
+	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = [], ?string $ownerTitle = null): array
 	{
 		$settings = Transcoder::$plugin->getSettings();
 		if (!$this->isRuntimeEncodingEnabled()) {
@@ -660,6 +786,7 @@ class Transcode extends Component
 		if ($queueVideo) {
 			$jobId = Craft::$app->getQueue()->push(new EncodeVideo([
 				'assetId' => $asset->id,
+				'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 				'videoOptions' => $videoOptions,
 				'encodingOptions' => $encodingOptions,
 			]));
