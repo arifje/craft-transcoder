@@ -789,6 +789,9 @@ class Transcode extends Component
 				'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 				'videoOptions' => $videoOptions,
 				'encodingOptions' => $encodingOptions,
+				'attempt' => 1,
+				'maxRetries' => max(0, (int)$settings->videoEncodeMaxRetries),
+				'retryDelaySeconds' => max(0, (int)$settings->videoEncodeRetryDelaySeconds),
 			]));
 
 			$status = array_merge($status, [
@@ -804,6 +807,9 @@ class Transcode extends Component
 				'assetId' => $asset->id,
 				'videoOptions' => $videoOptions,
 				'encodingOptions' => $encodingOptions,
+				'attempt' => 1,
+				'maxRetries' => max(0, (int)$settings->videoPosterMaxRetries),
+				'retryDelaySeconds' => max(0, (int)$settings->videoPosterRetryDelaySeconds),
 			]));
 
 			$status = array_merge($status, [
@@ -832,6 +838,8 @@ class Transcode extends Component
 	 */
 	public function queueVideoPosters(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
 	{
+		$settings = Transcoder::$plugin->getSettings();
+
 		if (!$this->isRuntimeEncodingEnabled()) {
 			return [
 				'status' => 'disabled',
@@ -849,7 +857,7 @@ class Transcode extends Component
 			];
 		}
 
-		if (!Transcoder::$plugin->getSettings()->enableVideoPosters) {
+		if (!$settings->enableVideoPosters) {
 			return [
 				'status' => 'disabled',
 				'url' => '',
@@ -874,6 +882,9 @@ class Transcode extends Component
 			'assetId' => $asset->id,
 			'videoOptions' => $videoOptions,
 			'encodingOptions' => $encodingOptions,
+			'attempt' => 1,
+			'maxRetries' => max(0, (int)$settings->videoPosterMaxRetries),
+			'retryDelaySeconds' => max(0, (int)$settings->videoPosterRetryDelaySeconds),
 		]));
 
 		$status = array_merge($status, [

@@ -246,6 +246,20 @@ class Settings extends Model
     public bool $queueVideosOnEntrySave = false;
 
     /**
+     * Number of retries after the initial video encode attempt fails.
+     *
+     * @var int
+     */
+    public int $videoEncodeMaxRetries = 2;
+
+    /**
+     * Seconds to wait before retrying a failed video encode job.
+     *
+     * @var int
+     */
+    public int $videoEncodeRetryDelaySeconds = 120;
+
+    /**
      * Entry field handles to inspect for video assets. Leave empty to inspect
      * all custom fields recursively.
      *
@@ -303,6 +317,20 @@ class Settings extends Model
      * @var int
      */
     public int $gifQueueDelaySeconds = 15;
+
+    /**
+     * Number of retries after the initial video poster generation attempt fails.
+     *
+     * @var int
+     */
+    public int $videoPosterMaxRetries = 2;
+
+    /**
+     * Seconds to wait before retrying a failed video poster generation job.
+     *
+     * @var int
+     */
+    public int $videoPosterRetryDelaySeconds = 120;
 
     /**
      * Poster formats generated when videos are queued.
@@ -543,6 +571,8 @@ class Settings extends Model
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
             [['queueVideosOnSave', 'queueVideosOnEntrySave'], 'boolean'],
+            [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'integer'],
+            [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'number', 'min' => 0],
             ['autoEncodeVideoFieldHandles', ArrayValidator::class],
             ['autoEncodeVideoOptions', ArrayValidator::class],
             ['autoEncodeEncodingOptions', ArrayValidator::class],
@@ -551,6 +581,8 @@ class Settings extends Model
             ['autoEncodeGifOptions', ArrayValidator::class],
             ['gifQueueDelaySeconds', 'integer'],
             ['gifQueueDelaySeconds', 'number', 'min' => 0],
+            [['videoPosterMaxRetries', 'videoPosterRetryDelaySeconds'], 'integer'],
+            [['videoPosterMaxRetries', 'videoPosterRetryDelaySeconds'], 'number', 'min' => 0],
             ['videoPosterFormats', ArrayValidator::class],
             ['videoEncoders', 'required'],
             ['audioEncoders', 'required'],

@@ -37,6 +37,21 @@ class GenerateVideoPosters extends BaseJob
     public array $encodingOptions = [];
 
     /**
+     * @var int Current attempt number, starting at 1.
+     */
+    public int $attempt = 1;
+
+    /**
+     * @var int Number of retries after the initial attempt fails.
+     */
+    public int $maxRetries = 2;
+
+    /**
+     * @var int Seconds to wait before queueing the next attempt.
+     */
+    public int $retryDelaySeconds = 120;
+
+    /**
      * @inheritdoc
      */
     public function execute($queue): void
@@ -132,6 +147,10 @@ class GenerateVideoPosters extends BaseJob
             ]);
             Craft::error($message, __METHOD__);
 
+            if ($this->retryLater($queue, $asset, $message, $e)) {
+                return;
+            }
+
             Transcoder::$plugin->transcode->writeVideoPosterStatus(
                 $asset,
                 $this->videoOptions,
@@ -153,12 +172,78 @@ class GenerateVideoPosters extends BaseJob
     }
 
     /**
+     * Queue the next poster generation attempt.
+     *
+     * @param mixed $queue
+     * @param Asset $asset
+     * @param string $errorMessage
+     * @param Throwable $e
+     * @return bool
+     */
+    protected function retryLater(mixed $queue, Asset $asset, string $errorMessage, Throwable $e): bool
+    {
+        $maxRetries = max(0, $this->maxRetries);
+        if ($this->attempt > $maxRetries) {
+            return false;
+        }
+
+        $delay = max(0, $this->retryDelaySeconds);
+        $nextAttempt = $this->attempt + 1;
+        $totalAttempts = $maxRetries + 1;
+        $message = Craft::t('transcoder', 'Retrying video poster generation attempt {attempt} of {total} in {seconds}s', [
+            'attempt' => $nextAttempt,
+            'total' => $totalAttempts,
+            'seconds' => $delay,
+        ]);
+
+        $jobId = Craft::$app->getQueue()->delay($delay)->push(new self([
+            'assetId' => $asset->id,
+            'videoOptions' => $this->videoOptions,
+            'encodingOptions' => $this->encodingOptions,
+            'attempt' => $nextAttempt,
+            'maxRetries' => $maxRetries,
+            'retryDelaySeconds' => $delay,
+        ]));
+
+        Craft::warning($message . ': ' . $e->getMessage(), __METHOD__);
+        Transcoder::$plugin->transcode->writeVideoPosterStatus(
+            $asset,
+            $this->videoOptions,
+            [
+                'status' => 'queued',
+                'url' => '',
+                'progress' => 0,
+                'error' => '',
+                'posterStatus' => 'queued',
+                'posterProgress' => 0,
+                'posterMessage' => $message,
+                'posterError' => '',
+                'posterLastError' => $errorMessage,
+                'posterJobId' => $jobId,
+                'posterRetryAttempt' => $nextAttempt,
+                'posterRetryTotalAttempts' => $totalAttempts,
+                'posterRetryDelaySeconds' => $delay,
+            ],
+            $this->encodingOptions
+        );
+        $this->setProgress($queue, 1, $message);
+
+        return true;
+    }
+
+    /**
      * @inheritdoc
      */
     protected function defaultDescription(): ?string
     {
-        return Craft::t('transcoder', 'Generating video posters for asset #{id}', [
+        $description = Craft::t('transcoder', 'Generating video posters for asset #{id}', [
             'id' => $this->assetId,
         ]);
+
+        if ($this->attempt > 1) {
+            $description .= ' (attempt ' . $this->attempt . ')';
+        }
+
+        return $description;
     }
 }

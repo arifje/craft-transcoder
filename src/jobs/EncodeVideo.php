@@ -46,6 +46,21 @@ class EncodeVideo extends BaseJob
     public array $encodingOptions = [];
 
     /**
+     * @var int Current attempt number, starting at 1.
+     */
+    public int $attempt = 1;
+
+    /**
+     * @var int Number of retries after the initial attempt fails.
+     */
+    public int $maxRetries = 2;
+
+    /**
+     * @var int Seconds to wait before queueing the next attempt.
+     */
+    public int $retryDelaySeconds = 120;
+
+    /**
      * @inheritdoc
      */
     public function execute($queue): void
@@ -112,6 +127,8 @@ class EncodeVideo extends BaseJob
                     'status' => 'error',
                     'url' => '',
                     'error' => $e->getMessage(),
+                    'attempt' => $this->attempt,
+                    'maxRetries' => $this->maxRetries,
                 ];
                 try {
                     $currentStatus = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
@@ -119,6 +136,10 @@ class EncodeVideo extends BaseJob
                         $status = array_merge($currentStatus, $status);
                     }
                 } catch (Throwable) {
+                }
+
+                if ($this->retryLater($queue, $asset, $status, $e)) {
+                    return;
                 }
 
                 Transcoder::$plugin->transcode->writeVideoStatus(
@@ -182,6 +203,94 @@ class EncodeVideo extends BaseJob
     }
 
     /**
+     * Queue the next encode attempt when the failure looks transient.
+     *
+     * @param mixed $queue
+     * @param Asset $asset
+     * @param array $status
+     * @param Throwable $e
+     * @return bool
+     */
+    protected function retryLater(mixed $queue, Asset $asset, array $status, Throwable $e): bool
+    {
+        $maxRetries = max(0, $this->maxRetries);
+        if ($this->attempt > $maxRetries || !$this->shouldRetry($e, $status)) {
+            return false;
+        }
+
+        $delay = max(0, $this->retryDelaySeconds);
+        $nextAttempt = $this->attempt + 1;
+        $totalAttempts = $maxRetries + 1;
+        $message = Craft::t('transcoder', 'Retrying video encode attempt {attempt} of {total} in {seconds}s', [
+            'attempt' => $nextAttempt,
+            'total' => $totalAttempts,
+            'seconds' => $delay,
+        ]);
+
+        $jobId = Craft::$app->getQueue()->delay($delay)->push(new self([
+            'assetId' => $asset->id,
+            'ownerTitle' => $this->ownerTitle,
+            'videoOptions' => $this->videoOptions,
+            'encodingOptions' => $this->encodingOptions,
+            'attempt' => $nextAttempt,
+            'maxRetries' => $maxRetries,
+            'retryDelaySeconds' => $delay,
+        ]));
+
+        Craft::warning($message . ': ' . $e->getMessage(), __METHOD__);
+        Transcoder::$plugin->transcode->writeVideoStatus(
+            $asset,
+            $this->videoOptions,
+            array_merge($status, [
+                'status' => 'queued',
+                'url' => '',
+                'progress' => 0,
+                'jobId' => $jobId,
+                'info' => $message,
+                'error' => '',
+                'retryLastError' => $status['error'] ?? $e->getMessage(),
+                'retryAttempt' => $nextAttempt,
+                'retryTotalAttempts' => $totalAttempts,
+                'retryDelaySeconds' => $delay,
+            ]),
+            $this->encodingOptions
+        );
+        $this->setProgress($queue, 1, $message);
+
+        return true;
+    }
+
+    /**
+     * Only retry likely transient ffmpeg/process failures.
+     *
+     * @param Throwable $e
+     * @param array $status
+     * @return bool
+     */
+    protected function shouldRetry(Throwable $e, array $status): bool
+    {
+        $message = strtolower($e->getMessage() . ' ' . $this->formatErrorMessage($status));
+        $retryableNeedles = [
+            'process crashed',
+            'ffmpeg error',
+            'timed out',
+            'timeout',
+            'invalid output file',
+            'suspicious output file',
+            'no encoded output file',
+            'ffmpeg log contains errors',
+        ];
+
+        foreach ($retryableNeedles as $needle) {
+            if (str_contains($message, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Format a queue-visible error message with ffmpeg debug details.
      *
      * @param array $status
@@ -220,6 +329,10 @@ class EncodeVideo extends BaseJob
 
         if ($ownerTitle !== '') {
             $description .= ' - ' . StringHelper::truncate($ownerTitle, 25);
+        }
+
+        if ($this->attempt > 1) {
+            $description .= ' (attempt ' . $this->attempt . ')';
         }
 
         return $description;

@@ -136,6 +136,12 @@ return [
     // Queue video encoding when new video assets are uploaded. Requires enableVideoEncoding to be true
     'queueVideosOnSave' => false,
 
+    // Retry failed video encode jobs this many times before marking the queue job as failed
+    'videoEncodeMaxRetries' => 2,
+
+    // Seconds to wait before retrying a failed video encode job
+    'videoEncodeRetryDelaySeconds' => 120,
+
     // Legacy entry field handles to inspect for video assets when queueing entries manually
     'autoEncodeVideoFieldHandles' => [],
 
@@ -156,6 +162,12 @@ return [
 
     // Seconds to delay each queued GIF job after the previous one
     'gifQueueDelaySeconds' => 15,
+
+    // Retry failed video poster jobs this many times before marking the queue job as failed
+    'videoPosterMaxRetries' => 2,
+
+    // Seconds to wait before retrying a failed video poster job
+    'videoPosterRetryDelaySeconds' => 120,
 
     // Poster formats generated when videos are queued
     'videoPosterFormats' => [

@@ -53,6 +53,30 @@
         on: settings.queueVideosOnSave or settings.queueVideosOnEntrySave,
     }) }}
 
+    {{ forms.textField({
+        label: 'Video encode retries'|t('transcoder'),
+        instructions: 'How many times a failed video encode job should be retried before it is marked as failed.'|t('transcoder'),
+        warning: macros.configWarning('videoEncodeMaxRetries', 'transcoder'),
+        id: 'videoEncodeMaxRetries',
+        name: 'videoEncodeMaxRetries',
+        value: settings.videoEncodeMaxRetries,
+        type: 'number',
+        min: 0,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Video encode retry delay'|t('transcoder'),
+        instructions: 'Seconds to wait before retrying a failed video encode job.'|t('transcoder'),
+        warning: macros.configWarning('videoEncodeRetryDelaySeconds', 'transcoder'),
+        id: 'videoEncodeRetryDelaySeconds',
+        name: 'videoEncodeRetryDelaySeconds',
+        value: settings.videoEncodeRetryDelaySeconds,
+        type: 'number',
+        min: 0,
+        size: 5,
+    }) }}
+
     {{ forms.selectField({
         label: 'Video filename strategy'|t('transcoder'),
         instructions: 'Choose whether encoded video filenames should stay stable per source asset or include encoding options. Existing legacy filenames are still checked before a new encode is queued.'|t('transcoder'),
@@ -260,6 +284,30 @@
         id: 'preventVideoPosterBlackBars',
         name: 'preventVideoPosterBlackBars',
         on: settings.preventVideoPosterBlackBars,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Video poster retries'|t('transcoder'),
+        instructions: 'How many times a failed video poster job should be retried before it is marked as failed.'|t('transcoder'),
+        warning: macros.configWarning('videoPosterMaxRetries', 'transcoder'),
+        id: 'videoPosterMaxRetries',
+        name: 'videoPosterMaxRetries',
+        value: settings.videoPosterMaxRetries,
+        type: 'number',
+        min: 0,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Video poster retry delay'|t('transcoder'),
+        instructions: 'Seconds to wait before retrying a failed video poster generation job.'|t('transcoder'),
+        warning: macros.configWarning('videoPosterRetryDelaySeconds', 'transcoder'),
+        id: 'videoPosterRetryDelaySeconds',
+        name: 'videoPosterRetryDelaySeconds',
+        value: settings.videoPosterRetryDelaySeconds,
+        type: 'number',
+        min: 0,
+        size: 5,
     }) }}
 
     {{ forms.editableTableField({
