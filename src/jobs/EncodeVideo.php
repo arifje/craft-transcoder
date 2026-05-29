@@ -191,6 +191,14 @@ class EncodeVideo extends BaseJob
     {
         $message = $status['error'] ?? Craft::t('transcoder', 'Video encoding failed');
 
+        if (!empty($status['source'])) {
+            $message .= "\n\nSource:\n" . $status['source'];
+        }
+
+        if (isset($status['fileSize'])) {
+            $message .= "\n\nOutput file size:\n" . $status['fileSize'] . ' bytes';
+        }
+
         if (!empty($status['ffmpegCommand'])) {
             $message .= "\n\nFFmpeg command:\n" . $status['ffmpegCommand'];
         }

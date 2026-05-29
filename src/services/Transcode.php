@@ -1182,13 +1182,14 @@ class Transcode extends Component
 		}
 
 		if ($this->isEncodeLockStale($outputInfo['lockFile'], $outputInfo['progressFile'])) {
+			$failure = $this->getVideoProcessCrashedFailure($outputInfo, $storedStatus);
 			$this->removeEncodeTempFiles($outputInfo['lockFile'], $outputInfo['progressFile']);
-			$status = [
+			$status = array_merge([
 				'status' => 'error',
 				'url' => '',
 				'progress' => 0,
 				'error' => 'Encoding failed due to a server error (process crashed, ffmpeg error)',
-			];
+			], $failure);
 			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
 			Craft::error('Transcoder: ffmpeg process died unexpectedly for ' . ($outputInfo['source'] ?? 'unknown'), __METHOD__);
 			return $this->sanitizeVideoStatus($status);
@@ -2324,11 +2325,13 @@ class Transcode extends Component
 			&& !empty($status['lockFile'])
 			&& $this->isEncodeLockStale($status['lockFile'], $status['progressFile'] ?? null)
 		) {
+			$failure = $this->getVideoProcessCrashedFailure($status, $status);
 			$this->removeEncodeTempFiles($status['lockFile'], $status['progressFile'] ?? null);
-			$status['status'] = 'error';
-			$status['url'] = '';
-			$status['progress'] = 0;
-			$status['error'] = 'Encoding failed due to a server error (process crashed, ffmpeg error)';
+			$status = array_merge($status, [
+				'status' => 'error',
+				'url' => '',
+				'progress' => 0,
+			], $failure);
 			$this->writeVideoStatusByKey($key, $status);
 			return $this->sanitizeVideoStatus($status);
 		}
@@ -5385,6 +5388,45 @@ class Transcode extends Component
 
 		return array_filter([
 			'error' => $message,
+			'fileSize' => $fileSize,
+			'ffmpegCommand' => $storedStatus['ffmpegCommand'] ?? null,
+			'ffmpegLog' => $logExcerpt ?: null,
+		], static fn($value) => $value !== null && $value !== '');
+	}
+
+	/**
+	 * Return an error payload when ffmpeg died or stalled before a usable video was produced.
+	 *
+	 * @param array $outputInfo
+	 * @param array $storedStatus
+	 * @return array
+	 */
+	protected function getVideoProcessCrashedFailure(array $outputInfo, array $storedStatus = []): array
+	{
+		$encodedFile = $outputInfo['encodedFile'] ?? null;
+		$fileSize = $encodedFile && is_file($encodedFile) ? filesize($encodedFile) : 0;
+		$logExcerpt = $this->getFfmpegLogExcerpt($outputInfo['progressFile'] ?? null);
+		$message = Craft::t('transcoder', 'Encoding failed due to a server error (process crashed, ffmpeg error)');
+
+		if ($fileSize > 0) {
+			$message .= ' ' . Craft::t(
+				'transcoder',
+				'ffmpeg produced a suspicious output file ({size} bytes).',
+				['size' => $fileSize]
+			);
+		} else {
+			$message .= ' ' . Craft::t('transcoder', 'No encoded output file was produced.');
+		}
+
+		if ($logExcerpt !== '') {
+			$message .= ' ' . Craft::t('transcoder', 'The ffmpeg log excerpt is included below.');
+		} else {
+			$message .= ' ' . Craft::t('transcoder', 'No ffmpeg log output was available.');
+		}
+
+		return array_filter([
+			'error' => $message,
+			'source' => $outputInfo['source'] ?? null,
 			'fileSize' => $fileSize,
 			'ffmpegCommand' => $storedStatus['ffmpegCommand'] ?? null,
 			'ffmpegLog' => $logExcerpt ?: null,
