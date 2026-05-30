@@ -810,6 +810,7 @@ class Transcode extends Component
 		if ($queuePosters) {
 			$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
 				'assetId' => $asset->id,
+				'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 				'videoOptions' => $videoOptions,
 				'encodingOptions' => $encodingOptions,
 				'queueTtrSeconds' => $videoQueueTtrSeconds,
@@ -841,10 +842,11 @@ class Transcode extends Component
 	 * @param Asset $asset
 	 * @param array $videoOptions
 	 * @param array $encodingOptions
+	 * @param string|null $ownerTitle
 	 * @return array
 	 * @throws InvalidConfigException
 	 */
-	public function queueVideoPosters(Asset $asset, array $videoOptions = [], array $encodingOptions = []): array
+	public function queueVideoPosters(Asset $asset, array $videoOptions = [], array $encodingOptions = [], ?string $ownerTitle = null): array
 	{
 		$settings = Transcoder::$plugin->getSettings();
 
@@ -890,6 +892,7 @@ class Transcode extends Component
 		$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
 		$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
 			'assetId' => $asset->id,
+			'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 			'videoOptions' => $videoOptions,
 			'encodingOptions' => $encodingOptions,
 			'queueTtrSeconds' => $videoQueueTtrSeconds,
@@ -1591,8 +1594,8 @@ class Transcode extends Component
 
 			// Set timecode
 			if (!empty($thumbnailOptions['timeInSecs'])) {
-				$timeCode = gmdate('H:i:s', $thumbnailOptions['timeInSecs']);
-				$ffmpegCmd .= ' -ss ' . $timeCode . '.00';
+				$seekTime = $this->getSafeVideoThumbnailSeekTime($filePathResolved, (float)$thumbnailOptions['timeInSecs']);
+				$ffmpegCmd .= ' -ss ' . $this->formatFfmpegTimecode($seekTime);
 			}
 
 			// Ensure directory exists
@@ -1652,6 +1655,67 @@ class Transcode extends Component
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Clamp poster seek time to a real frame inside the source duration.
+	 *
+	 * @param Asset|string $filePath
+	 * @param float $requestedTime
+	 * @return float
+	 * @throws InvalidConfigException
+	 */
+	protected function getSafeVideoThumbnailSeekTime(Asset|string $filePath, float $requestedTime): float
+	{
+		$requestedTime = max(0.0, $requestedTime);
+		$fileInfo = $this->getFileInfo($filePath, true) ?? [];
+		$duration = isset($fileInfo['duration']) && is_numeric($fileInfo['duration'])
+			? (float)$fileInfo['duration']
+			: 0.0;
+
+		if ($duration <= 0) {
+			return $requestedTime;
+		}
+
+		$padding = min(0.25, max(0.05, $duration * 0.05));
+		$safeMax = max(0.0, $duration - $padding);
+		$seekTime = min($requestedTime, $safeMax);
+
+		if ($seekTime < $requestedTime) {
+			Craft::info(
+				'Transcoder: clamped video poster timestamp from '
+				. $requestedTime
+				. 's to '
+				. $seekTime
+				. 's for '
+				. $filePath
+				. ' because source duration is '
+				. $duration
+				. 's',
+				__METHOD__
+			);
+		}
+
+		return $seekTime;
+	}
+
+	/**
+	 * Format seconds as an ffmpeg timecode with millisecond precision.
+	 *
+	 * @param float $seconds
+	 * @return string
+	 */
+	protected function formatFfmpegTimecode(float $seconds): string
+	{
+		$totalMilliseconds = (int)floor(max(0.0, $seconds) * 1000);
+		$hours = intdiv($totalMilliseconds, 3600000);
+		$totalMilliseconds %= 3600000;
+		$minutes = intdiv($totalMilliseconds, 60000);
+		$totalMilliseconds %= 60000;
+		$wholeSeconds = intdiv($totalMilliseconds, 1000);
+		$milliseconds = $totalMilliseconds % 1000;
+
+		return sprintf('%02d:%02d:%02d.%03d', $hours, $minutes, $wholeSeconds, $milliseconds);
 	}
 
 	/**

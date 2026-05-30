@@ -12,6 +12,7 @@ namespace nystudio107\transcoder\jobs;
 
 use Craft;
 use craft\elements\Asset;
+use craft\helpers\StringHelper;
 use craft\queue\BaseJob;
 use nystudio107\transcoder\Transcoder;
 use Throwable;
@@ -25,6 +26,11 @@ class GenerateVideoPosters extends BaseJob
      * @var int|null
      */
     public ?int $assetId = null;
+
+    /**
+     * @var string|null
+     */
+    public ?string $ownerTitle = null;
 
     /**
      * @var array
@@ -206,6 +212,7 @@ class GenerateVideoPosters extends BaseJob
         $queueTtrSeconds = max(1, $this->queueTtrSeconds);
         $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
             'assetId' => $asset->id,
+            'ownerTitle' => $this->ownerTitle,
             'videoOptions' => $this->videoOptions,
             'encodingOptions' => $this->encodingOptions,
             'queueTtrSeconds' => $queueTtrSeconds,
@@ -249,6 +256,11 @@ class GenerateVideoPosters extends BaseJob
         $description = Craft::t('transcoder', 'Generating video posters for asset #{id}', [
             'id' => $this->assetId,
         ]);
+        $ownerTitle = trim((string)$this->ownerTitle);
+
+        if ($ownerTitle !== '') {
+            $description .= ' - ' . StringHelper::truncate($ownerTitle, 25);
+        }
 
         if ($this->attempt > 1) {
             $description .= ' (attempt ' . $this->attempt . ')';

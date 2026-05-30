@@ -77,6 +77,7 @@ You can configure poster formats in the **Video posters** settings tab:
 * Enable/disable video poster generation independently.
 * Define multiple poster formats by handle, width, height, and timestamp.
 * Leave width/height empty for original/auto dimensions.
+* Clamp poster timestamps to the source video duration so short clips still generate posters.
 * Generate missing posters in a separate queue job.
 * Delay newly queued poster jobs briefly so freshly uploaded files have time to become readable.
 * Retry failed video poster jobs after a configurable delay before marking them as failed.
