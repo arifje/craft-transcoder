@@ -136,6 +136,9 @@ return [
     // Queue video encoding when new video assets are uploaded. Requires enableVideoEncoding to be true
     'queueVideosOnSave' => false,
 
+    // Seconds Craft should reserve for video-related queue jobs before timing them out
+    'videoQueueTtrSeconds' => 1800,
+
     // Retry failed video encode jobs this many times before marking the queue job as failed
     'videoEncodeMaxRetries' => 2,
 
@@ -168,6 +171,9 @@ return [
 
     // Seconds to wait before retrying a failed video poster job
     'videoPosterRetryDelaySeconds' => 120,
+
+    // Seconds to wait before starting newly queued video poster jobs
+    'videoPosterQueueDelaySeconds' => 5,
 
     // Poster formats generated when videos are queued
     'videoPosterFormats' => [

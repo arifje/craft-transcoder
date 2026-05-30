@@ -23,7 +23,7 @@ use Throwable;
 class EncodeVideo extends BaseJob
 {
     private const POLL_INTERVAL_SECONDS = 2;
-    private const TIMEOUT_SECONDS = 3600;
+    private const QUEUE_TIMEOUT_GRACE_SECONDS = 5;
 
     /**
      * @var int|null
@@ -44,6 +44,11 @@ class EncodeVideo extends BaseJob
      * @var array
      */
     public array $encodingOptions = [];
+
+    /**
+     * @var int Seconds Craft should reserve for this queue job.
+     */
+    public int $queueTtrSeconds = 1800;
 
     /**
      * @var int Current attempt number, starting at 1.
@@ -99,6 +104,7 @@ class EncodeVideo extends BaseJob
                         'status' => 'encoding',
                         'url' => '',
                         'progress' => 0,
+                        'queueTtrSeconds' => $this->queueTtrSeconds,
                         'info' => 'Encoding started',
                     ],
                     $this->encodingOptions
@@ -127,6 +133,7 @@ class EncodeVideo extends BaseJob
                     'status' => 'error',
                     'url' => '',
                     'error' => $e->getMessage(),
+                    'queueTtrSeconds' => $this->queueTtrSeconds,
                     'attempt' => $this->attempt,
                     'maxRetries' => $this->maxRetries,
                 ];
@@ -173,7 +180,8 @@ class EncodeVideo extends BaseJob
             throw new \RuntimeException($this->formatErrorMessage($initialStatus));
         }
 
-        $deadline = time() + self::TIMEOUT_SECONDS;
+        $timeoutSeconds = max(1, $this->queueTtrSeconds - self::QUEUE_TIMEOUT_GRACE_SECONDS);
+        $deadline = time() + $timeoutSeconds;
         while (time() < $deadline) {
             $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
             $state = $status['status'] ?? 'unknown';
@@ -199,7 +207,9 @@ class EncodeVideo extends BaseJob
             sleep(self::POLL_INTERVAL_SECONDS);
         }
 
-        throw new \RuntimeException(Craft::t('transcoder', 'Video encoding timed out'));
+        throw new \RuntimeException(Craft::t('transcoder', 'Video encoding timed out after {seconds} seconds', [
+            'seconds' => $timeoutSeconds,
+        ]));
     }
 
     /**
@@ -227,11 +237,13 @@ class EncodeVideo extends BaseJob
             'seconds' => $delay,
         ]);
 
-        $jobId = Craft::$app->getQueue()->delay($delay)->push(new self([
+        $queueTtrSeconds = max(1, $this->queueTtrSeconds);
+        $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
             'assetId' => $asset->id,
             'ownerTitle' => $this->ownerTitle,
             'videoOptions' => $this->videoOptions,
             'encodingOptions' => $this->encodingOptions,
+            'queueTtrSeconds' => $queueTtrSeconds,
             'attempt' => $nextAttempt,
             'maxRetries' => $maxRetries,
             'retryDelaySeconds' => $delay,
@@ -252,6 +264,7 @@ class EncodeVideo extends BaseJob
                 'retryAttempt' => $nextAttempt,
                 'retryTotalAttempts' => $totalAttempts,
                 'retryDelaySeconds' => $delay,
+                'queueTtrSeconds' => $queueTtrSeconds,
             ]),
             $this->encodingOptions
         );

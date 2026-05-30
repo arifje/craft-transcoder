@@ -783,12 +783,16 @@ class Transcode extends Component
 			return $status;
 		}
 
+		$videoQueueTtrSeconds = max(1, (int)$settings->videoQueueTtrSeconds);
+		$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
+
 		if ($queueVideo) {
-			$jobId = Craft::$app->getQueue()->push(new EncodeVideo([
+			$jobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->push(new EncodeVideo([
 				'assetId' => $asset->id,
 				'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 				'videoOptions' => $videoOptions,
 				'encodingOptions' => $encodingOptions,
+				'queueTtrSeconds' => $videoQueueTtrSeconds,
 				'attempt' => 1,
 				'maxRetries' => max(0, (int)$settings->videoEncodeMaxRetries),
 				'retryDelaySeconds' => max(0, (int)$settings->videoEncodeRetryDelaySeconds),
@@ -799,14 +803,16 @@ class Transcode extends Component
 				'url' => '',
 				'progress' => 0,
 				'jobId' => $jobId,
+				'queueTtrSeconds' => $videoQueueTtrSeconds,
 			]);
 		}
 
 		if ($queuePosters) {
-			$posterJobId = Craft::$app->getQueue()->push(new GenerateVideoPosters([
+			$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
 				'assetId' => $asset->id,
 				'videoOptions' => $videoOptions,
 				'encodingOptions' => $encodingOptions,
+				'queueTtrSeconds' => $videoQueueTtrSeconds,
 				'attempt' => 1,
 				'maxRetries' => max(0, (int)$settings->videoPosterMaxRetries),
 				'retryDelaySeconds' => max(0, (int)$settings->videoPosterRetryDelaySeconds),
@@ -819,6 +825,8 @@ class Transcode extends Component
 				'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
 				'posterError' => '',
 				'posterJobId' => $posterJobId,
+				'posterDelay' => $videoPosterQueueDelaySeconds,
+				'posterQueueTtrSeconds' => $videoQueueTtrSeconds,
 			]);
 		}
 
@@ -878,10 +886,13 @@ class Transcode extends Component
 			return $status;
 		}
 
-		$posterJobId = Craft::$app->getQueue()->push(new GenerateVideoPosters([
+		$videoQueueTtrSeconds = max(1, (int)$settings->videoQueueTtrSeconds);
+		$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
+		$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
 			'assetId' => $asset->id,
 			'videoOptions' => $videoOptions,
 			'encodingOptions' => $encodingOptions,
+			'queueTtrSeconds' => $videoQueueTtrSeconds,
 			'attempt' => 1,
 			'maxRetries' => max(0, (int)$settings->videoPosterMaxRetries),
 			'retryDelaySeconds' => max(0, (int)$settings->videoPosterRetryDelaySeconds),
@@ -894,6 +905,8 @@ class Transcode extends Component
 			'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
 			'posterError' => '',
 			'posterJobId' => $posterJobId,
+			'posterDelay' => $videoPosterQueueDelaySeconds,
+			'posterQueueTtrSeconds' => $videoQueueTtrSeconds,
 		]);
 		$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
 

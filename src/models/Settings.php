@@ -246,6 +246,13 @@ class Settings extends Model
     public bool $queueVideosOnEntrySave = false;
 
     /**
+     * Seconds Craft should reserve for video-related queue jobs before timing them out.
+     *
+     * @var int
+     */
+    public int $videoQueueTtrSeconds = 1800;
+
+    /**
      * Number of retries after the initial video encode attempt fails.
      *
      * @var int
@@ -331,6 +338,13 @@ class Settings extends Model
      * @var int
      */
     public int $videoPosterRetryDelaySeconds = 120;
+
+    /**
+     * Seconds to wait before starting newly queued video poster generation jobs.
+     *
+     * @var int
+     */
+    public int $videoPosterQueueDelaySeconds = 5;
 
     /**
      * Poster formats generated when videos are queued.
@@ -571,6 +585,8 @@ class Settings extends Model
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
             [['queueVideosOnSave', 'queueVideosOnEntrySave'], 'boolean'],
+            ['videoQueueTtrSeconds', 'integer'],
+            ['videoQueueTtrSeconds', 'number', 'min' => 1],
             [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'integer'],
             [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'number', 'min' => 0],
             ['autoEncodeVideoFieldHandles', ArrayValidator::class],
@@ -581,8 +597,8 @@ class Settings extends Model
             ['autoEncodeGifOptions', ArrayValidator::class],
             ['gifQueueDelaySeconds', 'integer'],
             ['gifQueueDelaySeconds', 'number', 'min' => 0],
-            [['videoPosterMaxRetries', 'videoPosterRetryDelaySeconds'], 'integer'],
-            [['videoPosterMaxRetries', 'videoPosterRetryDelaySeconds'], 'number', 'min' => 0],
+            [['videoPosterMaxRetries', 'videoPosterRetryDelaySeconds', 'videoPosterQueueDelaySeconds'], 'integer'],
+            [['videoPosterMaxRetries', 'videoPosterRetryDelaySeconds', 'videoPosterQueueDelaySeconds'], 'number', 'min' => 0],
             ['videoPosterFormats', ArrayValidator::class],
             ['videoEncoders', 'required'],
             ['audioEncoders', 'required'],

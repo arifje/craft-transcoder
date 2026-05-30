@@ -59,6 +59,7 @@ Recent additions include:
 * Queue a missing encode from Twig/admin preview when enabled.
 * Restrict which web server names are allowed to start new encoding work.
 * Keep Craft queue jobs alive while ffmpeg runs, with queue progress updates.
+* Configure the queue timeout/TTR for long video encoding and poster jobs.
 * Retry failed video encode jobs after a configurable delay before marking them as failed.
 * Detect failed or suspicious ffmpeg output and show the ffmpeg command/log in queue errors.
 * Detect and clean up stale `.lock`/`.progress` files from crashed encodes.
@@ -77,6 +78,7 @@ You can configure poster formats in the **Video posters** settings tab:
 * Define multiple poster formats by handle, width, height, and timestamp.
 * Leave width/height empty for original/auto dimensions.
 * Generate missing posters in a separate queue job.
+* Delay newly queued poster jobs briefly so freshly uploaded files have time to become readable.
 * Retry failed video poster jobs after a configurable delay before marking them as failed.
 * Generate posters from the original video, independently from the video encode.
 * Retrieve generated posters in Twig with `craft.transcoder.getVideoPosterUrl(asset, 'handle')`.

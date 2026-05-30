@@ -54,6 +54,18 @@
     }) }}
 
     {{ forms.textField({
+        label: 'Video queue timeout'|t('transcoder'),
+        instructions: 'Seconds Craft should reserve for video encoding and poster queue jobs before timing them out.'|t('transcoder'),
+        warning: macros.configWarning('videoQueueTtrSeconds', 'transcoder'),
+        id: 'videoQueueTtrSeconds',
+        name: 'videoQueueTtrSeconds',
+        value: settings.videoQueueTtrSeconds,
+        type: 'number',
+        min: 1,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
         label: 'Video encode retries'|t('transcoder'),
         instructions: 'How many times a failed video encode job should be retried before it is marked as failed.'|t('transcoder'),
         warning: macros.configWarning('videoEncodeMaxRetries', 'transcoder'),
@@ -305,6 +317,18 @@
         id: 'videoPosterRetryDelaySeconds',
         name: 'videoPosterRetryDelaySeconds',
         value: settings.videoPosterRetryDelaySeconds,
+        type: 'number',
+        min: 0,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Video poster queue delay'|t('transcoder'),
+        instructions: 'Seconds to wait before starting newly queued video poster jobs. This helps when uploaded files need a moment before they are readable by the encoding server.'|t('transcoder'),
+        warning: macros.configWarning('videoPosterQueueDelaySeconds', 'transcoder'),
+        id: 'videoPosterQueueDelaySeconds',
+        name: 'videoPosterQueueDelaySeconds',
+        value: settings.videoPosterQueueDelaySeconds,
         type: 'number',
         min: 0,
         size: 5,

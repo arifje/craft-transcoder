@@ -37,6 +37,11 @@ class GenerateVideoPosters extends BaseJob
     public array $encodingOptions = [];
 
     /**
+     * @var int Seconds Craft should reserve for this queue job.
+     */
+    public int $queueTtrSeconds = 1800;
+
+    /**
      * @var int Current attempt number, starting at 1.
      */
     public int $attempt = 1;
@@ -91,6 +96,7 @@ class GenerateVideoPosters extends BaseJob
                     'posterProgress' => 0,
                     'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
                     'posterError' => '',
+                    'posterQueueTtrSeconds' => $this->queueTtrSeconds,
                 ],
                 $this->encodingOptions
             );
@@ -163,6 +169,7 @@ class GenerateVideoPosters extends BaseJob
                     'posterProgress' => 0,
                     'posterError' => $message,
                     'posterMessage' => Craft::t('transcoder', 'Video poster generation failed'),
+                    'posterQueueTtrSeconds' => $this->queueTtrSeconds,
                 ],
                 $this->encodingOptions
             );
@@ -196,10 +203,12 @@ class GenerateVideoPosters extends BaseJob
             'seconds' => $delay,
         ]);
 
-        $jobId = Craft::$app->getQueue()->delay($delay)->push(new self([
+        $queueTtrSeconds = max(1, $this->queueTtrSeconds);
+        $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
             'assetId' => $asset->id,
             'videoOptions' => $this->videoOptions,
             'encodingOptions' => $this->encodingOptions,
+            'queueTtrSeconds' => $queueTtrSeconds,
             'attempt' => $nextAttempt,
             'maxRetries' => $maxRetries,
             'retryDelaySeconds' => $delay,
@@ -223,6 +232,7 @@ class GenerateVideoPosters extends BaseJob
                 'posterRetryAttempt' => $nextAttempt,
                 'posterRetryTotalAttempts' => $totalAttempts,
                 'posterRetryDelaySeconds' => $delay,
+                'posterQueueTtrSeconds' => $queueTtrSeconds,
             ],
             $this->encodingOptions
         );
