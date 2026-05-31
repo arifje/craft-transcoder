@@ -827,72 +827,78 @@ class Transcode extends Component
 			];
 		}
 
-		$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
-		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
-		$missingPosters = $settings->enableVideoPosters && $this->hasMissingVideoPosters($asset);
-		$videoComplete = ($status['status'] ?? null) === 'ok'
-			&& is_file($outputInfo['encodedFile'])
-			&& filesize($outputInfo['encodedFile']) > 0;
-		$videoInProgress = in_array($status['status'] ?? null, ['queued', 'encoding'], true);
-		$postersInProgress = $this->isVideoPosterStatusActive($status);
-		$queueVideo = $settings->enableVideoEncoding && !$videoComplete && !$videoInProgress;
-		$queuePosters = $settings->enableVideoPosters && $missingPosters && !$postersInProgress;
+		$statusKey = $this->getVideoStatusKey($asset, $videoOptions, $encodingOptions);
+		$queueLock = $this->acquireVideoQueueLock($statusKey);
+		try {
+			$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
+			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
+			$missingPosters = $settings->enableVideoPosters && $this->hasMissingVideoPosters($asset);
+			$videoComplete = ($status['status'] ?? null) === 'ok'
+				&& is_file($outputInfo['encodedFile'])
+				&& filesize($outputInfo['encodedFile']) > 0;
+			$videoInProgress = in_array($status['status'] ?? null, ['queued', 'encoding'], true);
+			$postersInProgress = $this->isVideoPosterStatusActive($status);
+			$queueVideo = $settings->enableVideoEncoding && !$videoComplete && !$videoInProgress;
+			$queuePosters = $settings->enableVideoPosters && $missingPosters && !$postersInProgress;
 
-		if (!$queueVideo && !$queuePosters) {
+			if (!$queueVideo && !$queuePosters) {
+				return $status;
+			}
+
+			$videoQueueTtrSeconds = max(1, (int)$settings->videoQueueTtrSeconds);
+			$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
+
+			if ($queueVideo) {
+				$jobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->push(new EncodeVideo([
+					'assetId' => $asset->id,
+					'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
+					'videoOptions' => $videoOptions,
+					'encodingOptions' => $encodingOptions,
+					'queueTtrSeconds' => $videoQueueTtrSeconds,
+					'attempt' => 1,
+					'maxRetries' => max(0, (int)$settings->videoEncodeMaxRetries),
+					'retryDelaySeconds' => max(0, (int)$settings->videoEncodeRetryDelaySeconds),
+				]));
+
+				$status = array_merge($status, [
+					'status' => 'queued',
+					'url' => '',
+					'progress' => 0,
+					'jobId' => $jobId,
+					'queueTtrSeconds' => $videoQueueTtrSeconds,
+				]);
+			}
+
+			if ($queuePosters) {
+				$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
+					'assetId' => $asset->id,
+					'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
+					'videoOptions' => $videoOptions,
+					'encodingOptions' => $encodingOptions,
+					'queueTtrSeconds' => $videoQueueTtrSeconds,
+					'attempt' => 1,
+					'maxRetries' => max(0, (int)$settings->videoPosterMaxRetries),
+					'retryDelaySeconds' => max(0, (int)$settings->videoPosterRetryDelaySeconds),
+				]));
+
+				$status = array_merge($status, [
+					'status' => $videoInProgress || $queueVideo ? ($status['status'] ?? 'queued') : 'queued',
+					'posterStatus' => 'queued',
+					'posterProgress' => 0,
+					'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
+					'posterError' => '',
+					'posterJobId' => $posterJobId,
+					'posterDelay' => $videoPosterQueueDelaySeconds,
+					'posterQueueTtrSeconds' => $videoQueueTtrSeconds,
+				]);
+			}
+
+			$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
+
 			return $status;
+		} finally {
+			$this->releaseVideoQueueLock($queueLock);
 		}
-
-		$videoQueueTtrSeconds = max(1, (int)$settings->videoQueueTtrSeconds);
-		$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
-
-		if ($queueVideo) {
-			$jobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->push(new EncodeVideo([
-				'assetId' => $asset->id,
-				'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
-				'videoOptions' => $videoOptions,
-				'encodingOptions' => $encodingOptions,
-				'queueTtrSeconds' => $videoQueueTtrSeconds,
-				'attempt' => 1,
-				'maxRetries' => max(0, (int)$settings->videoEncodeMaxRetries),
-				'retryDelaySeconds' => max(0, (int)$settings->videoEncodeRetryDelaySeconds),
-			]));
-
-			$status = array_merge($status, [
-				'status' => 'queued',
-				'url' => '',
-				'progress' => 0,
-				'jobId' => $jobId,
-				'queueTtrSeconds' => $videoQueueTtrSeconds,
-			]);
-		}
-
-		if ($queuePosters) {
-			$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
-				'assetId' => $asset->id,
-				'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
-				'videoOptions' => $videoOptions,
-				'encodingOptions' => $encodingOptions,
-				'queueTtrSeconds' => $videoQueueTtrSeconds,
-				'attempt' => 1,
-				'maxRetries' => max(0, (int)$settings->videoPosterMaxRetries),
-				'retryDelaySeconds' => max(0, (int)$settings->videoPosterRetryDelaySeconds),
-			]));
-
-			$status = array_merge($status, [
-				'status' => $videoInProgress || $queueVideo ? ($status['status'] ?? 'queued') : 'queued',
-				'posterStatus' => 'queued',
-				'posterProgress' => 0,
-				'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
-				'posterError' => '',
-				'posterJobId' => $posterJobId,
-				'posterDelay' => $videoPosterQueueDelaySeconds,
-				'posterQueueTtrSeconds' => $videoQueueTtrSeconds,
-			]);
-		}
-
-		$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
-
-		return $status;
 	}
 
 	/**
@@ -942,37 +948,43 @@ class Transcode extends Component
 			];
 		}
 
-		$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
-		if (!$this->hasMissingVideoPosters($asset) || $this->isVideoPosterStatusActive($status)) {
+		$statusKey = $this->getVideoStatusKey($asset, $videoOptions, $encodingOptions);
+		$queueLock = $this->acquireVideoQueueLock($statusKey);
+		try {
+			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
+			if (!$this->hasMissingVideoPosters($asset) || $this->isVideoPosterStatusActive($status)) {
+				return $status;
+			}
+
+			$videoQueueTtrSeconds = max(1, (int)$settings->videoQueueTtrSeconds);
+			$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
+			$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
+				'assetId' => $asset->id,
+				'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
+				'videoOptions' => $videoOptions,
+				'encodingOptions' => $encodingOptions,
+				'queueTtrSeconds' => $videoQueueTtrSeconds,
+				'attempt' => 1,
+				'maxRetries' => max(0, (int)$settings->videoPosterMaxRetries),
+				'retryDelaySeconds' => max(0, (int)$settings->videoPosterRetryDelaySeconds),
+			]));
+
+			$status = array_merge($status, [
+				'status' => in_array($status['status'] ?? null, ['queued', 'encoding'], true) ? $status['status'] : 'queued',
+				'posterStatus' => 'queued',
+				'posterProgress' => 0,
+				'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
+				'posterError' => '',
+				'posterJobId' => $posterJobId,
+				'posterDelay' => $videoPosterQueueDelaySeconds,
+				'posterQueueTtrSeconds' => $videoQueueTtrSeconds,
+			]);
+			$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
+
 			return $status;
+		} finally {
+			$this->releaseVideoQueueLock($queueLock);
 		}
-
-		$videoQueueTtrSeconds = max(1, (int)$settings->videoQueueTtrSeconds);
-		$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
-		$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
-			'assetId' => $asset->id,
-			'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
-			'videoOptions' => $videoOptions,
-			'encodingOptions' => $encodingOptions,
-			'queueTtrSeconds' => $videoQueueTtrSeconds,
-			'attempt' => 1,
-			'maxRetries' => max(0, (int)$settings->videoPosterMaxRetries),
-			'retryDelaySeconds' => max(0, (int)$settings->videoPosterRetryDelaySeconds),
-		]));
-
-		$status = array_merge($status, [
-			'status' => in_array($status['status'] ?? null, ['queued', 'encoding'], true) ? $status['status'] : 'queued',
-			'posterStatus' => 'queued',
-			'posterProgress' => 0,
-			'posterMessage' => Craft::t('transcoder', 'Video posters are queued'),
-			'posterError' => '',
-			'posterJobId' => $posterJobId,
-			'posterDelay' => $videoPosterQueueDelaySeconds,
-			'posterQueueTtrSeconds' => $videoQueueTtrSeconds,
-		]);
-		$this->writeVideoStatus($asset, $videoOptions, $status, $encodingOptions);
-
-		return $status;
 	}
 
 	/**
@@ -5432,6 +5444,52 @@ class Transcode extends Component
 		} catch (Throwable $e) {
 			Craft::error($e->getMessage(), __METHOD__);
 		}
+	}
+
+	/**
+	 * Acquire a short-lived filesystem lock around queue decisions for a status key.
+	 *
+	 * @param string $key
+	 * @return mixed
+	 */
+	protected function acquireVideoQueueLock(string $key): mixed
+	{
+		try {
+			FileHelper::createDirectory($this->getVideoStatusDirectory());
+		} catch (Throwable $e) {
+			Craft::warning('Unable to create Transcoder status directory for queue lock: ' . $e->getMessage(), __METHOD__);
+		}
+
+		$lockPath = $this->getVideoStatusPath($key) . '.queue.lock';
+		$handle = @fopen($lockPath, 'c');
+		if ($handle === false) {
+			Craft::warning('Unable to open Transcoder queue lock: ' . $lockPath, __METHOD__);
+			return null;
+		}
+
+		if (!flock($handle, LOCK_EX)) {
+			fclose($handle);
+			Craft::warning('Unable to acquire Transcoder queue lock: ' . $lockPath, __METHOD__);
+			return null;
+		}
+
+		return $handle;
+	}
+
+	/**
+	 * Release a queue decision lock.
+	 *
+	 * @param mixed $handle
+	 * @return void
+	 */
+	protected function releaseVideoQueueLock(mixed $handle): void
+	{
+		if (!is_resource($handle)) {
+			return;
+		}
+
+		flock($handle, LOCK_UN);
+		fclose($handle);
 	}
 
 	/**
