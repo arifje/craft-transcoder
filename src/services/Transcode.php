@@ -623,7 +623,12 @@ class Transcode extends Component
 			return $title;
 		}
 
-		return $this->getRelatedEntryTitle($asset);
+		$title = $this->getRelatedEntryTitle($asset);
+		if ($title !== null) {
+			return $title;
+		}
+
+		return $this->getAssetFolderEntryTitle($asset);
 	}
 
 	/**
@@ -674,6 +679,60 @@ class Transcode extends Component
 			return $entry instanceof ElementInterface ? $this->getElementTitle($entry) : null;
 		} catch (Throwable $e) {
 			Craft::debug('Unable to resolve Transcoder related entry title for asset ' . $asset->id . ': ' . $e->getMessage(), __METHOD__);
+		}
+
+		return null;
+	}
+
+	/**
+	 * Return an entry title from numeric asset folder segments, such as /videos/12345/.
+	 *
+	 * This covers upload/save events where Craft relations may not exist yet, but
+	 * the project stores assets in per-entry folders.
+	 *
+	 * @param Asset $asset
+	 * @return string|null
+	 */
+	protected function getAssetFolderEntryTitle(Asset $asset): ?string
+	{
+		$folderPath = '';
+
+		try {
+			$folderPath = trim((string)($asset->folderPath ?? ''));
+		} catch (Throwable) {
+		}
+
+		if ($folderPath === '') {
+			try {
+				$folderPath = trim((string)($asset->getFolder()->path ?? ''));
+			} catch (Throwable $e) {
+				Craft::debug('Unable to inspect Transcoder asset folder for asset ' . $asset->id . ': ' . $e->getMessage(), __METHOD__);
+			}
+		}
+
+		if ($folderPath === '' || !preg_match_all('/(?:^|[\/\\\\])(\d+)(?=[\/\\\\]|$)/', $folderPath, $matches)) {
+			return null;
+		}
+
+		$entryIds = array_reverse(array_values(array_unique(array_map('intval', $matches[1]))));
+		foreach ($entryIds as $entryId) {
+			if ($entryId <= 0) {
+				continue;
+			}
+
+			try {
+				$query = Entry::find()->id($entryId);
+				$this->prepareOwnerLookupQuery($query);
+
+				$entry = $query->one();
+				$title = $entry instanceof ElementInterface ? $this->getElementTitle($entry) : null;
+				if ($title !== null) {
+					Craft::info('Transcoder: resolved owner title from asset folder "' . $folderPath . '" for asset ' . $asset->id . ': ' . $title, __METHOD__);
+					return $title;
+				}
+			} catch (Throwable $e) {
+				Craft::debug('Unable to resolve Transcoder entry title from folder segment ' . $entryId . ' for asset ' . $asset->id . ': ' . $e->getMessage(), __METHOD__);
+			}
 		}
 
 		return null;
