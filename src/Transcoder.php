@@ -372,7 +372,16 @@ class Transcoder extends Plugin
      */
     protected function queueMediaForSavedAsset(Asset $asset): void
     {
-        if (!$asset->id || isset($this->queuedAssetSaveChecks[$asset->id])) {
+        if (!$asset->id) {
+            return;
+        }
+
+        if ($this->transcode->isTemporaryUploadAsset($asset)) {
+            Craft::info('Transcoder: skipping temporary upload asset #' . $asset->id . ' until Craft moves it to its final folder.', __METHOD__);
+            return;
+        }
+
+        if (isset($this->queuedAssetSaveChecks[$asset->id])) {
             return;
         }
 

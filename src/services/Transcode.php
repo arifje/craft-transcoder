@@ -632,6 +632,103 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return whether an asset still points at Craft's temporary upload storage.
+	 *
+	 * @param Asset $asset
+	 * @return bool
+	 */
+	public function isTemporaryUploadAsset(Asset $asset): bool
+	{
+		foreach ($this->getAssetReferenceCandidates($asset) as $reference) {
+			if ($this->isTemporaryUploadReference($reference)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Return path/URL/folder references that can identify temporary upload assets.
+	 *
+	 * @param Asset $asset
+	 * @return array
+	 */
+	protected function getAssetReferenceCandidates(Asset $asset): array
+	{
+		$candidates = [];
+
+		foreach (['folderPath', 'path', 'url'] as $attribute) {
+			try {
+				$value = $asset->$attribute ?? null;
+				if ($value !== null && $value !== '') {
+					$candidates[] = (string)$value;
+				}
+			} catch (Throwable) {
+			}
+		}
+
+		try {
+			$folderPath = $asset->getFolder()->path ?? null;
+			if ($folderPath !== null && $folderPath !== '') {
+				$candidates[] = (string)$folderPath;
+			}
+		} catch (Throwable) {
+		}
+
+		try {
+			$url = $asset->getUrl();
+			if ($url !== null && $url !== '') {
+				$candidates[] = $url;
+			}
+		} catch (Throwable) {
+		}
+
+		try {
+			$assetPath = $this->getAssetPath($asset);
+			if ($assetPath !== '') {
+				$candidates[] = $assetPath;
+			}
+		} catch (Throwable) {
+		}
+
+		return array_values(array_unique($candidates));
+	}
+
+	/**
+	 * Return whether a path/URL points at Craft's temp upload directory.
+	 *
+	 * @param string|null $reference
+	 * @return bool
+	 */
+	protected function isTemporaryUploadReference(?string $reference): bool
+	{
+		$reference = str_replace('\\', '/', trim((string)$reference));
+		if ($reference === '') {
+			return false;
+		}
+
+		return preg_match('~(?:^|/)user_\d+(?:/|$)~i', $reference) === 1
+			|| preg_match('~(?:^|/)(?:storage/)?runtime/assets/tempuploads(?:/|$)~i', $reference) === 1;
+	}
+
+	/**
+	 * Return a non-error status for assets that are not in their final folder yet.
+	 *
+	 * @param string $mediaType
+	 * @return array
+	 */
+	protected function getTemporaryUploadStatus(string $mediaType): array
+	{
+		return [
+			'status' => 'pending',
+			'url' => '',
+			'progress' => 0,
+			'info' => 'Transcoder: ' . $mediaType . ' asset is still in Craft temporary upload storage',
+		];
+	}
+
+	/**
 	 * Return the owner entry title for an asset related through a Matrix block.
 	 *
 	 * @param Asset $asset
@@ -811,6 +908,9 @@ class Transcode extends Component
 				'error' => 'Transcoder: asset is not a video',
 			];
 		}
+		if ($this->isTemporaryUploadAsset($asset)) {
+			return $this->getTemporaryUploadStatus('video');
+		}
 		if (!$settings->enableVideoEncoding && !$settings->enableVideoPosters) {
 			return [
 				'status' => 'disabled',
@@ -930,6 +1030,9 @@ class Transcode extends Component
 				'progress' => 0,
 				'error' => 'Transcoder: asset is not a video',
 			];
+		}
+		if ($this->isTemporaryUploadAsset($asset)) {
+			return $this->getTemporaryUploadStatus('video');
 		}
 
 		if (!$settings->enableVideoPosters) {
@@ -1123,6 +1226,9 @@ class Transcode extends Component
 				'error' => 'Transcoder: asset is not a GIF',
 			];
 		}
+		if ($this->isTemporaryUploadAsset($asset)) {
+			return $this->getTemporaryUploadStatus('GIF');
+		}
 		if (!Transcoder::$plugin->getSettings()->enableGifEncoding) {
 			return [
 				'status' => 'disabled',
@@ -1235,6 +1341,9 @@ class Transcode extends Component
 				'url' => '',
 				'progress' => 0,
 			];
+		}
+		if ($filePath instanceof Asset && $this->isTemporaryUploadAsset($filePath)) {
+			return $this->sanitizeVideoStatus($this->getTemporaryUploadStatus('video'));
 		}
 
 		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
@@ -2334,6 +2443,9 @@ class Transcode extends Component
 				'url' => '',
 				'progress' => 0,
 			];
+		}
+		if ($filePath instanceof Asset && $this->isTemporaryUploadAsset($filePath)) {
+			return $this->sanitizeVideoStatus($this->getTemporaryUploadStatus('GIF'));
 		}
 
 		$outputInfo = $this->getGifOutputInfo($filePath, $gifOptions);

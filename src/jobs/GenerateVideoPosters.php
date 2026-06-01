@@ -74,6 +74,12 @@ class GenerateVideoPosters extends BaseJob
             return;
         }
 
+        if (Transcoder::$plugin->transcode->isTemporaryUploadAsset($asset)) {
+            Craft::info('Transcoder poster queue job skipped temporary upload asset ID: ' . $this->assetId, __METHOD__);
+            $this->setProgress($queue, 1, Craft::t('transcoder', 'Temporary upload skipped'));
+            return;
+        }
+
         if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
             Transcoder::$plugin->transcode->writeVideoPosterStatus(
                 $asset,

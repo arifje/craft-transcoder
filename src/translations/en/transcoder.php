@@ -20,6 +20,7 @@ return [
     'When disabled, Transcoder will not start video, GIF, or poster encoding from uploads, queue jobs, or templates. Frontend helpers return disabled so templates can serve original assets.' => 'When disabled, Transcoder will not start video, GIF, or poster encoding from uploads, queue jobs, or templates. Frontend helpers return disabled so templates can serve original assets.',
     'Encoding disabled' => 'Encoding disabled',
     'Encoding stopped by runtime switch.' => 'Encoding stopped by runtime switch.',
+    'Temporary upload skipped' => 'Temporary upload skipped',
     'Transcoder runtime settings saved.' => 'Transcoder runtime settings saved.',
     'Transcoder runtime settings saved. Stopped {count} active encode(s).' => 'Transcoder runtime settings saved. Stopped {count} active encode(s).',
     'Could not save Transcoder runtime settings.' => 'Could not save Transcoder runtime settings.',
