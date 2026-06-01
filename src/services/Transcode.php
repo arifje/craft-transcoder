@@ -1437,24 +1437,39 @@ class Transcode extends Component
 				return ['path' => $filePath];
 			}
 
-			$url = $this->isUrl($filePath) ? $filePath : $input->getUrl();
-			if ($url && str_starts_with($url, '/')) {
-				$siteUrl = Craft::$app->getSites()->getCurrentSite()->getBaseUrl();
-				$url = rtrim($siteUrl, '/') . $url;
-			}
+			$url = $this->isUrl($filePath) ? $filePath : ($input->getUrl() ?? '');
+			$url = $this->normalizeSiteUrl($url);
 			return ['url' => $url];
 		}
 
+		$input = (string)App::parseEnv($input);
 		if ($this->isUrl($input)) {
 			return ['url' => $input];
 		}
 
-		if (str_starts_with($input, '/')) {
-			$siteUrl = Craft::$app->getSites()->getCurrentSite()->getBaseUrl();
-			return ['url' => rtrim($siteUrl, '/') . $input];
+		if (file_exists($input)) {
+			return ['path' => $input];
 		}
 
-		return ['path' => $input];
+		return ['url' => $this->normalizeSiteUrl($input)];
+	}
+
+	/**
+	 * Normalize a root-relative or relative asset URL to an absolute site URL.
+	 *
+	 * @param string|null $url
+	 * @return string
+	 */
+	private function normalizeSiteUrl(?string $url): string
+	{
+		$url = trim((string)App::parseEnv($url ?? ''));
+		if ($url === '' || $this->isUrl($url)) {
+			return $url;
+		}
+
+		$siteUrl = Craft::$app->getSites()->getCurrentSite()->getBaseUrl();
+
+		return rtrim($siteUrl, '/') . '/' . ltrim($url, '/');
 	}
 
 
