@@ -35,6 +35,21 @@ class EncodeGif extends BaseJob
     public array $gifOptions = [];
 
     /**
+     * @var int Current attempt number, starting at 1.
+     */
+    public int $attempt = 1;
+
+    /**
+     * @var int Number of retries after the initial attempt fails.
+     */
+    public int $maxRetries = 2;
+
+    /**
+     * @var int Seconds to wait before queueing the next attempt.
+     */
+    public int $retryDelaySeconds = 120;
+
+    /**
      * @inheritdoc
      */
     public function execute($queue): void
@@ -68,19 +83,7 @@ class EncodeGif extends BaseJob
 
         try {
             if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
-                Craft::info('Transcoder GIF queue job deferred because the original asset source is not reachable yet: ' . $this->assetId, __METHOD__);
-                Transcoder::$plugin->transcode->writeGifStatus(
-                    $asset,
-                    $this->gifOptions,
-                    [
-                        'status' => 'pending',
-                        'url' => '',
-                        'progress' => 0,
-                        'info' => 'Original GIF source is not reachable yet',
-                    ]
-                );
-                $this->setProgress($queue, 1, Craft::t('transcoder', 'Original GIF source is not reachable yet'));
-                return;
+                throw new \RuntimeException(Craft::t('transcoder', 'Original GIF source is not reachable yet'));
             }
 
             $this->setProgress($queue, 0, Craft::t('transcoder', 'Starting GIF encode'));
@@ -99,19 +102,7 @@ class EncodeGif extends BaseJob
             $status = json_decode($response, true);
 
             if (is_array($status) && Transcoder::$plugin->transcode->isOriginalGifMissingStatus($status)) {
-                Craft::info('Transcoder GIF queue job deferred because the original asset source disappeared during startup: ' . $this->assetId, __METHOD__);
-                Transcoder::$plugin->transcode->writeGifStatus(
-                    $asset,
-                    $this->gifOptions,
-                    [
-                        'status' => 'pending',
-                        'url' => '',
-                        'progress' => 0,
-                        'info' => 'Original GIF source is not reachable yet',
-                    ]
-                );
-                $this->setProgress($queue, 1, Craft::t('transcoder', 'Original GIF source is not reachable yet'));
-                return;
+                throw new \RuntimeException($this->formatErrorMessage($status));
             }
 
             if (is_array($status)) {
@@ -133,6 +124,10 @@ class EncodeGif extends BaseJob
                     $status = array_merge($currentStatus, $status);
                 }
             } catch (Throwable) {
+            }
+
+            if ($this->retryLater($queue, $asset, $status, $e)) {
+                return;
             }
 
             Transcoder::$plugin->transcode->writeGifStatus(
@@ -194,6 +189,98 @@ class EncodeGif extends BaseJob
     }
 
     /**
+     * Queue the next GIF encode attempt when the failure looks transient.
+     *
+     * @param mixed $queue
+     * @param Asset $asset
+     * @param array $status
+     * @param Throwable $e
+     * @return bool
+     */
+    protected function retryLater(mixed $queue, Asset $asset, array $status, Throwable $e): bool
+    {
+        $maxRetries = max(0, $this->maxRetries);
+        if ($this->attempt > $maxRetries || !$this->shouldRetry($e, $status)) {
+            return false;
+        }
+
+        $delay = max(0, $this->retryDelaySeconds);
+        $nextAttempt = $this->attempt + 1;
+        $totalAttempts = $maxRetries + 1;
+        $message = Craft::t('transcoder', 'Retrying GIF encode attempt {attempt} of {total} in {seconds}s', [
+            'attempt' => $nextAttempt,
+            'total' => $totalAttempts,
+            'seconds' => $delay,
+        ]);
+
+        $queuedJob = new self([
+            'assetId' => $asset->id,
+            'gifOptions' => $this->gifOptions,
+            'attempt' => $nextAttempt,
+            'maxRetries' => $maxRetries,
+            'retryDelaySeconds' => $delay,
+        ]);
+
+        $craftQueue = Craft::$app->getQueue();
+        $jobId = method_exists($craftQueue, 'delay')
+            ? $craftQueue->delay($delay)->push($queuedJob)
+            : $craftQueue->push($queuedJob);
+
+        Craft::warning($message . ': ' . $e->getMessage(), __METHOD__);
+        Transcoder::$plugin->transcode->writeGifStatus(
+            $asset,
+            $this->gifOptions,
+            array_merge($status, [
+                'status' => 'queued',
+                'url' => '',
+                'progress' => 0,
+                'jobId' => $jobId,
+                'info' => $message,
+                'error' => '',
+                'retryLastError' => $status['error'] ?? $e->getMessage(),
+                'retryAttempt' => $nextAttempt,
+                'retryTotalAttempts' => $totalAttempts,
+                'retryDelaySeconds' => $delay,
+            ])
+        );
+        $this->setProgress($queue, 1, $message);
+
+        return true;
+    }
+
+    /**
+     * Return whether a GIF failure should be retried.
+     *
+     * @param Throwable $e
+     * @param array $status
+     * @return bool
+     */
+    protected function shouldRetry(Throwable $e, array $status): bool
+    {
+        $message = strtolower($e->getMessage() . ' ' . $this->formatErrorMessage($status));
+        $retryableNeedles = [
+            'process crashed',
+            'ffmpeg error',
+            'timed out',
+            'timeout',
+            'invalid output file',
+            'suspicious output file',
+            'no encoded output file',
+            'ffmpeg log contains errors',
+            'original gif source is not reachable yet',
+            'original gif not found',
+        ];
+
+        foreach ($retryableNeedles as $needle) {
+            if (str_contains($message, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Format a queue-visible error message with ffmpeg debug details.
      *
      * @param array $status
@@ -219,6 +306,12 @@ class EncodeGif extends BaseJob
      */
     protected function defaultDescription(): ?string
     {
-        return 'Encoding GIF asset #' . ($this->assetId ?? 'unknown');
+        $description = 'Encoding GIF asset #' . ($this->assetId ?? 'unknown');
+
+        if ($this->attempt > 1) {
+            $description .= ' (attempt ' . $this->attempt . ')';
+        }
+
+        return $description;
     }
 }

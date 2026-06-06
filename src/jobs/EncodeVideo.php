@@ -103,20 +103,7 @@ class EncodeVideo extends BaseJob
 
             if ($settings->enableVideoEncoding) {
                 if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
-                    Craft::info('Transcoder video queue job deferred because the original asset source is not reachable yet: ' . $this->assetId, __METHOD__);
-                    Transcoder::$plugin->transcode->writeVideoStatus(
-                        $asset,
-                        $this->videoOptions,
-                        [
-                            'status' => 'pending',
-                            'url' => '',
-                            'progress' => 0,
-                            'info' => 'Original video source is not reachable yet',
-                        ],
-                        $this->encodingOptions
-                    );
-                    $this->setProgress($queue, 1, Craft::t('transcoder', 'Original video source is not reachable yet'));
-                    return;
+                    throw new \RuntimeException(Craft::t('transcoder', 'Original video source is not reachable yet'));
                 }
 
                 $this->setProgress($queue, 0, Craft::t('transcoder', 'Starting video encode'));
@@ -137,20 +124,7 @@ class EncodeVideo extends BaseJob
                 $status = json_decode($response, true);
 
                 if (is_array($status) && Transcoder::$plugin->transcode->isOriginalVideoMissingStatus($status)) {
-                    Craft::info('Transcoder video queue job deferred because the original asset source disappeared during startup: ' . $this->assetId, __METHOD__);
-                    Transcoder::$plugin->transcode->writeVideoStatus(
-                        $asset,
-                        $this->videoOptions,
-                        [
-                            'status' => 'pending',
-                            'url' => '',
-                            'progress' => 0,
-                            'info' => 'Original video source is not reachable yet',
-                        ],
-                        $this->encodingOptions
-                    );
-                    $this->setProgress($queue, 1, Craft::t('transcoder', 'Original video source is not reachable yet'));
-                    return;
+                    throw new \RuntimeException($this->formatErrorMessage($status));
                 }
 
                 if (is_array($status)) {
@@ -332,6 +306,8 @@ class EncodeVideo extends BaseJob
             'suspicious output file',
             'no encoded output file',
             'ffmpeg log contains errors',
+            'original video source is not reachable yet',
+            'original video not found',
         ];
 
         foreach ($retryableNeedles as $needle) {

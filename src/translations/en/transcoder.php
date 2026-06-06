@@ -22,6 +22,7 @@ return [
     'Encoding stopped by runtime switch.' => 'Encoding stopped by runtime switch.',
     'Original video source is not reachable yet' => 'Original video source is not reachable yet',
     'Original GIF source is not reachable yet' => 'Original GIF source is not reachable yet',
+    'Retrying GIF encode attempt {attempt} of {total} in {seconds}s' => 'Retrying GIF encode attempt {attempt} of {total} in {seconds}s',
     'Temporary upload skipped' => 'Temporary upload skipped',
     'Queued media encodes for element {id}: {videos} video(s), {gifs} GIF(s)' => 'Queued media encodes for element {id}: {videos} video(s), {gifs} GIF(s)',
     'Transcoder runtime settings saved.' => 'Transcoder runtime settings saved.',

@@ -397,7 +397,11 @@ class Transcode extends Component
 
 		$activeStatus = $this->findActiveVideoStatusForFilenames($videoFilenameCandidates, $statusKey);
 		if (!empty($activeStatus)) {
-			return JsonHelper::encode($this->sanitizeVideoStatus($activeStatus));
+			if ($originalExists && $this->isOriginalVideoSourceRetryStatus($activeStatus)) {
+				Craft::info('Transcoder: ignoring queued source-retry status for ' . ($filePathResolved ?? 'unknown') . ' because the original source is now reachable.', __METHOD__);
+			} else {
+				return JsonHelper::encode($this->sanitizeVideoStatus($activeStatus));
+			}
 		}
 
 		// --- Case 3: original missing, encoded missing ---
@@ -1017,7 +1021,11 @@ class Transcode extends Component
 
 			$activeAssetStatus = $this->findActiveVideoStatusForAsset($asset, $statusKey, true, true);
 			if (!empty($activeAssetStatus)) {
-				return $this->sanitizeVideoStatus($activeAssetStatus);
+				if (!$originalMissing && $this->isOriginalVideoSourceRetryStatus($activeAssetStatus)) {
+					Craft::info('Transcoder: ignoring queued source-retry status for asset ' . $asset->id . ' because the original source is now reachable.', __METHOD__);
+				} else {
+					return $this->sanitizeVideoStatus($activeAssetStatus);
+				}
 			}
 
 			$missingPosters = $settings->enableVideoPosters && $this->hasMissingVideoPosters($asset);
@@ -1160,7 +1168,11 @@ class Transcode extends Component
 
 			$activeAssetStatus = $this->findActiveVideoStatusForAsset($asset, $statusKey, false, true);
 			if (!empty($activeAssetStatus)) {
-				return $this->sanitizeVideoStatus($activeAssetStatus);
+				if ($this->isAssetOriginalAvailable($asset) && $this->isOriginalVideoSourceRetryStatus($activeAssetStatus)) {
+					Craft::info('Transcoder: ignoring queued poster source-retry status for asset ' . $asset->id . ' because the original source is now reachable.', __METHOD__);
+				} else {
+					return $this->sanitizeVideoStatus($activeAssetStatus);
+				}
 			}
 
 			if (!$this->hasMissingVideoPosters($asset) || $this->isVideoPosterStatusActive($status)) {
@@ -1555,13 +1567,21 @@ class Transcode extends Component
 
 		$activeStatus = $this->findActiveVideoStatusForFilenames($outputInfo['filenameCandidates'] ?? [$outputInfo['filename']], $statusKey);
 		if (!empty($activeStatus)) {
-			return $this->sanitizeVideoStatus($activeStatus);
+			if ($outputInfo['originalExists'] && $this->isOriginalVideoSourceRetryStatus($activeStatus)) {
+				Craft::info('Transcoder: ignoring queued source-retry status for ' . ($outputInfo['source'] ?? 'unknown') . ' because the original source is now reachable.', __METHOD__);
+			} else {
+				return $this->sanitizeVideoStatus($activeStatus);
+			}
 		}
 
 		if ($filePath instanceof Asset) {
 			$activeStatus = $this->findActiveVideoStatusForAsset($filePath, $statusKey, true, true);
 			if (!empty($activeStatus)) {
-				return $this->sanitizeVideoStatus($activeStatus);
+				if ($outputInfo['originalExists'] && $this->isOriginalVideoSourceRetryStatus($activeStatus)) {
+					Craft::info('Transcoder: ignoring queued source-retry status for asset ' . $filePath->id . ' because the original source is now reachable.', __METHOD__);
+				} else {
+					return $this->sanitizeVideoStatus($activeStatus);
+				}
 			}
 		}
 
@@ -1587,6 +1607,15 @@ class Transcode extends Component
 			&& ($storedStatus['status'] ?? null) === 'queued'
 			&& !$this->isRecentVideoStatus($storedStatus, 1800)
 		) {
+			$storedStatus = [];
+		}
+
+		if (!empty($storedStatus)
+			&& $outputInfo['originalExists']
+			&& in_array($storedStatus['status'] ?? null, ['queued', 'encoding'], true)
+			&& $this->isOriginalVideoSourceRetryStatus($storedStatus)
+		) {
+			Craft::info('Transcoder: clearing stored source-retry status for ' . ($outputInfo['source'] ?? 'unknown') . ' because the original source is now reachable.', __METHOD__);
 			$storedStatus = [];
 		}
 
@@ -5542,6 +5571,30 @@ class Transcode extends Component
 	protected function isVideoPosterStatusActive(array $status): bool
 	{
 		return in_array($status['posterStatus'] ?? null, ['queued', 'generating'], true);
+	}
+
+	/**
+	 * Return whether a queued status is only waiting for a previously missing source.
+	 *
+	 * @param array $status
+	 * @return bool
+	 */
+	protected function isOriginalVideoSourceRetryStatus(array $status): bool
+	{
+		$message = strtolower(implode(' ', array_filter(array_map(
+			static fn(mixed $value): string => is_scalar($value) ? (string)$value : '',
+			[
+				$status['info'] ?? '',
+				$status['error'] ?? '',
+				$status['retryLastError'] ?? '',
+				$status['posterMessage'] ?? '',
+				$status['posterError'] ?? '',
+				$status['posterLastError'] ?? '',
+			]
+		))));
+
+		return str_contains($message, 'original video source is not reachable yet')
+			|| str_contains($message, 'original video not found at');
 	}
 
 	/**
