@@ -102,6 +102,24 @@ class EncodeVideo extends BaseJob
             $settings = Transcoder::$plugin->getSettings();
 
             if ($settings->enableVideoEncoding) {
+                $preflightStatus = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
+                if (Transcoder::$plugin->transcode->isOriginalVideoMissingStatus($preflightStatus)) {
+                    Craft::info('Transcoder video queue job deferred because the original asset source is not reachable yet: ' . $this->assetId, __METHOD__);
+                    Transcoder::$plugin->transcode->writeVideoStatus(
+                        $asset,
+                        $this->videoOptions,
+                        [
+                            'status' => 'pending',
+                            'url' => '',
+                            'progress' => 0,
+                            'info' => 'Original video source is not reachable yet',
+                        ],
+                        $this->encodingOptions
+                    );
+                    $this->setProgress($queue, 1, Craft::t('transcoder', 'Original video source is not reachable yet'));
+                    return;
+                }
+
                 $this->setProgress($queue, 0, Craft::t('transcoder', 'Starting video encode'));
                 Transcoder::$plugin->transcode->writeVideoStatus(
                     $asset,

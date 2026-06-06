@@ -376,8 +376,16 @@ class Transcoder extends Plugin
             return;
         }
 
-        if ($this->transcode->isTemporaryUploadAsset($asset)) {
-            Craft::info('Transcoder: skipping temporary upload asset #' . $asset->id . ' until Craft moves it to its final folder.', __METHOD__);
+        if (!$this->transcode->isVideoQueueEnabled() && !$this->transcode->isGifQueueEnabled()) {
+            return;
+        }
+
+        if (!$this->transcode->isQueueableMediaAsset($asset)) {
+            return;
+        }
+
+        if ($this->transcode->shouldDeferAssetQueue($asset)) {
+            Craft::info('Transcoder: skipping asset #' . $asset->id . ' until Craft resolves its final source path or URL.', __METHOD__);
             return;
         }
 
@@ -386,10 +394,6 @@ class Transcoder extends Plugin
         }
 
         $this->queuedAssetSaveChecks[$asset->id] = true;
-
-        if (!$this->transcode->isVideoQueueEnabled() && !$this->transcode->isGifQueueEnabled()) {
-            return;
-        }
 
         $statuses = $this->transcode->queueMediaForAsset($asset);
         foreach ($statuses as $mediaType => $status) {

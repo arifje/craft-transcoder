@@ -729,6 +729,57 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return whether an asset can produce any queued media work.
+	 *
+	 * @param Asset $asset
+	 * @return bool
+	 */
+	public function isQueueableMediaAsset(Asset $asset): bool
+	{
+		return ($this->isVideoQueueEnabled() && $this->isVideoAsset($asset))
+			|| ($this->isGifQueueEnabled() && $this->isGifAsset($asset));
+	}
+
+	/**
+	 * Return whether queueing should wait for Craft to resolve the asset's final source.
+	 *
+	 * @param Asset $asset
+	 * @return bool
+	 */
+	public function shouldDeferAssetQueue(Asset $asset): bool
+	{
+		if (!$this->isQueueableMediaAsset($asset)) {
+			return false;
+		}
+
+		return $this->isTemporaryUploadAsset($asset);
+	}
+
+	/**
+	 * Return whether a status represents a missing original video source.
+	 *
+	 * @param array $status
+	 * @return bool
+	 */
+	public function isOriginalVideoMissingStatus(array $status): bool
+	{
+		return ($status['status'] ?? null) === 'error'
+			&& str_contains((string)($status['error'] ?? ''), 'Transcoder: original video not found at ');
+	}
+
+	/**
+	 * Return whether a status represents a missing original GIF source.
+	 *
+	 * @param array $status
+	 * @return bool
+	 */
+	public function isOriginalGifMissingStatus(array $status): bool
+	{
+		return ($status['status'] ?? null) === 'error'
+			&& str_contains((string)($status['error'] ?? ''), 'Transcoder: original GIF not found at ');
+	}
+
+	/**
 	 * Return the owner entry title for an asset related through a Matrix block.
 	 *
 	 * @param Asset $asset
@@ -887,10 +938,17 @@ class Transcode extends Component
 	 * @param array $videoOptions
 	 * @param array $encodingOptions
 	 * @param string|null $ownerTitle
+	 * @param bool $deferIfOriginalMissing
 	 * @return array
 	 * @throws InvalidConfigException
 	 */
-	public function queueVideoEncode(Asset $asset, array $videoOptions = [], array $encodingOptions = [], ?string $ownerTitle = null): array
+	public function queueVideoEncode(
+		Asset $asset,
+		array $videoOptions = [],
+		array $encodingOptions = [],
+		?string $ownerTitle = null,
+		bool $deferIfOriginalMissing = false
+	): array
 	{
 		$settings = Transcoder::$plugin->getSettings();
 		if (!$this->isRuntimeEncodingEnabled()) {
@@ -932,6 +990,11 @@ class Transcode extends Component
 		try {
 			$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
+			$originalMissing = $this->isOriginalVideoMissingStatus($status);
+			if ($originalMissing && !$deferIfOriginalMissing) {
+				return $status;
+			}
+
 			$activeAssetStatus = $this->findActiveVideoStatusForAsset($asset, $statusKey, true, true);
 			if (!empty($activeAssetStatus)) {
 				return $this->sanitizeVideoStatus($activeAssetStatus);
@@ -945,6 +1008,9 @@ class Transcode extends Component
 			$postersInProgress = $this->isVideoPosterStatusActive($status);
 			$queueVideo = $settings->enableVideoEncoding && !$videoComplete && !$videoInProgress;
 			$queuePosters = $settings->enableVideoPosters && $missingPosters && !$postersInProgress;
+			if ($originalMissing) {
+				unset($status['error']);
+			}
 
 			if (!$queueVideo && !$queuePosters) {
 				return $status;
@@ -952,9 +1018,15 @@ class Transcode extends Component
 
 			$videoQueueTtrSeconds = max(1, (int)$settings->videoQueueTtrSeconds);
 			$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
+			$videoQueueDelaySeconds = $originalMissing ? max(5, $videoPosterQueueDelaySeconds) : 0;
 
 			if ($queueVideo) {
-				$jobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->push(new EncodeVideo([
+				$queue = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds);
+				if ($videoQueueDelaySeconds > 0) {
+					$queue->delay($videoQueueDelaySeconds);
+				}
+
+				$jobId = $queue->push(new EncodeVideo([
 					'assetId' => $asset->id,
 					'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 					'videoOptions' => $videoOptions,
@@ -971,6 +1043,8 @@ class Transcode extends Component
 					'progress' => 0,
 					'jobId' => $jobId,
 					'queueTtrSeconds' => $videoQueueTtrSeconds,
+					'delay' => $videoQueueDelaySeconds,
+					'info' => $originalMissing ? 'Original video source is not reachable yet; queued a delayed retry' : ($status['info'] ?? ''),
 				]);
 			}
 
@@ -1060,6 +1134,10 @@ class Transcode extends Component
 		$queueLock = $this->acquireVideoQueueLock('video-asset-' . $asset->id);
 		try {
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
+			if ($this->isOriginalVideoMissingStatus($status)) {
+				return $status;
+			}
+
 			$activeAssetStatus = $this->findActiveVideoStatusForAsset($asset, $statusKey, false, true);
 			if (!empty($activeAssetStatus)) {
 				return $this->sanitizeVideoStatus($activeAssetStatus);
@@ -1116,7 +1194,9 @@ class Transcode extends Component
 			$statuses['video'] = $this->queueVideoEncode(
 				$asset,
 				$settings['autoEncodeVideoOptions'] ?? [],
-				$settings['autoEncodeEncodingOptions'] ?? []
+				$settings['autoEncodeEncodingOptions'] ?? [],
+				null,
+				true
 			);
 		}
 
@@ -1124,7 +1204,8 @@ class Transcode extends Component
 			$statuses['gif'] = $this->queueGifEncode(
 				$asset,
 				$settings['autoEncodeGifOptions'] ?? [],
-				max(0, (int)$settings->gifQueueDelaySeconds)
+				max(0, (int)$settings->gifQueueDelaySeconds),
+				true
 			);
 		}
 
@@ -1215,10 +1296,11 @@ class Transcode extends Component
 	 * @param Asset $asset
 	 * @param array $gifOptions
 	 * @param int $delay
+	 * @param bool $deferIfOriginalMissing
 	 * @return array
 	 * @throws InvalidConfigException
 	 */
-	public function queueGifEncode(Asset $asset, array $gifOptions = [], int $delay = 0): array
+	public function queueGifEncode(Asset $asset, array $gifOptions = [], int $delay = 0, bool $deferIfOriginalMissing = false): array
 	{
 		if (!$this->isRuntimeEncodingEnabled()) {
 			return [
@@ -1257,6 +1339,11 @@ class Transcode extends Component
 
 		$outputInfo = $this->getGifOutputInfo($asset, $gifOptions);
 		$status = $this->getGifStatusData($asset, $gifOptions);
+		$originalMissing = $this->isOriginalGifMissingStatus($status);
+		if ($originalMissing && !$deferIfOriginalMissing) {
+			return $status;
+		}
+
 		if (($status['status'] ?? null) === 'ok' && is_file($outputInfo['encodedFile']) && filesize($outputInfo['encodedFile']) > 0) {
 			return $status;
 		}
@@ -1276,6 +1363,9 @@ class Transcode extends Component
 			'jobId' => $jobId,
 			'delay' => $delay,
 		];
+		if ($originalMissing) {
+			$status['info'] = 'Original GIF source is not reachable yet; queued a delayed retry';
+		}
 		$this->writeGifStatus($asset, $gifOptions, $status);
 
 		return $status;

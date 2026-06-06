@@ -99,6 +99,27 @@ class GenerateVideoPosters extends BaseJob
         }
 
         try {
+            $preflightStatus = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
+            if (Transcoder::$plugin->transcode->isOriginalVideoMissingStatus($preflightStatus)) {
+                Craft::info('Transcoder poster queue job deferred because the original asset source is not reachable yet: ' . $this->assetId, __METHOD__);
+                Transcoder::$plugin->transcode->writeVideoPosterStatus(
+                    $asset,
+                    $this->videoOptions,
+                    [
+                        'status' => 'pending',
+                        'url' => '',
+                        'progress' => 0,
+                        'posterStatus' => 'pending',
+                        'posterProgress' => 0,
+                        'posterMessage' => Craft::t('transcoder', 'Original video source is not reachable yet'),
+                        'posterError' => '',
+                    ],
+                    $this->encodingOptions
+                );
+                $this->setProgress($queue, 1, Craft::t('transcoder', 'Original video source is not reachable yet'));
+                return;
+            }
+
             Transcoder::$plugin->transcode->writeVideoPosterStatus(
                 $asset,
                 $this->videoOptions,
