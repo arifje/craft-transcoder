@@ -102,8 +102,7 @@ class EncodeVideo extends BaseJob
             $settings = Transcoder::$plugin->getSettings();
 
             if ($settings->enableVideoEncoding) {
-                $preflightStatus = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
-                if (Transcoder::$plugin->transcode->isOriginalVideoMissingStatus($preflightStatus)) {
+                if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
                     Craft::info('Transcoder video queue job deferred because the original asset source is not reachable yet: ' . $this->assetId, __METHOD__);
                     Transcoder::$plugin->transcode->writeVideoStatus(
                         $asset,
@@ -136,6 +135,23 @@ class EncodeVideo extends BaseJob
 
                 $response = Transcoder::$plugin->transcode->getVideoUrl($asset, $this->videoOptions, true, $this->encodingOptions);
                 $status = json_decode($response, true);
+
+                if (is_array($status) && Transcoder::$plugin->transcode->isOriginalVideoMissingStatus($status)) {
+                    Craft::info('Transcoder video queue job deferred because the original asset source disappeared during startup: ' . $this->assetId, __METHOD__);
+                    Transcoder::$plugin->transcode->writeVideoStatus(
+                        $asset,
+                        $this->videoOptions,
+                        [
+                            'status' => 'pending',
+                            'url' => '',
+                            'progress' => 0,
+                            'info' => 'Original video source is not reachable yet',
+                        ],
+                        $this->encodingOptions
+                    );
+                    $this->setProgress($queue, 1, Craft::t('transcoder', 'Original video source is not reachable yet'));
+                    return;
+                }
 
                 if (is_array($status)) {
                     Transcoder::$plugin->transcode->writeVideoStatus(

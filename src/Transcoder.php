@@ -11,10 +11,12 @@
 namespace nystudio107\transcoder;
 
 use Craft;
+use craft\base\ElementInterface;
 use craft\base\Model;
 use craft\base\Plugin;
 use craft\console\Application as ConsoleApplication;
 use craft\elements\Asset;
+use craft\elements\Entry;
 use craft\events\DefineAssetThumbUrlEvent;
 use craft\events\ElementEvent;
 use craft\events\ModelEvent;
@@ -75,6 +77,13 @@ class Transcoder extends Plugin
      * @var array<int, bool>
      */
     protected array $queuedAssetSaveChecks = [];
+
+    /**
+     * Element IDs already inspected for queueing in the current request.
+     *
+     * @var array<int, bool>
+     */
+    protected array $queuedElementSaveChecks = [];
 
     // Public Properties
     // =========================================================================
@@ -313,12 +322,15 @@ class Transcoder extends Plugin
             Elements::class,
             Elements::EVENT_AFTER_SAVE_ELEMENT,
             function (ElementEvent $event) {
-                $asset = $event->element;
-                if (!$asset instanceof Asset) {
+                $element = $event->element;
+                if ($element instanceof Asset) {
+                    $this->queueMediaForSavedAsset($element);
                     return;
                 }
 
-                $this->queueMediaForSavedAsset($asset);
+                if ($element instanceof Entry) {
+                    $this->queueMediaForSavedElement($element);
+                }
             }
         );
         // Handler: Plugins::EVENT_AFTER_INSTALL_PLUGIN
@@ -405,6 +417,59 @@ class Transcoder extends Plugin
                         'mediaType' => $mediaType,
                         'id' => $asset->id,
                         'status' => $status['status'] ?? 'unknown',
+                    ]
+                ),
+                __METHOD__
+            );
+        }
+    }
+
+    /**
+     * Queue missing media encodes for a saved content element.
+     *
+     * @param ElementInterface $element
+     * @return void
+     */
+    protected function queueMediaForSavedElement(ElementInterface $element): void
+    {
+        if (!$element->id) {
+            return;
+        }
+
+        if (method_exists($element, 'getIsDraft') && $element->getIsDraft()) {
+            return;
+        }
+
+        if (method_exists($element, 'getIsRevision') && $element->getIsRevision()) {
+            return;
+        }
+
+        if (!$this->transcode->isVideoQueueEnabled() && !$this->transcode->isGifQueueEnabled()) {
+            return;
+        }
+
+        if (isset($this->queuedElementSaveChecks[$element->id])) {
+            return;
+        }
+
+        $this->queuedElementSaveChecks[$element->id] = true;
+
+        $queuedVideos = $this->transcode->isVideoQueueEnabled()
+            ? $this->transcode->queueVideoEncodesForElement($element)
+            : 0;
+        $queuedGifs = $this->transcode->isGifQueueEnabled()
+            ? $this->transcode->queueGifEncodesForElement($element)
+            : 0;
+
+        if ($queuedVideos > 0 || $queuedGifs > 0) {
+            Craft::info(
+                Craft::t(
+                    'transcoder',
+                    'Queued media encodes for element {id}: {videos} video(s), {gifs} GIF(s)',
+                    [
+                        'id' => $element->id,
+                        'videos' => $queuedVideos,
+                        'gifs' => $queuedGifs,
                     ]
                 ),
                 __METHOD__

@@ -67,8 +67,7 @@ class EncodeGif extends BaseJob
         }
 
         try {
-            $preflightStatus = Transcoder::$plugin->transcode->getGifStatusData($asset, $this->gifOptions);
-            if (Transcoder::$plugin->transcode->isOriginalGifMissingStatus($preflightStatus)) {
+            if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
                 Craft::info('Transcoder GIF queue job deferred because the original asset source is not reachable yet: ' . $this->assetId, __METHOD__);
                 Transcoder::$plugin->transcode->writeGifStatus(
                     $asset,
@@ -98,6 +97,22 @@ class EncodeGif extends BaseJob
 
             $response = Transcoder::$plugin->transcode->getGifUrl($asset, $this->gifOptions, true);
             $status = json_decode($response, true);
+
+            if (is_array($status) && Transcoder::$plugin->transcode->isOriginalGifMissingStatus($status)) {
+                Craft::info('Transcoder GIF queue job deferred because the original asset source disappeared during startup: ' . $this->assetId, __METHOD__);
+                Transcoder::$plugin->transcode->writeGifStatus(
+                    $asset,
+                    $this->gifOptions,
+                    [
+                        'status' => 'pending',
+                        'url' => '',
+                        'progress' => 0,
+                        'info' => 'Original GIF source is not reachable yet',
+                    ]
+                );
+                $this->setProgress($queue, 1, Craft::t('transcoder', 'Original GIF source is not reachable yet'));
+                return;
+            }
 
             if (is_array($status)) {
                 Transcoder::$plugin->transcode->writeGifStatus($asset, $this->gifOptions, $status);

@@ -23,6 +23,7 @@ return [
     'Original video source is not reachable yet' => 'Original video source is not reachable yet',
     'Original GIF source is not reachable yet' => 'Original GIF source is not reachable yet',
     'Temporary upload skipped' => 'Temporary upload skipped',
+    'Queued media encodes for element {id}: {videos} video(s), {gifs} GIF(s)' => 'Queued media encodes for element {id}: {videos} video(s), {gifs} GIF(s)',
     'Transcoder runtime settings saved.' => 'Transcoder runtime settings saved.',
     'Transcoder runtime settings saved. Stopped {count} active encode(s).' => 'Transcoder runtime settings saved. Stopped {count} active encode(s).',
     'Could not save Transcoder runtime settings.' => 'Could not save Transcoder runtime settings.',

@@ -756,6 +756,26 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return whether the original asset file is currently reachable.
+	 *
+	 * @param Asset $asset
+	 * @return bool
+	 */
+	public function isAssetOriginalAvailable(Asset $asset): bool
+	{
+		$normalized = $this->normalizeFilePath($asset);
+		if (!empty($normalized['path'])) {
+			return is_file($normalized['path']);
+		}
+
+		if (!empty($normalized['url'])) {
+			return $this->doesRemoteFileExist($normalized['url']);
+		}
+
+		return false;
+	}
+
+	/**
 	 * Return whether a status represents a missing original video source.
 	 *
 	 * @param array $status
@@ -990,7 +1010,7 @@ class Transcode extends Component
 		try {
 			$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
-			$originalMissing = $this->isOriginalVideoMissingStatus($status);
+			$originalMissing = !$this->isAssetOriginalAvailable($asset);
 			if ($originalMissing && !$deferIfOriginalMissing) {
 				return $status;
 			}
@@ -1134,7 +1154,7 @@ class Transcode extends Component
 		$queueLock = $this->acquireVideoQueueLock('video-asset-' . $asset->id);
 		try {
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
-			if ($this->isOriginalVideoMissingStatus($status)) {
+			if (!$this->isAssetOriginalAvailable($asset)) {
 				return $status;
 			}
 
@@ -1339,7 +1359,7 @@ class Transcode extends Component
 
 		$outputInfo = $this->getGifOutputInfo($asset, $gifOptions);
 		$status = $this->getGifStatusData($asset, $gifOptions);
-		$originalMissing = $this->isOriginalGifMissingStatus($status);
+		$originalMissing = !$this->isAssetOriginalAvailable($asset);
 		if ($originalMissing && !$deferIfOriginalMissing) {
 			return $status;
 		}
