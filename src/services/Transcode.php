@@ -928,10 +928,15 @@ class Transcode extends Component
 		}
 
 		$statusKey = $this->getVideoStatusKey($asset, $videoOptions, $encodingOptions);
-		$queueLock = $this->acquireVideoQueueLock($statusKey);
+		$queueLock = $this->acquireVideoQueueLock('video-asset-' . $asset->id);
 		try {
 			$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
+			$activeAssetStatus = $this->findActiveVideoStatusForAsset($asset, $statusKey, true, true);
+			if (!empty($activeAssetStatus)) {
+				return $this->sanitizeVideoStatus($activeAssetStatus);
+			}
+
 			$missingPosters = $settings->enableVideoPosters && $this->hasMissingVideoPosters($asset);
 			$videoComplete = ($status['status'] ?? null) === 'ok'
 				&& is_file($outputInfo['encodedFile'])
@@ -1052,9 +1057,14 @@ class Transcode extends Component
 		}
 
 		$statusKey = $this->getVideoStatusKey($asset, $videoOptions, $encodingOptions);
-		$queueLock = $this->acquireVideoQueueLock($statusKey);
+		$queueLock = $this->acquireVideoQueueLock('video-asset-' . $asset->id);
 		try {
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
+			$activeAssetStatus = $this->findActiveVideoStatusForAsset($asset, $statusKey, false, true);
+			if (!empty($activeAssetStatus)) {
+				return $this->sanitizeVideoStatus($activeAssetStatus);
+			}
+
 			if (!$this->hasMissingVideoPosters($asset) || $this->isVideoPosterStatusActive($status)) {
 				return $status;
 			}
@@ -1363,7 +1373,10 @@ class Transcode extends Component
 					'url' => '',
 					'progress' => 0,
 				], $failure);
-				$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+				$this->writeVideoStatusByKey(
+					$statusKey,
+					$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+				);
 				Craft::error($status['error'], __METHOD__);
 				return $this->sanitizeVideoStatus($status);
 			}
@@ -1384,7 +1397,10 @@ class Transcode extends Component
 					: $storedStatus['watermarkWarning'];
 				$status['watermarkWarning'] = $storedStatus['watermarkWarning'];
 			}
-			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+			);
 			return $this->sanitizeVideoStatus($status);
 		}
 
@@ -1397,7 +1413,10 @@ class Transcode extends Component
 				'progress' => 0,
 				'error' => 'Encoding failed due to a server error (process crashed, ffmpeg error)',
 			], $failure);
-			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+			);
 			Craft::error('Transcoder: ffmpeg process died unexpectedly for ' . ($outputInfo['source'] ?? 'unknown'), __METHOD__);
 			return $this->sanitizeVideoStatus($status);
 		}
@@ -1417,13 +1436,23 @@ class Transcode extends Component
 				$this->getVideoPosterStatusFields($storedStatus),
 				$this->getProgressData($outputInfo['filename'])
 			);
-			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+			);
 			return $this->sanitizeVideoStatus($status);
 		}
 
 		$activeStatus = $this->findActiveVideoStatusForFilenames($outputInfo['filenameCandidates'] ?? [$outputInfo['filename']], $statusKey);
 		if (!empty($activeStatus)) {
 			return $this->sanitizeVideoStatus($activeStatus);
+		}
+
+		if ($filePath instanceof Asset) {
+			$activeStatus = $this->findActiveVideoStatusForAsset($filePath, $statusKey, true, true);
+			if (!empty($activeStatus)) {
+				return $this->sanitizeVideoStatus($activeStatus);
+			}
 		}
 
 		if (!empty($storedStatus) && ($storedStatus['status'] ?? null) === 'ok') {
@@ -1487,6 +1516,7 @@ class Transcode extends Component
 		$storedStatus = $this->readVideoStatus($statusKey);
 		$status = array_merge($this->getVideoPosterStatusFields($storedStatus), $status);
 		$status = array_merge($this->getVideoStatusStorageInfo($outputInfo), $status);
+		$status = $this->addAssetStatusInfo($filePath, $status);
 
 		$this->writeVideoStatusByKey(
 			$statusKey,
@@ -1511,7 +1541,10 @@ class Transcode extends Component
 
 		$this->writeVideoStatusByKey(
 			$statusKey,
-			array_merge($this->getVideoStatusStorageInfo($outputInfo), $storedStatus, $status)
+			$this->addAssetStatusInfo(
+				$filePath,
+				array_merge($this->getVideoStatusStorageInfo($outputInfo), $storedStatus, $status)
+			)
 		);
 	}
 
@@ -2465,7 +2498,10 @@ class Transcode extends Component
 					'url' => '',
 					'progress' => 0,
 				], $failure);
-				$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+				$this->writeVideoStatusByKey(
+					$statusKey,
+					$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+				);
 				Craft::error($status['error'], __METHOD__);
 				return $this->sanitizeVideoStatus($status);
 			}
@@ -2479,7 +2515,10 @@ class Transcode extends Component
 			if (!$outputInfo['originalExists']) {
 				$status['warning'] = 'Original GIF missing, serving encoded version';
 			}
-			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+			);
 			return $this->sanitizeVideoStatus($status);
 		}
 
@@ -2492,7 +2531,10 @@ class Transcode extends Component
 				'progress' => 0,
 				'error' => 'GIF encoding failed due to a server error (process crashed, ffmpeg error)',
 			], $failure ?? []);
-			$this->writeVideoStatusByKey($statusKey, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status));
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+			);
 			Craft::error('Transcoder: ffmpeg process died unexpectedly for GIF ' . ($outputInfo['source'] ?? 'unknown'), __METHOD__);
 			return $this->sanitizeVideoStatus($status);
 		}
@@ -2560,7 +2602,10 @@ class Transcode extends Component
 	public function writeGifStatus(Asset|string $filePath, array $gifOptions, array $status): void
 	{
 		$outputInfo = $this->getGifOutputInfo($filePath, $gifOptions);
-		$status = array_merge($this->getVideoStatusStorageInfo($outputInfo), $status);
+		$status = $this->addAssetStatusInfo(
+			$filePath,
+			array_merge($this->getVideoStatusStorageInfo($outputInfo), $status)
+		);
 
 		$this->writeVideoStatusByKey($this->getGifStatusKey($filePath, $gifOptions), $status);
 	}
@@ -4969,6 +5014,22 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Add the asset id to stored status data when the source is a Craft asset.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $status
+	 * @return array
+	 */
+	protected function addAssetStatusInfo(Asset|string $filePath, array $status): array
+	{
+		if ($filePath instanceof Asset && $filePath->id) {
+			$status['assetId'] = (int)$filePath->id;
+		}
+
+		return $status;
+	}
+
+	/**
 	 * Find a recent queued/running encode for any equivalent source/options filename candidate.
 	 *
 	 * @param array $filenames
@@ -5017,6 +5078,77 @@ class Transcode extends Component
 			}
 
 			$this->removeEncodeTempFiles($lockFile, $progressFile);
+		}
+
+		return [];
+	}
+
+	/**
+	 * Find a recent queued/running video or poster status for the same Craft asset.
+	 *
+	 * GraphQL/CP saves can touch the same asset through multiple code paths. Those paths
+	 * may carry different options or owner-title context, so the status key/filename check
+	 * alone is not enough to stop duplicate queue jobs.
+	 *
+	 * @param Asset $asset
+	 * @param string|null $excludeKey
+	 * @param bool $includeVideo
+	 * @param bool $includePosters
+	 * @return array
+	 */
+	protected function findActiveVideoStatusForAsset(
+		Asset $asset,
+		?string $excludeKey = null,
+		bool $includeVideo = true,
+		bool $includePosters = true
+	): array
+	{
+		if (!$asset->id) {
+			return [];
+		}
+
+		$statusFiles = glob($this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . '*.json') ?: [];
+		foreach ($statusFiles as $statusFile) {
+			$status = JsonHelper::decodeIfJson((string)@file_get_contents($statusFile), true);
+			if (!is_array($status)) {
+				continue;
+			}
+
+			if ($excludeKey !== null && ($status['key'] ?? null) === $excludeKey) {
+				continue;
+			}
+
+			if ((int)($status['assetId'] ?? 0) !== (int)$asset->id) {
+				continue;
+			}
+
+			$filename = $status['filename'] ?? null;
+			if (!$filename && !empty($status['encodedFile'])) {
+				$filename = basename((string)$status['encodedFile']);
+			}
+
+			$videoState = $status['status'] ?? null;
+			$posterState = $status['posterStatus'] ?? null;
+			$videoActive = $includeVideo && in_array($videoState, ['queued', 'encoding'], true);
+			$posterActive = $includePosters && in_array($posterState, ['queued', 'generating'], true);
+			if (!$videoActive && !$posterActive) {
+				continue;
+			}
+
+			$lockFile = $status['lockFile'] ?? null;
+			$progressFile = $status['progressFile'] ?? null;
+			if ($videoActive && $lockFile && is_file($lockFile) && $this->isProcessRunningFromLockFile($lockFile)) {
+				return $filename ? array_merge($status, $this->getProgressData($filename)) : $status;
+			}
+
+			$maxAgeSeconds = $videoActive && $videoState === 'encoding' ? 60 : 1800;
+			if ($this->isRecentVideoStatus($status, $maxAgeSeconds)) {
+				return $status;
+			}
+
+			if ($videoActive) {
+				$this->removeEncodeTempFiles($lockFile, $progressFile);
+			}
 		}
 
 		return [];
