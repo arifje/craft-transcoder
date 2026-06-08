@@ -57,6 +57,8 @@ class Transcode extends Component
 
 	protected const MIN_VALID_VIDEO_FILE_SIZE = 16384;
 
+	protected const REMOTE_FILE_EXISTS_TIMEOUT_SECONDS = 1;
+
 	// Suffixes to add to the generated filename params
 	protected const SUFFIX_MAP = [
 		'videoFrameRate' => 'fps',
@@ -242,7 +244,7 @@ class Transcode extends Component
 
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved, $filePath instanceof Asset ? 5 : 1, 2);
+			$originalExists = $this->doesRemoteFileExist($filePathResolved);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
@@ -1802,9 +1804,17 @@ class Transcode extends Component
 	 * Checks if a remote file exists via HTTP.
 	 *
 	 * @param string $url The URL to check.
+	 * @param int $attempts
+	 * @param int $delaySeconds
+	 * @param int $timeoutSeconds
 	 * @return bool True if the file exists, false otherwise.
 	 */
-	private function doesRemoteFileExist(string $url, int $attempts = 1, int $delaySeconds = 0): bool
+	private function doesRemoteFileExist(
+		string $url,
+		int $attempts = 1,
+		int $delaySeconds = 0,
+		int $timeoutSeconds = self::REMOTE_FILE_EXISTS_TIMEOUT_SECONDS
+	): bool
 	{
 		// Bail early if not a valid absolute URL
 		if (!filter_var($url, FILTER_VALIDATE_URL)) {
@@ -1815,10 +1825,10 @@ class Transcode extends Component
 		$url = $this->addCustomParams($url);
 
 		$attempts = max(1, $attempts);
+		$delaySeconds = max(0, $delaySeconds);
+		$timeoutSeconds = max(1, $timeoutSeconds);
 		for ($attempt = 1; $attempt <= $attempts; $attempt++) {
-			$headers = @get_headers($url);
-
-			if ($headers && preg_match('/\s(200|206|302|303|307|308)\s/', $headers[0])) {
+			if ($this->remoteHeadExists($url, $timeoutSeconds)) {
 				return true;
 			}
 
@@ -1828,6 +1838,60 @@ class Transcode extends Component
 		}
 
 		return false;
+	}
+
+	/**
+	 * Execute a single timeout-bounded remote HEAD check.
+	 *
+	 * @param string $url
+	 * @param int $timeoutSeconds
+	 * @return bool
+	 */
+	private function remoteHeadExists(string $url, int $timeoutSeconds): bool
+	{
+		$allowedStatusCodes = [200, 206, 302, 303, 307, 308];
+
+		if (function_exists('curl_init')) {
+			$curl = curl_init($url);
+			if ($curl !== false) {
+				curl_setopt_array($curl, [
+					CURLOPT_NOBODY => true,
+					CURLOPT_RETURNTRANSFER => true,
+					CURLOPT_FOLLOWLOCATION => true,
+					CURLOPT_MAXREDIRS => 3,
+					CURLOPT_CONNECTTIMEOUT => $timeoutSeconds,
+					CURLOPT_TIMEOUT => $timeoutSeconds,
+					CURLOPT_USERAGENT => 'Craft Transcoder',
+				]);
+				curl_exec($curl);
+				$statusCode = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+				curl_close($curl);
+
+				return in_array($statusCode, $allowedStatusCodes, true);
+			}
+		}
+
+		$context = stream_context_create([
+			'http' => [
+				'method' => 'HEAD',
+				'timeout' => $timeoutSeconds,
+				'ignore_errors' => true,
+				'follow_location' => 1,
+				'max_redirects' => 3,
+				'header' => "User-Agent: Craft Transcoder\r\n",
+			],
+		]);
+		$headers = @get_headers($url, true, $context);
+		if (!$headers || empty($headers[0])) {
+			return false;
+		}
+
+		$statusLine = is_array($headers[0]) ? end($headers[0]) : $headers[0];
+		if (!is_string($statusLine)) {
+			return false;
+		}
+
+		return preg_match('/\s(' . implode('|', $allowedStatusCodes) . ')\s/', $statusLine) === 1;
 	}
 
 	/**
@@ -2850,7 +2914,7 @@ class Transcode extends Component
 
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved, $filePath instanceof Asset ? 5 : 1, 2);
+			$originalExists = $this->doesRemoteFileExist($filePathResolved);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
@@ -2925,7 +2989,7 @@ class Transcode extends Component
 	
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved, $filePath instanceof Asset ? 5 : 1, 2);
+			$originalExists = $this->doesRemoteFileExist($filePathResolved);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
@@ -4667,7 +4731,7 @@ class Transcode extends Component
 
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved, $filePath instanceof Asset ? 5 : 1, 2);
+			$originalExists = $this->doesRemoteFileExist($filePathResolved);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
