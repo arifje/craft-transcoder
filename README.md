@@ -198,6 +198,82 @@ Queue-aware GIF status:
 {% set progressUrl = craft.transcoder.getGifStatusUrl(image, gifOptions) %}
 ```
 
+## GraphQL / Headless
+
+Transcoder adds queue-aware fields to Craft's `AssetInterface`, so the same video, poster, and GIF helpers can be used from GraphQL in headless builds.
+
+Available asset fields:
+
+* `transcoderVideoStatus(videoOptions, encodingOptions, queueIfMissing, includeDebug)`
+* `transcoderVideoStatusUrl(videoOptions, encodingOptions)`
+* `transcoderVideoPosterUrl(formatHandle, generate)`
+* `transcoderVideoPosterUrls(generate)`
+* `transcoderGifStatus(gifOptions, queueIfMissing, includeDebug)`
+* `transcoderGifStatusUrl(gifOptions)`
+
+`videoOptions`, `encodingOptions`, and `gifOptions` are JSON-encoded strings. `queueIfMissing` defaults to `false`; when set to `true`, Transcoder still respects the runtime kill switch, the feature-specific enable/disable settings, and `encodingServerNames`.
+
+Example video query:
+
+```graphql
+query VideoAsset($assetId: [QueryArgument], $encodingOptions: String) {
+  asset(id: $assetId) {
+    id
+    url
+    transcoderVideoStatus(
+      encodingOptions: $encodingOptions
+      queueIfMissing: true
+      includeDebug: true
+    ) {
+      status
+      url
+      progress
+      error
+      warning
+      posterStatus
+      posterProgress
+      posterMessage
+      posterError
+      posterUrls {
+        handle
+        url
+      }
+      debugJson
+    }
+    transcoderVideoStatusUrl(encodingOptions: $encodingOptions)
+  }
+}
+```
+
+With variables:
+
+```json
+{
+  "assetId": 4893852,
+  "encodingOptions": "{\"watermark\":true}"
+}
+```
+
+Example GIF query:
+
+```graphql
+query GifAsset($assetId: [QueryArgument]) {
+  asset(id: $assetId) {
+    id
+    url
+    transcoderGifStatus(queueIfMissing: true) {
+      status
+      url
+      progress
+      error
+    }
+    transcoderGifStatusUrl
+  }
+}
+```
+
+For frontend progress polling, prefer `transcoderVideoStatusUrl` or `transcoderGifStatusUrl` after the initial GraphQL request. Craft GraphQL query results can be cached, which is useful for content queries but not for live queue progress.
+
 ## Documentation
 
 Click here -> [Transcoder Documentation](https://nystudio107.com/plugins/transcoder/documentation)

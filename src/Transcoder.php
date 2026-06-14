@@ -36,6 +36,7 @@ use craft\utilities\ClearCaches;
 use craft\web\twig\variables\CraftVariable;
 use craft\web\UrlManager;
 use craft\web\View;
+use nystudio107\transcoder\gql\TranscoderGql;
 use nystudio107\transcoder\models\Settings;
 use nystudio107\transcoder\services\ServicesTrait;
 use nystudio107\transcoder\utilities\EncodingUtility;
@@ -121,6 +122,8 @@ class Transcoder extends Plugin
         }
         // Add in our Craft components
         $this->addComponents();
+        // Register GraphQL fields
+        TranscoderGql::register();
         // Install our global event handlers
         $this->installEventHandlers();
         // Register settings page tabs
