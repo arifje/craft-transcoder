@@ -3567,11 +3567,22 @@ class Transcode extends Component
 			}
 		}
 
-		$watermarkFilters = $this->getWatermarkImageFilters($watermarkConfig, $duration);
-		$parts[] = '[1:v]' . $this->joinVideoFilters($watermarkFilters) . '[wm]';
+		$watermarkLabel = '[wm0]';
+		$parts[] = '[1:v]format=rgba' . $watermarkLabel;
+
+		$scale2RefFilter = $this->getWatermarkScale2RefFilter($watermarkConfig);
+		$parts[] = $watermarkLabel . $baseLabel . $scale2RefFilter . '[wmScaled][vwmref]';
+		$watermarkLabel = '[wmScaled]';
+		$baseLabel = '[vwmref]';
+
+		$watermarkFilters = $this->getWatermarkPostScaleFilters($watermarkConfig, $duration);
+		if (!empty($watermarkFilters)) {
+			$parts[] = $watermarkLabel . $this->joinVideoFilters($watermarkFilters) . '[wm]';
+			$watermarkLabel = '[wm]';
+		}
 
 		[$x, $y] = $this->getWatermarkOverlayExpressions($watermarkConfig);
-		$parts[] = $baseLabel . '[wm]overlay=x=' . $x . ':y=' . $y . ':eval=frame:shortest=1[vout]';
+		$parts[] = $baseLabel . $watermarkLabel . 'overlay=x=' . $x . ':y=' . $y . ':eval=frame:shortest=1[vout]';
 
 		return implode(';', $parts);
 	}
@@ -3668,29 +3679,22 @@ class Transcode extends Component
 	}
 
 	/**
-	 * Build filters for the watermark image input.
+	 * Build filters that should run after watermark scaling.
 	 *
 	 * @param array $watermarkConfig
 	 * @param float|null $duration
 	 * @return array
 	 */
-	protected function getWatermarkImageFilters(array $watermarkConfig, ?float $duration = null): array
+	protected function getWatermarkPostScaleFilters(array $watermarkConfig, ?float $duration = null): array
 	{
-		$filters = ['format=rgba'];
-		$scaleFilter = $this->getWatermarkScaleFilter($watermarkConfig);
-		if ($scaleFilter !== null && !($watermarkConfig['rasterizedSvg'] && in_array($watermarkConfig['animation'], ['rotate', 'pulse'], true))) {
-			$filters[] = $scaleFilter;
-		}
+		$filters = [];
 
 		switch ($watermarkConfig['animation']) {
 			case 'rotate':
 				$filters[] = 'rotate=2*PI*t/10:c=none:ow=rotw(iw):oh=roth(ih)';
-				if (!empty($watermarkConfig['rasterizedSvg']) && $scaleFilter !== null) {
-					$filters[] = $scaleFilter;
-				}
 				break;
 			case 'pulse':
-				$filters[] = $this->getWatermarkPulseScaleFilter($watermarkConfig);
+				// Pulse is handled inside scale2ref so it can stay proportional to the video frame.
 				break;
 			case 'fade-in':
 				$filters[] = 'fade=t=in:st=0:d=1:alpha=1';
@@ -3716,56 +3720,58 @@ class Transcode extends Component
 	}
 
 	/**
-	 * Return a dynamic pulse scale filter that keeps the configured ratio.
+	 * Return a scale2ref filter that sizes the watermark relative to the encoded video width.
+	 *
+	 * Configured watermark dimensions are treated as pixel values for a 720px-wide video.
+	 * ffmpeg scales them against the actual encoded frame so higher-resolution videos keep
+	 * the same visual watermark proportions.
 	 *
 	 * @param array $watermarkConfig
 	 * @return string
 	 */
-	protected function getWatermarkPulseScaleFilter(array $watermarkConfig): string
+	protected function getWatermarkScale2RefFilter(array $watermarkConfig): string
 	{
-		$pulse = '(1+0.04*sin(2*PI*t/3))';
 		$width = $watermarkConfig['width'];
 		$height = $watermarkConfig['height'];
 
+		$withPulse = $watermarkConfig['animation'] === 'pulse';
+		if ($width === null && $height === null) {
+			return 'scale2ref=w=' . $this->getWatermarkReferenceDimensionExpression('iw', $withPulse)
+				. ':h=' . $this->getWatermarkReferenceDimensionExpression('ih', $withPulse)
+				. ':eval=frame';
+		}
+
 		if ($width !== null && $height !== null) {
-			return 'scale=' . $width . '*' . $pulse . ':' . $height . '*' . $pulse . ':eval=frame';
+			return 'scale2ref=w=' . $this->getWatermarkReferenceDimensionExpression($width, $withPulse)
+				. ':h=' . $this->getWatermarkReferenceDimensionExpression($height, $withPulse)
+				. ':eval=frame';
 		}
 
 		if ($width !== null) {
-			return 'scale=' . $width . '*' . $pulse . ':-1:eval=frame';
+			return 'scale2ref=w=' . $this->getWatermarkReferenceDimensionExpression($width, $withPulse)
+				. ':h=-1:eval=frame';
 		}
 
-		if ($height !== null) {
-			return 'scale=-1:' . $height . '*' . $pulse . ':eval=frame';
-		}
-
-		return 'scale=iw*' . $pulse . ':ih*' . $pulse . ':eval=frame';
+		return 'scale2ref=w=-1:h=' . $this->getWatermarkReferenceDimensionExpression($height, $withPulse)
+			. ':eval=frame';
 	}
 
 	/**
-	 * Return a watermark image scale filter from configured dimensions.
+	 * Return a watermark dimension expression based on the encoded video width.
 	 *
-	 * @param array $watermarkConfig
-	 * @return string|null
+	 * @param int|string $dimension
+	 * @param bool $withPulse
+	 * @return string
 	 */
-	protected function getWatermarkScaleFilter(array $watermarkConfig): ?string
+	protected function getWatermarkReferenceDimensionExpression(int|string $dimension, bool $withPulse = false): string
 	{
-		$width = $watermarkConfig['width'];
-		$height = $watermarkConfig['height'];
+		$expression = $dimension . '*main_w/720';
 
-		if ($width === null && $height === null) {
-			return null;
+		if ($withPulse) {
+			$expression = '(' . $expression . ')*(1+0.04*sin(2*PI*t/3))';
 		}
 
-		if ($width !== null && $height !== null) {
-			return 'scale=' . $width . ':' . $height;
-		}
-
-		if ($width !== null) {
-			return 'scale=' . $width . ':-1';
-		}
-
-		return 'scale=-1:' . $height;
+		return $expression;
 	}
 
 	/**
@@ -3808,10 +3814,10 @@ class Transcode extends Component
 	 */
 	protected function getWatermarkPositionExpressions(string $position, array $watermarkConfig): array
 	{
-		$top = (string)$watermarkConfig['paddingTop'];
-		$right = (string)$watermarkConfig['paddingRight'];
-		$bottom = (string)$watermarkConfig['paddingBottom'];
-		$left = (string)$watermarkConfig['paddingLeft'];
+		$top = $this->getWatermarkPaddingExpression($watermarkConfig['paddingTop']);
+		$right = $this->getWatermarkPaddingExpression($watermarkConfig['paddingRight']);
+		$bottom = $this->getWatermarkPaddingExpression($watermarkConfig['paddingBottom']);
+		$left = $this->getWatermarkPaddingExpression($watermarkConfig['paddingLeft']);
 
 		return match ($position) {
 			'top-left' => [$left, $top],
@@ -3824,6 +3830,21 @@ class Transcode extends Component
 			'bottom-center' => ['(W-w)/2', 'H-h-' . $bottom],
 			default => ['W-w-' . $right, 'H-h-' . $bottom],
 		};
+	}
+
+	/**
+	 * Return a padding expression based on the encoded video width.
+	 *
+	 * @param int $pixels
+	 * @return string
+	 */
+	protected function getWatermarkPaddingExpression(int $pixels): string
+	{
+		if ($pixels <= 0) {
+			return '0';
+		}
+
+		return '(' . $pixels . '*W/720)';
 	}
 
 	/**

@@ -135,7 +135,7 @@
 
     {{ forms.textField({
         label: 'Watermark width'|t('transcoder'),
-        instructions: 'Width in pixels. Leave empty to use the original image width or preserve the ratio from height.'|t('transcoder'),
+        instructions: 'Width at a 720px video width. Transcoder scales this automatically for higher/lower resolution encodes. Leave empty to use the original image width at that baseline or preserve the ratio from height.'|t('transcoder'),
         warning: macros.configWarning('videoWatermarkWidth', 'transcoder'),
         id: 'videoWatermarkWidth',
         name: 'videoWatermarkWidth',
@@ -148,7 +148,7 @@
 
     {{ forms.textField({
         label: 'Watermark height'|t('transcoder'),
-        instructions: 'Height in pixels. Leave empty to use the original image height or preserve the ratio from width.'|t('transcoder'),
+        instructions: 'Height at a 720px video width. Transcoder scales this automatically for higher/lower resolution encodes. Leave empty to use the original image height at that baseline or preserve the ratio from width.'|t('transcoder'),
         warning: macros.configWarning('videoWatermarkHeight', 'transcoder'),
         id: 'videoWatermarkHeight',
         name: 'videoWatermarkHeight',

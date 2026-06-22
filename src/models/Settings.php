@@ -111,12 +111,12 @@ class Settings extends Model
     public string|bool|null $videoWatermarkUrl = '';
 
     /**
-     * @var int|string Watermark width in pixels, or empty for original width
+     * @var int|string Watermark width at 720px video width, or empty for original width at that baseline
      */
     public int|string $videoWatermarkWidth = '';
 
     /**
-     * @var int|string Watermark height in pixels, or empty for original height
+     * @var int|string Watermark height at 720px video width, or empty for original height at that baseline
      */
     public int|string $videoWatermarkHeight = '';
 

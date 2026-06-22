@@ -109,7 +109,8 @@ The **Watermark** settings tab supports:
 * Enable/disable watermarking.
 * Configure an environment-specific watermark path or URL.
 * PNG, JPG, and SVG source images.
-* Width/height settings, with empty values meaning auto/original.
+* Width/height settings, with empty values meaning auto/original at the 720px baseline.
+* Watermark dimensions and padding scale from a 720px video-width baseline so the logo keeps the same visual proportions on low and high resolution encodes.
 * Position options for all corners, edge centers, and center.
 * Top/right/bottom/left padding.
 * Opacity percentage.
