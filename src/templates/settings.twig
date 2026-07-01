@@ -66,6 +66,18 @@
     }) }}
 
     {{ forms.textField({
+        label: 'Video queue delay'|t('transcoder'),
+        instructions: 'Seconds to wait before starting video encode jobs queued by asset upload/save events. Keep this above 0 when another plugin renames/moves assets on save.'|t('transcoder'),
+        warning: macros.configWarning('videoQueueDelaySeconds', 'transcoder'),
+        id: 'videoQueueDelaySeconds',
+        name: 'videoQueueDelaySeconds',
+        value: settings.videoQueueDelaySeconds,
+        type: 'number',
+        min: 0,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
         label: 'Video encode retries'|t('transcoder'),
         instructions: 'How many times a failed video encode job should be retried before it is marked as failed.'|t('transcoder'),
         warning: macros.configWarning('videoEncodeMaxRetries', 'transcoder'),

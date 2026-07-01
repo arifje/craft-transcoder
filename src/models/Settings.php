@@ -253,6 +253,13 @@ class Settings extends Model
     public int $videoQueueTtrSeconds = 1800;
 
     /**
+     * Seconds to delay video encode jobs queued from asset upload/save events.
+     *
+     * @var int
+     */
+    public int $videoQueueDelaySeconds = 5;
+
+    /**
      * Number of retries after the initial video encode attempt fails.
      *
      * @var int
@@ -585,8 +592,9 @@ class Settings extends Model
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
             [['queueVideosOnSave', 'queueVideosOnEntrySave'], 'boolean'],
-            ['videoQueueTtrSeconds', 'integer'],
+            [['videoQueueTtrSeconds', 'videoQueueDelaySeconds'], 'integer'],
             ['videoQueueTtrSeconds', 'number', 'min' => 1],
+            ['videoQueueDelaySeconds', 'number', 'min' => 0],
             [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'integer'],
             [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'number', 'min' => 0],
             ['autoEncodeVideoFieldHandles', ArrayValidator::class],

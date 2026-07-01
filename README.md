@@ -55,6 +55,7 @@ Recent additions include:
 
 * Enable/disable video encoding from plugin settings.
 * Queue video encoding when a video asset is uploaded or saved.
+* Delay video jobs queued from asset upload/save events so asset renaming/moving plugins can settle the final filename before encoding starts.
 * Only queue video encoding for video assets.
 * Queue a missing encode from Twig/admin preview when enabled.
 * Restrict which web server names are allowed to start new encoding work.
@@ -66,6 +67,7 @@ Recent additions include:
 * Optional black-bar auto-cropping for videos that were uploaded inside a black canvas.
 * Configurable filename strategy: stable source-based filenames or option-based filenames.
 * Legacy filename checks so existing encoded files are reused instead of accidentally re-encoding archive content.
+* Completed asset-status checks so an encode created before a source filename rename can be reused instead of queued again.
 * Prefer local asset paths when available, with asset URL fallback for multi-server setups where files are not mounted locally.
 
 ### Video Posters

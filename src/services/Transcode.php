@@ -331,6 +331,22 @@ class Transcode extends Component
 			return JsonHelper::encode($response);
 		}
 
+		if ($filePath instanceof Asset) {
+			$completedAssetStatus = $this->findCompletedVideoStatusForAsset($filePath, [
+				'filename' => $destVideoFile,
+				'encodedFile' => $encodedFile,
+				'publicUrl' => $publicUrl,
+			]);
+			if (!empty($completedAssetStatus)) {
+				$this->writeVideoStatusByKey(
+					$statusKey,
+					$this->addAssetStatusInfo($filePath, $completedAssetStatus)
+				);
+
+				return JsonHelper::encode($this->sanitizeVideoStatus($completedAssetStatus));
+			}
+		}
+
 		// --- Case 2: check for stalled/crashed encoding ---
 		if (is_file($lockFile)) {
 			$pid = trim((string) @file_get_contents($lockFile));
@@ -965,6 +981,7 @@ class Transcode extends Component
 	 * @param array $encodingOptions
 	 * @param string|null $ownerTitle
 	 * @param bool $deferIfOriginalMissing
+	 * @param int|null $queueDelaySeconds
 	 * @return array
 	 * @throws InvalidConfigException
 	 */
@@ -973,7 +990,8 @@ class Transcode extends Component
 		array $videoOptions = [],
 		array $encodingOptions = [],
 		?string $ownerTitle = null,
-		bool $deferIfOriginalMissing = false
+		bool $deferIfOriginalMissing = false,
+		?int $queueDelaySeconds = null
 	): array
 	{
 		$settings = Transcoder::$plugin->getSettings();
@@ -1032,8 +1050,10 @@ class Transcode extends Component
 
 			$missingPosters = $settings->enableVideoPosters && $this->hasMissingVideoPosters($asset);
 			$videoComplete = ($status['status'] ?? null) === 'ok'
-				&& is_file($outputInfo['encodedFile'])
-				&& filesize($outputInfo['encodedFile']) > 0;
+				&& (
+					(is_file($outputInfo['encodedFile']) && filesize($outputInfo['encodedFile']) > 0)
+					|| !empty($status['url'])
+				);
 			$videoInProgress = in_array($status['status'] ?? null, ['queued', 'encoding'], true);
 			$postersInProgress = $this->isVideoPosterStatusActive($status);
 			$queueVideo = $settings->enableVideoEncoding && !$videoComplete && !$videoInProgress;
@@ -1048,7 +1068,10 @@ class Transcode extends Component
 
 			$videoQueueTtrSeconds = max(1, (int)$settings->videoQueueTtrSeconds);
 			$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
-			$videoQueueDelaySeconds = $originalMissing ? max(5, $videoPosterQueueDelaySeconds) : 0;
+			$videoQueueDelaySeconds = max(0, (int)($queueDelaySeconds ?? 0));
+			if ($originalMissing) {
+				$videoQueueDelaySeconds = max(5, $videoQueueDelaySeconds, $videoPosterQueueDelaySeconds);
+			}
 
 			if ($queueVideo) {
 				$queue = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds);
@@ -1230,7 +1253,8 @@ class Transcode extends Component
 				$settings['autoEncodeVideoOptions'] ?? [],
 				$settings['autoEncodeEncodingOptions'] ?? [],
 				null,
-				true
+				true,
+				max(0, (int)$settings->videoQueueDelaySeconds)
 			);
 		}
 
@@ -1526,6 +1550,22 @@ class Transcode extends Component
 				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
 			);
 			return $this->sanitizeVideoStatus($status);
+		}
+
+		if ($filePath instanceof Asset) {
+			$completedAssetStatus = $this->findCompletedVideoStatusForAsset($filePath, $outputInfo);
+			if (!empty($completedAssetStatus)) {
+				$status = array_merge([
+					'status' => 'ok',
+					'progress' => 100,
+				], $completedAssetStatus);
+				$this->writeVideoStatusByKey(
+					$statusKey,
+					$this->addAssetStatusInfo($filePath, $status)
+				);
+
+				return $this->sanitizeVideoStatus($status);
+			}
 		}
 
 		if ($this->isEncodeLockStale($outputInfo['lockFile'], $outputInfo['progressFile'])) {
@@ -5373,6 +5413,78 @@ class Transcode extends Component
 			if ($videoActive) {
 				$this->removeEncodeTempFiles($lockFile, $progressFile);
 			}
+		}
+
+		return [];
+	}
+
+	/**
+	 * Find a completed encoded video for the same Craft asset, even if it used an older source filename.
+	 *
+	 * Asset rename plugins can change the source filename after Transcoder has already queued an
+	 * encode from an asset-save event. When the filename strategy is source-based, a completed
+	 * encode for the same asset ID is safe to reuse instead of queueing a duplicate under the
+	 * renamed source filename.
+	 *
+	 * @param Asset $asset
+	 * @param array $outputInfo
+	 * @return array
+	 */
+	protected function findCompletedVideoStatusForAsset(Asset $asset, array $outputInfo): array
+	{
+		if (!$asset->id || (Transcoder::$plugin->getSettings()->videoFilenameStrategy ?: 'source') !== 'source') {
+			return [];
+		}
+
+		$expectedExtension = strtolower(pathinfo((string)($outputInfo['filename'] ?? ''), PATHINFO_EXTENSION));
+		$statusFiles = glob($this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . '*.json') ?: [];
+		foreach ($statusFiles as $statusFile) {
+			$status = JsonHelper::decodeIfJson((string)@file_get_contents($statusFile), true);
+			if (!is_array($status)) {
+				continue;
+			}
+
+			if ((int)($status['assetId'] ?? 0) !== (int)$asset->id || ($status['status'] ?? null) !== 'ok') {
+				continue;
+			}
+
+			$filename = $status['filename'] ?? null;
+			if (!$filename && !empty($status['encodedFile'])) {
+				$filename = basename((string)$status['encodedFile']);
+			}
+			if (!$filename) {
+				continue;
+			}
+
+			if ($expectedExtension !== '' && strtolower(pathinfo((string)$filename, PATHINFO_EXTENSION)) !== $expectedExtension) {
+				continue;
+			}
+
+			$encodedFile = $status['encodedFile'] ?? null;
+			if (!$encodedFile) {
+				$encodedFile = rtrim(dirname((string)$outputInfo['encodedFile']), DIRECTORY_SEPARATOR)
+					. DIRECTORY_SEPARATOR
+					. $filename;
+			}
+			if (!is_file($encodedFile) || filesize($encodedFile) <= 0) {
+				continue;
+			}
+
+			$publicUrl = $status['url'] ?? ($status['publicUrl'] ?? null);
+			if (!$publicUrl) {
+				$publicUrl = rtrim(dirname((string)$outputInfo['publicUrl']), '/') . '/' . $filename;
+			}
+
+			Craft::info('Transcoder: reusing completed encoded video ' . $filename . ' for renamed asset #' . $asset->id, __METHOD__);
+
+			return array_merge($status, [
+				'status' => 'ok',
+				'url' => $publicUrl,
+				'publicUrl' => $publicUrl,
+				'filename' => $filename,
+				'encodedFile' => $encodedFile,
+				'progress' => 100,
+			]);
 		}
 
 		return [];
