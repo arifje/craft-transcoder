@@ -257,7 +257,7 @@ class Settings extends Model
      *
      * @var int
      */
-    public int $videoQueueDelaySeconds = 5;
+    public int $videoQueueDelaySeconds = 10;
 
     /**
      * Number of retries after the initial video encode attempt fails.
