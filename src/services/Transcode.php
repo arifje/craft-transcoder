@@ -281,7 +281,7 @@ class Transcode extends Component
 		$videoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
 
 		$videoFilenameInput = $filePath instanceof Asset ? $filePath : ($filePathResolved ?? '');
-		$destVideoFile = $this->getFilename($videoFilenameInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions));
+		$destVideoFile = $this->getVideoEncodedFilename($videoFilenameInput, $videoOptions);
 		$videoFilenameCandidates = $this->getVideoFilenameCandidates(
 			$filePath,
 			$filePathResolved,
@@ -300,6 +300,16 @@ class Transcode extends Component
 
 		$lockFile     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock';
 		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
+		$outputInfo = [
+			'source' => $filePathResolved,
+			'originalExists' => $originalExists,
+			'filename' => $destVideoFile,
+			'encodedFile' => $encodedFile,
+			'publicUrl' => $publicUrl,
+			'lockFile' => $lockFile,
+			'progressFile' => $progressFile,
+			'filenameCandidates' => array_values(array_unique(array_merge([$destVideoFile], $videoFilenameCandidates))),
+		];
 		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 
 		if ($isDev) {
@@ -331,24 +341,18 @@ class Transcode extends Component
 			return JsonHelper::encode($response);
 		}
 
-		if ((!is_file($lockFile) || !$this->isProcessRunningFromLockFile($lockFile))
-			&& $this->isRemoteEncodedVideoAvailable([
-				'filename' => $destVideoFile,
-				'publicUrl' => $publicUrl,
-				'encodedFile' => $encodedFile,
-				'lockFile' => $lockFile,
-				'progressFile' => $progressFile,
-			])) {
+		$remoteOutputInfo = $this->findRemoteEncodedVideoOutputInfo($outputInfo);
+		if ($remoteOutputInfo !== null) {
 			if ($isDev) {
-				Craft::info("Encoded video found via public URL: $publicUrl", __METHOD__);
+				Craft::info("Encoded video found via public URL: {$remoteOutputInfo['publicUrl']}", __METHOD__);
 			}
 
-			@unlink($lockFile);
-			@unlink($progressFile);
+			@unlink($remoteOutputInfo['lockFile']);
+			@unlink($remoteOutputInfo['progressFile']);
 
 			$response = [
 				'status' => 'ok',
-				'url' => $publicUrl,
+				'url' => $remoteOutputInfo['publicUrl'],
 				'progress' => 100,
 				'detectedBy' => 'publicUrl',
 			];
@@ -357,13 +361,7 @@ class Transcode extends Component
 			}
 			$this->writeVideoStatusByKey(
 				$statusKey,
-				$this->addAssetStatusInfo($filePath, array_merge([
-					'filename' => $destVideoFile,
-					'publicUrl' => $publicUrl,
-					'encodedFile' => $encodedFile,
-					'lockFile' => $lockFile,
-					'progressFile' => $progressFile,
-				], $response))
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($remoteOutputInfo), $response))
 			);
 
 			return JsonHelper::encode($response);
@@ -1576,17 +1574,16 @@ class Transcode extends Component
 			return $this->sanitizeVideoStatus($status);
 		}
 
-		if ((!is_file($outputInfo['lockFile']) || !$this->isProcessRunningFromLockFile($outputInfo['lockFile']))
-			&& $this->isRemoteEncodedVideoAvailable($outputInfo)
-		) {
-			@unlink($outputInfo['lockFile']);
-			@unlink($outputInfo['progressFile']);
-			$status = $this->buildCompletedVideoStatus($outputInfo, $storedStatus, true);
+		$remoteOutputInfo = $this->findRemoteEncodedVideoOutputInfo($outputInfo);
+		if ($remoteOutputInfo !== null) {
+			@unlink($remoteOutputInfo['lockFile']);
+			@unlink($remoteOutputInfo['progressFile']);
+			$status = $this->buildCompletedVideoStatus($remoteOutputInfo, $storedStatus, true);
 			$this->writeVideoStatusByKey(
 				$statusKey,
-				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($remoteOutputInfo), $status))
 			);
-			Craft::info('Transcoder: encoded video found via public URL: ' . $outputInfo['publicUrl'], __METHOD__);
+			Craft::info('Transcoder: encoded video found via public URL: ' . $remoteOutputInfo['publicUrl'], __METHOD__);
 			return $this->sanitizeVideoStatus($status);
 		}
 
@@ -1784,7 +1781,7 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 
-		return 'video-' . sha1($this->getFilename($filePath, $videoOptions) . JsonHelper::encode($encodingOptions));
+		return 'video-' . sha1($this->getVideoEncodedFilename($filePath, $videoOptions) . JsonHelper::encode($encodingOptions));
 	}
 
 	/**
@@ -2624,7 +2621,7 @@ class Transcode extends Component
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 		$videoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
 
-		return $this->getFilename($filePath, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions));
+		return $this->getVideoEncodedFilename($filePath, $videoOptions);
 	}
 
 	/**
@@ -3360,10 +3357,17 @@ class Transcode extends Component
 	 * @return string
 	 * @throws InvalidConfigException
 	 */
-	protected function getFilename(Asset|string $filePath, array $options, ?array $excludeParams = null, bool $includeAssetId = false): string
+	protected function getFilename(
+		Asset|string $filePath,
+		array $options,
+		?array $excludeParams = null,
+		bool $includeAssetId = false,
+		?bool $useHashedNames = null
+	): string
 	{
 		$settings = Transcoder::$plugin->getSettings();
 		$excludeParams ??= self::EXCLUDE_PARAMS;
+		$useHashedNames ??= (bool)$settings['useHashedNames'];
 		$assetId = $includeAssetId && $filePath instanceof Asset ? $filePath->id : null;
 		$filePath = $this->getAssetPath($filePath);
 
@@ -3399,7 +3403,7 @@ class Transcode extends Component
 			}
 		}
 		// See if we should use a hash instead
-		if ($settings['useHashedNames']) {
+		if ($useHashedNames) {
 			$fileName = $pathParts['filename'] . md5($fileName);
 		}
 		
@@ -4853,10 +4857,9 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 		$videoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
-		$destVideoFile = $this->getFilename(
+		$destVideoFile = $this->getVideoEncodedFilename(
 			$filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''),
-			$videoOptions,
-			$this->getVideoFilenameExcludeParams($videoOptions)
+			$videoOptions
 		);
 		$videoFilenameCandidates = $this->getVideoFilenameCandidates(
 			$filePath,
@@ -4871,6 +4874,8 @@ class Transcode extends Component
 			$videoOptions,
 			$destVideoFile
 		);
+
+		$videoFilenameCandidates = array_values(array_unique(array_merge([$destVideoFile], $videoFilenameCandidates)));
 
 		return [
 			'source' => $filePathResolved,
@@ -4967,8 +4972,9 @@ class Transcode extends Component
 			}
 			$seenInputs[$inputKey] = true;
 
-			$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'source'));
-			$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'options'));
+			$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', false, false);
+			$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', false, true);
+			$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'options');
 			$candidates[] = $this->getFilename(
 				$legacyInput,
 				$videoOptions,
@@ -4976,8 +4982,9 @@ class Transcode extends Component
 			);
 
 			if ($legacyInput instanceof Asset) {
-				$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'source'), true);
-				$candidates[] = $this->getFilename($legacyInput, $videoOptions, $this->getVideoFilenameExcludeParams($videoOptions, 'options'), true);
+				$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', true, false);
+				$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', true, true);
+				$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'options', true);
 				$candidates[] = $this->getFilename(
 					$legacyInput,
 					$videoOptions,
@@ -5238,6 +5245,42 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return the encoded video filename for a strategy.
+	 *
+	 * Source-based video filenames intentionally ignore the legacy global
+	 * useHashedNames setting so the filename matches the current source asset.
+	 * Hashed source filenames are still checked as legacy candidates.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @param string|null $strategy
+	 * @param bool $includeAssetId
+	 * @param bool|null $useHashedNames
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	protected function getVideoEncodedFilename(
+		Asset|string $filePath,
+		array $videoOptions,
+		?string $strategy = null,
+		bool $includeAssetId = false,
+		?bool $useHashedNames = null
+	): string {
+		$strategy ??= Transcoder::$plugin->getSettings()->videoFilenameStrategy ?: 'source';
+		if ($useHashedNames === null && $strategy === 'source') {
+			$useHashedNames = false;
+		}
+
+		return $this->getFilename(
+			$filePath,
+			$videoOptions,
+			$this->getVideoFilenameExcludeParams($videoOptions, $strategy),
+			$includeAssetId,
+			$useHashedNames
+		);
+	}
+
+	/**
 	 * Return normalized server names allowed to start encode work.
 	 *
 	 * @return array
@@ -5336,22 +5379,68 @@ class Transcode extends Component
 	}
 
 	/**
-	 * Return whether the encoded video exists at its public URL.
+	 * Return output info for an encoded video that exists at a public URL.
 	 *
 	 * This lets frontend/load-balanced servers recover when local runtime status
 	 * is not shared but the encoded files are available through the public asset URL.
 	 *
 	 * @param array $outputInfo
-	 * @return bool
+	 * @param int $maxCandidates
+	 * @return array|null
 	 */
-	protected function isRemoteEncodedVideoAvailable(array $outputInfo): bool
+	protected function findRemoteEncodedVideoOutputInfo(array $outputInfo, int $maxCandidates = 4): ?array
 	{
-		$publicUrl = (string)($outputInfo['publicUrl'] ?? '');
-		if ($publicUrl === '') {
-			return false;
+		$checked = 0;
+		foreach ($this->getVideoOutputInfoCandidates($outputInfo) as $candidate) {
+			if (is_file($candidate['lockFile']) && $this->isProcessRunningFromLockFile($candidate['lockFile'])) {
+				continue;
+			}
+
+			$publicUrl = (string)($candidate['publicUrl'] ?? '');
+			if ($publicUrl === '') {
+				continue;
+			}
+
+			$checked++;
+			if ($this->doesRemoteFileExist($publicUrl, 1, 0)) {
+				return $candidate;
+			}
+
+			if ($checked >= $maxCandidates) {
+				break;
+			}
 		}
 
-		return $this->doesRemoteFileExist($publicUrl, 1, 0);
+		return null;
+	}
+
+	/**
+	 * Return output info variants for the primary and legacy video filename candidates.
+	 *
+	 * @param array $outputInfo
+	 * @return array
+	 */
+	protected function getVideoOutputInfoCandidates(array $outputInfo): array
+	{
+		$filenames = array_values(array_unique(array_filter(array_merge(
+			[(string)($outputInfo['filename'] ?? '')],
+			$outputInfo['filenameCandidates'] ?? []
+		))));
+
+		$encodedDir = rtrim(dirname((string)$outputInfo['encodedFile']), DIRECTORY_SEPARATOR);
+		$urlBase = rtrim(dirname((string)$outputInfo['publicUrl']), '/');
+		$candidates = [];
+		foreach ($filenames as $filename) {
+			$candidate = $outputInfo;
+			$candidate['filename'] = $filename;
+			$candidate['encodedFile'] = $encodedDir . DIRECTORY_SEPARATOR . $filename;
+			$candidate['publicUrl'] = $urlBase . '/' . $filename;
+			$candidate['lockFile'] = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.lock';
+			$candidate['progressFile'] = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.progress';
+			$candidates[] = $candidate;
+		}
+
+		return $candidates;
 	}
 
 	/**
@@ -5631,6 +5720,14 @@ class Transcode extends Component
 					$this->getFileDebugInfo($destVideoPath . $filename)
 				);
 			}
+			$publicUrlCandidates = [];
+			foreach (array_slice($this->getVideoOutputInfoCandidates($outputInfo), 0, 4) as $candidate) {
+				$publicUrlCandidates[] = [
+					'filename' => $candidate['filename'],
+					'url' => $candidate['publicUrl'],
+					'exists' => $this->doesRemoteFileExist($candidate['publicUrl'], 1, 0),
+				];
+			}
 
 			return [
 				'hostname' => gethostname() ?: '',
@@ -5651,6 +5748,7 @@ class Transcode extends Component
 					'url' => $outputInfo['publicUrl'],
 					'exists' => $this->doesRemoteFileExist($outputInfo['publicUrl'], 1, 1),
 				],
+				'publicUrlCandidates' => $publicUrlCandidates,
 				'lockFile' => array_merge(
 					$this->getFileDebugInfo($outputInfo['lockFile']),
 					['processRunning' => is_file($outputInfo['lockFile']) && $this->isProcessRunningFromLockFile($outputInfo['lockFile'])]
