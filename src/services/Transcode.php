@@ -331,6 +331,44 @@ class Transcode extends Component
 			return JsonHelper::encode($response);
 		}
 
+		if ((!is_file($lockFile) || !$this->isProcessRunningFromLockFile($lockFile))
+			&& $this->isRemoteEncodedVideoAvailable([
+				'filename' => $destVideoFile,
+				'publicUrl' => $publicUrl,
+				'encodedFile' => $encodedFile,
+				'lockFile' => $lockFile,
+				'progressFile' => $progressFile,
+			])) {
+			if ($isDev) {
+				Craft::info("Encoded video found via public URL: $publicUrl", __METHOD__);
+			}
+
+			@unlink($lockFile);
+			@unlink($progressFile);
+
+			$response = [
+				'status' => 'ok',
+				'url' => $publicUrl,
+				'progress' => 100,
+				'detectedBy' => 'publicUrl',
+			];
+			if (!$originalExists) {
+				$response['warning'] = "Original video missing, serving encoded version";
+			}
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, array_merge([
+					'filename' => $destVideoFile,
+					'publicUrl' => $publicUrl,
+					'encodedFile' => $encodedFile,
+					'lockFile' => $lockFile,
+					'progressFile' => $progressFile,
+				], $response))
+			);
+
+			return JsonHelper::encode($response);
+		}
+
 		if ($filePath instanceof Asset) {
 			$completedAssetStatus = $this->findCompletedVideoStatusForAsset($filePath, [
 				'filename' => $destVideoFile,
@@ -1530,25 +1568,25 @@ class Transcode extends Component
 			}
 			@unlink($outputInfo['lockFile']);
 			@unlink($outputInfo['progressFile']);
-			$status = [
-				'status' => 'ok',
-				'url' => $outputInfo['publicUrl'],
-				'progress' => 100,
-			];
-			$status = array_merge($status, $this->getVideoPosterStatusFields($storedStatus));
-			if (!$outputInfo['originalExists']) {
-				$status['warning'] = 'Original video missing, serving encoded version';
-			}
-			if (!empty($storedStatus['watermarkWarning'])) {
-				$status['warning'] = !empty($status['warning'])
-					? $status['warning'] . ' ' . $storedStatus['watermarkWarning']
-					: $storedStatus['watermarkWarning'];
-				$status['watermarkWarning'] = $storedStatus['watermarkWarning'];
-			}
+			$status = $this->buildCompletedVideoStatus($outputInfo, $storedStatus);
 			$this->writeVideoStatusByKey(
 				$statusKey,
 				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
 			);
+			return $this->sanitizeVideoStatus($status);
+		}
+
+		if ((!is_file($outputInfo['lockFile']) || !$this->isProcessRunningFromLockFile($outputInfo['lockFile']))
+			&& $this->isRemoteEncodedVideoAvailable($outputInfo)
+		) {
+			@unlink($outputInfo['lockFile']);
+			@unlink($outputInfo['progressFile']);
+			$status = $this->buildCompletedVideoStatus($outputInfo, $storedStatus, true);
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
+			);
+			Craft::info('Transcoder: encoded video found via public URL: ' . $outputInfo['publicUrl'], __METHOD__);
 			return $this->sanitizeVideoStatus($status);
 		}
 
@@ -5265,6 +5303,58 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return a completed video status from output info, preserving related status fields.
+	 *
+	 * @param array $outputInfo
+	 * @param array $storedStatus
+	 * @param bool $remoteDetected
+	 * @return array
+	 */
+	protected function buildCompletedVideoStatus(array $outputInfo, array $storedStatus = [], bool $remoteDetected = false): array
+	{
+		$status = [
+			'status' => 'ok',
+			'url' => $outputInfo['publicUrl'],
+			'progress' => 100,
+		];
+		if ($remoteDetected) {
+			$status['detectedBy'] = 'publicUrl';
+		}
+
+		$status = array_merge($status, $this->getVideoPosterStatusFields($storedStatus));
+		if (!$outputInfo['originalExists']) {
+			$status['warning'] = 'Original video missing, serving encoded version';
+		}
+		if (!empty($storedStatus['watermarkWarning'])) {
+			$status['warning'] = !empty($status['warning'])
+				? $status['warning'] . ' ' . $storedStatus['watermarkWarning']
+				: $storedStatus['watermarkWarning'];
+			$status['watermarkWarning'] = $storedStatus['watermarkWarning'];
+		}
+
+		return $status;
+	}
+
+	/**
+	 * Return whether the encoded video exists at its public URL.
+	 *
+	 * This lets frontend/load-balanced servers recover when local runtime status
+	 * is not shared but the encoded files are available through the public asset URL.
+	 *
+	 * @param array $outputInfo
+	 * @return bool
+	 */
+	protected function isRemoteEncodedVideoAvailable(array $outputInfo): bool
+	{
+		$publicUrl = (string)($outputInfo['publicUrl'] ?? '');
+		if ($publicUrl === '') {
+			return false;
+		}
+
+		return $this->doesRemoteFileExist($publicUrl, 1, 0);
+	}
+
+	/**
 	 * Remove internal filesystem paths from status responses.
 	 *
 	 * @param array $status
@@ -5466,13 +5556,13 @@ class Transcode extends Component
 					. DIRECTORY_SEPARATOR
 					. $filename;
 			}
-			if (!is_file($encodedFile) || filesize($encodedFile) <= 0) {
-				continue;
-			}
-
 			$publicUrl = $status['url'] ?? ($status['publicUrl'] ?? null);
 			if (!$publicUrl) {
 				$publicUrl = rtrim(dirname((string)$outputInfo['publicUrl']), '/') . '/' . $filename;
+			}
+			$encodedFileExists = is_file($encodedFile) && filesize($encodedFile) > 0;
+			if (!$encodedFileExists && !$this->doesRemoteFileExist($publicUrl, 1, 0)) {
+				continue;
 			}
 
 			Craft::info('Transcoder: reusing completed encoded video ' . $filename . ' for renamed asset #' . $asset->id, __METHOD__);
@@ -5484,6 +5574,7 @@ class Transcode extends Component
 				'filename' => $filename,
 				'encodedFile' => $encodedFile,
 				'progress' => 100,
+				'detectedBy' => $encodedFileExists ? ($status['detectedBy'] ?? 'localFile') : 'publicUrl',
 			]);
 		}
 
