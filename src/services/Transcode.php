@@ -238,13 +238,14 @@ class Transcode extends Component
 		$isDev = App::env('CRAFT_ENVIRONMENT') === 'development';
 
 		// --- Normalize input ---
+		$canStartEncoding = $this->canStartEncodingFromCurrentRequest();
 		$normalized = $this->normalizeFilePath($filePath);
 		$originalExists = false;
 		$filePathResolved = null;
 
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+			$originalExists = $canStartEncoding && $this->doesRemoteFileExist($filePathResolved);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
 			$originalExists = file_exists($filePathResolved);
@@ -310,12 +311,17 @@ class Transcode extends Component
 			'progressFile' => $progressFile,
 			'filenameCandidates' => array_values(array_unique(array_merge([$destVideoFile], $videoFilenameCandidates))),
 		];
-		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 
 		if ($isDev) {
 			Craft::info("Lock file: $lockFile", __METHOD__);
 			Craft::info("Progress file: $progressFile", __METHOD__);
 		}
+
+		if (!$canStartEncoding) {
+			return JsonHelper::encode($this->sanitizeVideoStatus($this->getReadOnlyVideoStatus($outputInfo)));
+		}
+
+		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 
 		// --- Case 1: encoded already exists (and finished) ---
 		if (is_file($encodedFile) && filesize($encodedFile) > 0 && !is_file($lockFile)) {
@@ -1486,6 +1492,7 @@ class Transcode extends Component
 		if ($queueIfMissing
 			&& $filePath instanceof Asset
 			&& $this->isRuntimeEncodingEnabled()
+			&& $this->canStartEncodingFromCurrentRequest()
 			&& (
 				($status['status'] ?? null) === 'pending'
 				|| (($status['status'] ?? null) === 'ok' && $missingPosters)
@@ -1540,7 +1547,12 @@ class Transcode extends Component
 			return $this->sanitizeVideoStatus($this->getTemporaryUploadStatus('video'));
 		}
 
-		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+		$canStartEncoding = $this->canStartEncodingFromCurrentRequest();
+		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions, $canStartEncoding);
+		if (!$canStartEncoding) {
+			return $this->sanitizeVideoStatus($this->getReadOnlyVideoStatus($outputInfo));
+		}
+
 		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 		$storedStatus = $this->readVideoStatus($statusKey);
 
@@ -4824,7 +4836,7 @@ class Transcode extends Component
 	 * @return array
 	 * @throws InvalidConfigException
 	 */
-	protected function getVideoOutputInfo(Asset|string $filePath, array $videoOptions): array
+	protected function getVideoOutputInfo(Asset|string $filePath, array $videoOptions, bool $checkOriginalExists = true): array
 	{
 		$settings = Transcoder::$plugin->getSettings();
 		$subfolder = $this->getSubfolderFromPath($filePath);
@@ -4834,10 +4846,10 @@ class Transcode extends Component
 
 		if (isset($normalized['url'])) {
 			$filePathResolved = $normalized['url'];
-			$originalExists = $this->doesRemoteFileExist($filePathResolved);
+			$originalExists = $checkOriginalExists && $this->doesRemoteFileExist($filePathResolved);
 		} elseif (isset($normalized['path'])) {
 			$filePathResolved = $normalized['path'];
-			$originalExists = file_exists($filePathResolved);
+			$originalExists = $checkOriginalExists && file_exists($filePathResolved);
 		}
 
 		if (!empty($subfolder)) {
@@ -5379,6 +5391,59 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return video status for servers that may not start or track encoding.
+	 *
+	 * @param array $outputInfo
+	 * @return array
+	 */
+	protected function getReadOnlyVideoStatus(array $outputInfo): array
+	{
+		$localOutputInfo = $this->findLocalEncodedVideoOutputInfo($outputInfo, false);
+		if ($localOutputInfo !== null) {
+			$localOutputInfo['originalExists'] = true;
+			$status = $this->buildCompletedVideoStatus($localOutputInfo);
+			$status['detectedBy'] = 'localFile';
+
+			return $status;
+		}
+
+		$remoteOutputInfo = $this->findRemoteEncodedVideoOutputInfo($outputInfo, 4, false);
+		if ($remoteOutputInfo !== null) {
+			$remoteOutputInfo['originalExists'] = true;
+			return $this->buildCompletedVideoStatus($remoteOutputInfo, [], true);
+		}
+
+		return [
+			'status' => 'pending',
+			'url' => '',
+			'progress' => 0,
+			'info' => Craft::t('transcoder', 'Encoded video is not available yet; this server is not allowed to encode.'),
+		];
+	}
+
+	/**
+	 * Return output info for an encoded video that exists locally.
+	 *
+	 * @param array $outputInfo
+	 * @param bool $respectLocks
+	 * @return array|null
+	 */
+	protected function findLocalEncodedVideoOutputInfo(array $outputInfo, bool $respectLocks = true): ?array
+	{
+		foreach ($this->getVideoOutputInfoCandidates($outputInfo) as $candidate) {
+			if ($respectLocks && is_file($candidate['lockFile']) && $this->isProcessRunningFromLockFile($candidate['lockFile'])) {
+				continue;
+			}
+
+			if (is_file($candidate['encodedFile']) && filesize($candidate['encodedFile']) >= self::MIN_VALID_VIDEO_FILE_SIZE) {
+				return $candidate;
+			}
+		}
+
+		return null;
+	}
+
+	/**
 	 * Return output info for an encoded video that exists at a public URL.
 	 *
 	 * This lets frontend/load-balanced servers recover when local runtime status
@@ -5388,11 +5453,11 @@ class Transcode extends Component
 	 * @param int $maxCandidates
 	 * @return array|null
 	 */
-	protected function findRemoteEncodedVideoOutputInfo(array $outputInfo, int $maxCandidates = 4): ?array
+	protected function findRemoteEncodedVideoOutputInfo(array $outputInfo, int $maxCandidates = 4, bool $respectLocks = true): ?array
 	{
 		$checked = 0;
 		foreach ($this->getVideoOutputInfoCandidates($outputInfo) as $candidate) {
-			if (is_file($candidate['lockFile']) && $this->isProcessRunningFromLockFile($candidate['lockFile'])) {
+			if ($respectLocks && is_file($candidate['lockFile']) && $this->isProcessRunningFromLockFile($candidate['lockFile'])) {
 				continue;
 			}
 
