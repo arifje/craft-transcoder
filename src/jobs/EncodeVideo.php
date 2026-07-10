@@ -186,6 +186,9 @@ class EncodeVideo extends BaseJob
     protected function waitForVideoEncode(mixed $queue, Asset $asset, array $initialStatus): void
     {
         if (($initialStatus['status'] ?? null) === 'ok') {
+            if (!Transcoder::$plugin->transcode->isVideoStatusCurrentForAsset($asset, $this->videoOptions, $initialStatus)) {
+                throw new \RuntimeException(Craft::t('transcoder', 'Asset filename changed during encoding; retrying with the current source filename'));
+            }
             $this->setProgress($queue, 1, Craft::t('transcoder', 'Video encode complete'));
             return;
         }
@@ -203,6 +206,9 @@ class EncodeVideo extends BaseJob
             $progress = is_numeric($rawProgress) ? (int)$rawProgress : 0;
 
             if ($state === 'ok') {
+                if (!Transcoder::$plugin->transcode->isVideoStatusCurrentForAsset($asset, $this->videoOptions, $status)) {
+                    throw new \RuntimeException(Craft::t('transcoder', 'Asset filename changed during encoding; retrying with the current source filename'));
+                }
                 $this->setProgress($queue, 1, Craft::t('transcoder', 'Video encode complete'));
                 return;
             }
@@ -308,6 +314,7 @@ class EncodeVideo extends BaseJob
             'ffmpeg log contains errors',
             'original video source is not reachable yet',
             'original video not found',
+            'asset filename changed during encoding',
         ];
 
         foreach ($retryableNeedles as $needle) {
