@@ -59,6 +59,8 @@ class Transcode extends Component
 
 	protected const REMOTE_FILE_EXISTS_TIMEOUT_SECONDS = 1;
 
+	protected const VIDEO_MANIFEST_FILENAME = 'transcoder-video-manifest.json';
+
 	// Suffixes to add to the generated filename params
 	protected const SUFFIX_MAP = [
 		'videoFrameRate' => 'fps',
@@ -304,6 +306,7 @@ class Transcode extends Component
 		$outputInfo = [
 			'source' => $filePathResolved,
 			'originalExists' => $originalExists,
+			'assetId' => $filePath instanceof Asset && $filePath->id ? (int)$filePath->id : null,
 			'filename' => $destVideoFile,
 			'encodedFile' => $encodedFile,
 			'publicUrl' => $publicUrl,
@@ -317,11 +320,12 @@ class Transcode extends Component
 			Craft::info("Progress file: $progressFile", __METHOD__);
 		}
 
+		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
+		$outputInfo['statusKey'] = $statusKey;
+
 		if (!$canStartEncoding) {
 			return JsonHelper::encode($this->sanitizeVideoStatus($this->getReadOnlyVideoStatus($outputInfo)));
 		}
-
-		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 
 		// --- Case 1: encoded already exists (and finished) ---
 		if (is_file($encodedFile) && filesize($encodedFile) > 0 && !is_file($lockFile)) {
@@ -378,6 +382,7 @@ class Transcode extends Component
 				'filename' => $destVideoFile,
 				'encodedFile' => $encodedFile,
 				'publicUrl' => $publicUrl,
+				'assetId' => $filePath->id ? (int)$filePath->id : null,
 			]);
 			if (!empty($completedAssetStatus)) {
 				$this->writeVideoStatusByKey(
@@ -387,6 +392,16 @@ class Transcode extends Component
 
 				return JsonHelper::encode($this->sanitizeVideoStatus($completedAssetStatus));
 			}
+		}
+
+		$manifestStatus = $this->findCompletedVideoManifestStatus($outputInfo);
+		if (!empty($manifestStatus)) {
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, $manifestStatus)
+			);
+
+			return JsonHelper::encode($this->sanitizeVideoStatus($manifestStatus));
 		}
 
 		// --- Case 2: check for stalled/crashed encoding ---
@@ -1549,11 +1564,12 @@ class Transcode extends Component
 
 		$canStartEncoding = $this->canStartEncodingFromCurrentRequest();
 		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions, $canStartEncoding);
+		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
+		$outputInfo['statusKey'] = $statusKey;
 		if (!$canStartEncoding) {
 			return $this->sanitizeVideoStatus($this->getReadOnlyVideoStatus($outputInfo));
 		}
 
-		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
 		$storedStatus = $this->readVideoStatus($statusKey);
 
 		if (is_file($outputInfo['encodedFile'])
@@ -1613,6 +1629,16 @@ class Transcode extends Component
 
 				return $this->sanitizeVideoStatus($status);
 			}
+		}
+
+		$manifestStatus = $this->findCompletedVideoManifestStatus($outputInfo);
+		if (!empty($manifestStatus)) {
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, $manifestStatus)
+			);
+
+			return $this->sanitizeVideoStatus($manifestStatus);
 		}
 
 		if ($this->isEncodeLockStale($outputInfo['lockFile'], $outputInfo['progressFile'])) {
@@ -4892,6 +4918,7 @@ class Transcode extends Component
 		return [
 			'source' => $filePathResolved,
 			'originalExists' => $originalExists,
+			'assetId' => $filePath instanceof Asset && $filePath->id ? (int)$filePath->id : null,
 			'filename' => $destVideoFile,
 			'encodedFile' => $destVideoPath . $destVideoFile,
 			'publicUrl' => $urlBase . '/' . $destVideoFile,
@@ -5407,6 +5434,11 @@ class Transcode extends Component
 			return $status;
 		}
 
+		$manifestStatus = $this->findCompletedVideoManifestStatus($outputInfo);
+		if (!empty($manifestStatus)) {
+			return $manifestStatus;
+		}
+
 		$remoteOutputInfo = $this->findRemoteEncodedVideoOutputInfo($outputInfo, 4, false);
 		if ($remoteOutputInfo !== null) {
 			$remoteOutputInfo['originalExists'] = true;
@@ -5419,6 +5451,201 @@ class Transcode extends Component
 			'progress' => 0,
 			'info' => Craft::t('transcoder', 'Encoded video is not available yet; this server is not allowed to encode.'),
 		];
+	}
+
+	/**
+	 * Find a completed encoded video using the shared manifest stored beside encoded files.
+	 *
+	 * This bridges source-based filenames when another plugin renames the original
+	 * asset after an encode was queued. Runtime status files are per-backend, but
+	 * the encoded video folder is the shared source of truth for frontend servers.
+	 *
+	 * @param array $outputInfo
+	 * @return array
+	 */
+	protected function findCompletedVideoManifestStatus(array $outputInfo): array
+	{
+		$assetId = (int)($outputInfo['assetId'] ?? 0);
+		if ($assetId <= 0) {
+			return [];
+		}
+
+		$manifest = $this->readEncodedVideoManifest($outputInfo);
+		$records = $manifest['videos'][(string)$assetId] ?? [];
+		if (!is_array($records)) {
+			return [];
+		}
+
+		$expectedExtension = strtolower(pathinfo((string)($outputInfo['filename'] ?? ''), PATHINFO_EXTENSION));
+		$currentStrategy = Transcoder::$plugin->getSettings()->videoFilenameStrategy ?: 'source';
+		$currentStatusKey = (string)($outputInfo['statusKey'] ?? '');
+		$filenameCandidates = array_flip(array_filter(array_unique(array_merge(
+			[(string)($outputInfo['filename'] ?? '')],
+			$outputInfo['filenameCandidates'] ?? []
+		))));
+		foreach ($records as $record) {
+			if (!is_array($record)) {
+				continue;
+			}
+
+			$filename = (string)($record['filename'] ?? '');
+			if ($filename === '') {
+				continue;
+			}
+			if ($expectedExtension !== '' && strtolower(pathinfo($filename, PATHINFO_EXTENSION)) !== $expectedExtension) {
+				continue;
+			}
+			if ($currentStrategy === 'options'
+				&& !isset($filenameCandidates[$filename])
+				&& ($currentStatusKey === '' || (string)($record['statusKey'] ?? '') !== $currentStatusKey)
+			) {
+				continue;
+			}
+
+			$candidate = $this->getVideoOutputInfoForFilename($outputInfo, $filename);
+			$localExists = is_file($candidate['encodedFile']) && filesize($candidate['encodedFile']) >= self::MIN_VALID_VIDEO_FILE_SIZE;
+			$remoteExists = !$localExists && $this->doesRemoteFileExist($candidate['publicUrl'], 1, 0);
+			if (!$localExists && !$remoteExists) {
+				continue;
+			}
+
+			$candidate['originalExists'] = true;
+			$status = $this->buildCompletedVideoStatus($candidate, [], $remoteExists);
+			$status['assetId'] = $assetId;
+			$status['detectedBy'] = $localExists ? 'manifestLocalFile' : 'manifestPublicUrl';
+
+			return array_merge($this->getVideoStatusStorageInfo($candidate), $status);
+		}
+
+		return [];
+	}
+
+	/**
+	 * Return output info for a specific encoded video filename.
+	 *
+	 * @param array $outputInfo
+	 * @param string $filename
+	 * @return array
+	 */
+	protected function getVideoOutputInfoForFilename(array $outputInfo, string $filename): array
+	{
+		$candidate = $outputInfo;
+		$encodedDir = rtrim(dirname((string)$outputInfo['encodedFile']), DIRECTORY_SEPARATOR);
+		$urlBase = rtrim(dirname((string)$outputInfo['publicUrl']), '/');
+		$candidate['filename'] = $filename;
+		$candidate['encodedFile'] = $encodedDir . DIRECTORY_SEPARATOR . $filename;
+		$candidate['publicUrl'] = $urlBase . '/' . $filename;
+		$candidate['lockFile'] = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.lock';
+		$candidate['progressFile'] = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.progress';
+
+		return $candidate;
+	}
+
+	/**
+	 * Read the shared encoded-video manifest locally or via its public URL.
+	 *
+	 * @param array $outputInfo
+	 * @return array
+	 */
+	protected function readEncodedVideoManifest(array $outputInfo): array
+	{
+		$manifestPath = $this->getEncodedVideoManifestPath($outputInfo);
+		if (is_file($manifestPath)) {
+			$manifest = JsonHelper::decodeIfJson((string)@file_get_contents($manifestPath), true);
+			if (is_array($manifest)) {
+				return $manifest;
+			}
+		}
+
+		$manifestUrl = $this->getEncodedVideoManifestUrl($outputInfo);
+		if ($manifestUrl === '') {
+			return [];
+		}
+
+		return $this->readEncodedVideoManifestFromUrl($manifestUrl);
+	}
+
+	/**
+	 * Fetch a shared manifest from the public encoded-video URL.
+	 *
+	 * @param string $url
+	 * @return array
+	 */
+	protected function readEncodedVideoManifestFromUrl(string $url): array
+	{
+		if (!filter_var($url, FILTER_VALIDATE_URL)) {
+			return [];
+		}
+
+		$url = $this->addCustomParams($url);
+		$body = false;
+
+		if (function_exists('curl_init')) {
+			$curl = curl_init($url);
+			if ($curl !== false) {
+				curl_setopt_array($curl, [
+					CURLOPT_RETURNTRANSFER => true,
+					CURLOPT_FOLLOWLOCATION => true,
+					CURLOPT_MAXREDIRS => 3,
+					CURLOPT_CONNECTTIMEOUT => self::REMOTE_FILE_EXISTS_TIMEOUT_SECONDS,
+					CURLOPT_TIMEOUT => self::REMOTE_FILE_EXISTS_TIMEOUT_SECONDS,
+					CURLOPT_USERAGENT => 'Craft Transcoder',
+				]);
+				$body = curl_exec($curl);
+				$statusCode = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+				curl_close($curl);
+				if (!in_array($statusCode, [200, 206], true)) {
+					$body = false;
+				}
+			}
+		}
+
+		if ($body === false) {
+			$context = stream_context_create([
+				'http' => [
+					'method' => 'GET',
+					'timeout' => self::REMOTE_FILE_EXISTS_TIMEOUT_SECONDS,
+					'ignore_errors' => false,
+					'follow_location' => 1,
+					'max_redirects' => 3,
+					'header' => "User-Agent: Craft Transcoder\r\n",
+				],
+			]);
+			$body = @file_get_contents($url, false, $context);
+		}
+
+		$manifest = is_string($body) ? JsonHelper::decodeIfJson($body, true) : null;
+
+		return is_array($manifest) ? $manifest : [];
+	}
+
+	/**
+	 * Return the local path of the encoded-video manifest.
+	 *
+	 * @param array $outputInfo
+	 * @return string
+	 */
+	protected function getEncodedVideoManifestPath(array $outputInfo): string
+	{
+		return rtrim(dirname((string)$outputInfo['encodedFile']), DIRECTORY_SEPARATOR)
+			. DIRECTORY_SEPARATOR
+			. self::VIDEO_MANIFEST_FILENAME;
+	}
+
+	/**
+	 * Return the public URL of the encoded-video manifest.
+	 *
+	 * @param array $outputInfo
+	 * @return string
+	 */
+	protected function getEncodedVideoManifestUrl(array $outputInfo): string
+	{
+		$publicUrl = (string)($outputInfo['publicUrl'] ?? '');
+		if ($publicUrl === '') {
+			return '';
+		}
+
+		return rtrim(dirname($publicUrl), '/') . '/' . self::VIDEO_MANIFEST_FILENAME;
 	}
 
 	/**
@@ -5820,6 +6047,7 @@ class Transcode extends Component
 				),
 				'progressFile' => $this->getFileDebugInfo($outputInfo['progressFile']),
 				'candidateFiles' => $candidateFiles,
+				'videoManifest' => $this->getVideoManifestDebug($outputInfo),
 				'videoPosters' => $this->getVideoPosterStatusDebug($filePath),
 				'watermark' => $this->getVideoWatermarkStatusDebug($encodingOptions),
 				'storedStatusAgeSeconds' => isset($storedStatus['updatedAt']) ? max(0, time() - (int)$storedStatus['updatedAt']) : null,
@@ -5832,6 +6060,36 @@ class Transcode extends Component
 				'error' => $e->getMessage(),
 			];
 		}
+	}
+
+	/**
+	 * Return admin-only debug information for the shared encoded-video manifest.
+	 *
+	 * @param array $outputInfo
+	 * @return array
+	 */
+	protected function getVideoManifestDebug(array $outputInfo): array
+	{
+		$assetId = (int)($outputInfo['assetId'] ?? 0);
+		$manifestPath = $this->getEncodedVideoManifestPath($outputInfo);
+		$manifestUrl = $this->getEncodedVideoManifestUrl($outputInfo);
+		$manifest = $this->readEncodedVideoManifest($outputInfo);
+		$records = $assetId > 0 && isset($manifest['videos'][(string)$assetId]) && is_array($manifest['videos'][(string)$assetId])
+			? $manifest['videos'][(string)$assetId]
+			: [];
+
+		return [
+			'assetId' => $assetId ?: null,
+			'filename' => self::VIDEO_MANIFEST_FILENAME,
+			'path' => $this->getFileDebugInfo($manifestPath),
+			'url' => [
+				'url' => $manifestUrl,
+				'exists' => $manifestUrl !== '' && $this->doesRemoteFileExist($manifestUrl, 1, 0),
+			],
+			'manifestUpdatedAt' => $manifest['updatedAt'] ?? null,
+			'assetRecordCount' => count($records),
+			'assetRecords' => array_slice($records, 0, 5),
+		];
 	}
 
 	/**
@@ -6314,8 +6572,101 @@ class Transcode extends Component
 		try {
 			FileHelper::createDirectory($this->getVideoStatusDirectory());
 			file_put_contents($this->getVideoStatusPath($key), JsonHelper::encode($status));
+			$this->writeEncodedVideoManifestRecord($status);
 		} catch (Throwable $e) {
 			Craft::error($e->getMessage(), __METHOD__);
+		}
+	}
+
+	/**
+	 * Write a shared encoded-video manifest record beside the encoded file.
+	 *
+	 * The manifest is intentionally stored with the encoded videos, not in Craft
+	 * runtime storage, so read-only frontend backends can resolve completed
+	 * encodes by asset ID without starting queue work or relying on local status.
+	 *
+	 * @param array $status
+	 * @return void
+	 */
+	protected function writeEncodedVideoManifestRecord(array $status): void
+	{
+		if (($status['status'] ?? null) !== 'ok') {
+			return;
+		}
+
+		$assetId = (int)($status['assetId'] ?? 0);
+		$filename = (string)($status['filename'] ?? '');
+		$encodedFile = (string)($status['encodedFile'] ?? '');
+		if ($assetId <= 0 || $filename === '' || $encodedFile === '') {
+			return;
+		}
+
+		$manifestPath = rtrim(dirname($encodedFile), DIRECTORY_SEPARATOR)
+			. DIRECTORY_SEPARATOR
+			. self::VIDEO_MANIFEST_FILENAME;
+		$manifestDir = dirname($manifestPath);
+
+		try {
+			FileHelper::createDirectory($manifestDir);
+			$handle = @fopen($manifestPath, 'c+');
+			if ($handle === false) {
+				Craft::warning('Unable to open Transcoder video manifest: ' . $manifestPath, __METHOD__);
+				return;
+			}
+
+			try {
+				if (!flock($handle, LOCK_EX)) {
+					Craft::warning('Unable to lock Transcoder video manifest: ' . $manifestPath, __METHOD__);
+					return;
+				}
+
+				$contents = stream_get_contents($handle);
+				$manifest = is_string($contents) ? JsonHelper::decodeIfJson($contents, true) : null;
+				if (!is_array($manifest)) {
+					$manifest = [];
+				}
+
+				$manifest['version'] = 1;
+				$manifest['updatedAt'] = time();
+				if (empty($manifest['videos']) || !is_array($manifest['videos'])) {
+					$manifest['videos'] = [];
+				}
+
+				$assetKey = (string)$assetId;
+				$records = $manifest['videos'][$assetKey] ?? [];
+				if (!is_array($records)) {
+					$records = [];
+				}
+
+				$publicUrl = (string)($status['url'] ?? ($status['publicUrl'] ?? ''));
+				$record = [
+					'assetId' => $assetId,
+					'filename' => $filename,
+					'url' => $publicUrl,
+					'extension' => strtolower(pathinfo($filename, PATHINFO_EXTENSION)),
+					'strategy' => Transcoder::$plugin->getSettings()->videoFilenameStrategy ?: 'source',
+					'statusKey' => (string)($status['key'] ?? ''),
+					'size' => is_file($encodedFile) ? filesize($encodedFile) : null,
+					'updatedAt' => time(),
+				];
+
+				$records = array_values(array_filter($records, static function ($existing) use ($filename) {
+					return is_array($existing) && (string)($existing['filename'] ?? '') !== $filename;
+				}));
+				array_unshift($records, $record);
+				$manifest['videos'][$assetKey] = array_slice($records, 0, 20);
+
+				rewind($handle);
+				ftruncate($handle, 0);
+				fwrite($handle, JsonHelper::encode($manifest));
+			} finally {
+				if (is_resource($handle)) {
+					flock($handle, LOCK_UN);
+					fclose($handle);
+				}
+			}
+		} catch (Throwable $e) {
+			Craft::warning('Unable to write Transcoder video manifest: ' . $e->getMessage(), __METHOD__);
 		}
 	}
 
