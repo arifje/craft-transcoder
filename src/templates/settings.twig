@@ -46,11 +46,35 @@
 
     {{ forms.lightswitchField({
         label: 'Queue videos on asset upload'|t('transcoder'),
-        instructions: 'Queue video encoding and poster generation when a new video asset is uploaded. This requires a working Craft queue runner for reliable background processing.'|t('transcoder'),
+        instructions: 'Enqueue one lightweight inspection job when a new video asset is uploaded. Source, output and status checks run in the queue; Entry saves and asset metadata saves are not inspected.'|t('transcoder'),
         warning: macros.configWarning('queueVideosOnSave', 'transcoder'),
         id: 'queueVideosOnSave',
         name: 'queueVideosOnSave',
         on: settings.queueVideosOnSave or settings.queueVideosOnEntrySave,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Upload inspection retries'|t('transcoder'),
+        instructions: 'How many times the asynchronous inspection job should retry when a new video or GIF asset, or its source file, is not available yet.'|t('transcoder'),
+        warning: macros.configWarning('mediaInspectionMaxRetries', 'transcoder'),
+        id: 'mediaInspectionMaxRetries',
+        name: 'mediaInspectionMaxRetries',
+        value: settings.mediaInspectionMaxRetries,
+        type: 'number',
+        min: 0,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Upload inspection retry delay'|t('transcoder'),
+        instructions: 'Seconds to wait between asynchronous inspection attempts. Retries stop after the configured limit.'|t('transcoder'),
+        warning: macros.configWarning('mediaInspectionRetryDelaySeconds', 'transcoder'),
+        id: 'mediaInspectionRetryDelaySeconds',
+        name: 'mediaInspectionRetryDelaySeconds',
+        value: settings.mediaInspectionRetryDelaySeconds,
+        type: 'number',
+        min: 0,
+        size: 5,
     }) }}
 
     {{ forms.textField({
@@ -67,7 +91,7 @@
 
     {{ forms.textField({
         label: 'Video queue delay'|t('transcoder'),
-        instructions: 'Seconds to wait before starting video encode jobs queued by asset upload/save events. Keep this above 0 when another plugin renames/moves assets on save.'|t('transcoder'),
+        instructions: 'Seconds to wait before starting video encode jobs created by asynchronous upload inspection.'|t('transcoder'),
         warning: macros.configWarning('videoQueueDelaySeconds', 'transcoder'),
         id: 'videoQueueDelaySeconds',
         name: 'videoQueueDelaySeconds',
@@ -393,7 +417,7 @@
 
     {{ forms.lightswitchField({
         label: 'Queue GIFs on asset upload'|t('transcoder'),
-        instructions: 'Queue GIF encoding when a new GIF asset is uploaded instead of starting ffmpeg from templates.'|t('transcoder'),
+        instructions: 'Enqueue one lightweight inspection job when a new GIF asset is uploaded. Source, output and status checks run in the queue; Entry saves and asset metadata saves are not inspected.'|t('transcoder'),
         warning: macros.configWarning('queueGifsOnSave', 'transcoder'),
         id: 'queueGifsOnSave',
         name: 'queueGifsOnSave',
@@ -402,7 +426,7 @@
 
     {{ forms.textField({
         label: 'GIF queue delay'|t('transcoder'),
-        instructions: 'Seconds to delay each queued GIF job after the previous one. This spreads large batches over time and helps avoid overloading the server.'|t('transcoder'),
+        instructions: 'Seconds to delay each GIF encode job created by asynchronous upload inspection. This spreads large upload batches over time.'|t('transcoder'),
         warning: macros.configWarning('gifQueueDelaySeconds', 'transcoder'),
         id: 'gifQueueDelaySeconds',
         name: 'gifQueueDelaySeconds',

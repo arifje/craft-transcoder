@@ -241,9 +241,26 @@ class Settings extends Model
     /**
      * Deprecated alias for queueVideosOnSave.
      *
+     * This alias only enables new asset upload processing; Entry saves are not
+     * inspected automatically.
+     *
      * @var bool
      */
     public bool $queueVideosOnEntrySave = false;
+
+    /**
+     * Number of retries after the initial asynchronous asset inspection.
+     *
+     * @var int
+     */
+    public int $mediaInspectionMaxRetries = 5;
+
+    /**
+     * Seconds to wait before retrying asynchronous source inspection.
+     *
+     * @var int
+     */
+    public int $mediaInspectionRetryDelaySeconds = 10;
 
     /**
      * Seconds Craft should reserve for video-related queue jobs before timing them out.
@@ -253,7 +270,7 @@ class Settings extends Model
     public int $videoQueueTtrSeconds = 1800;
 
     /**
-     * Seconds to delay video encode jobs queued from asset upload/save events.
+     * Seconds to delay video encode jobs queued after asynchronous upload inspection.
      *
      * @var int
      */
@@ -274,8 +291,9 @@ class Settings extends Model
     public int $videoEncodeRetryDelaySeconds = 120;
 
     /**
-     * Entry field handles to inspect for video assets. Leave empty to inspect
-     * all custom fields recursively.
+     * Entry field handles used by explicit element-scanning API calls. Leave
+     * empty to inspect all custom fields recursively when those methods are
+     * called manually. Entry saves never invoke them automatically.
      *
      * @var array
      */
@@ -306,13 +324,17 @@ class Settings extends Model
     /**
      * Deprecated alias for queueGifsOnSave.
      *
+     * This alias only enables new asset upload processing; Entry saves are not
+     * inspected automatically.
+     *
      * @var bool
      */
     public bool $queueGifsOnEntrySave = false;
 
     /**
-     * Entry field handles to inspect for GIF assets. Leave empty to inspect
-     * all custom fields recursively.
+     * Entry field handles used by explicit element-scanning API calls. Leave
+     * empty to inspect all custom fields recursively when those methods are
+     * called manually. Entry saves never invoke them automatically.
      *
      * @var array
      */
@@ -592,6 +614,8 @@ class Settings extends Model
             ['createSubfolders', 'boolean'],
             ['clearCaches', 'boolean'],
             [['queueVideosOnSave', 'queueVideosOnEntrySave'], 'boolean'],
+            [['mediaInspectionMaxRetries', 'mediaInspectionRetryDelaySeconds'], 'integer'],
+            [['mediaInspectionMaxRetries', 'mediaInspectionRetryDelaySeconds'], 'number', 'min' => 0],
             [['videoQueueTtrSeconds', 'videoQueueDelaySeconds'], 'integer'],
             ['videoQueueTtrSeconds', 'number', 'min' => 1],
             ['videoQueueDelaySeconds', 'number', 'min' => 0],

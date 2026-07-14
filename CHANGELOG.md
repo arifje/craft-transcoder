@@ -1,5 +1,11 @@
 # Transcoder Changelog
 
+## 4.4.40 - 2026.07.14
+### Changed
+* Process automatic video, poster, and GIF upload checks through one lightweight asynchronous asset-inspection job.
+* Stop automatically scanning Entry fields or requeueing existing media when Entries or Asset metadata are saved.
+* Retry upload inspection with a bounded delay when Craft has not made the Asset source available yet.
+
 ## 4.3.5 - 2026.05.21
 ### Fixed
 * Fix ffprobe summary parsing so video dimensions are available to auto-crop detection.

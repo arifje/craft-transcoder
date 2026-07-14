@@ -133,11 +133,21 @@ return [
     // Add the Clear Caches utility to the CP?
     'clearCaches' => false,
 
-    // Queue video encoding when new video assets are uploaded. Requires enableVideoEncoding to be true
+    // Enqueue one asynchronous inspection job when a new video asset is uploaded.
+    // Entry saves and existing asset metadata saves are never inspected automatically.
     'queueVideosOnSave' => false,
+
+    // Retry asynchronous upload inspection this many times if the Asset or its source is not ready yet
+    'mediaInspectionMaxRetries' => 5,
+
+    // Seconds to wait between asynchronous upload inspection attempts
+    'mediaInspectionRetryDelaySeconds' => 10,
 
     // Seconds Craft should reserve for video-related queue jobs before timing them out
     'videoQueueTtrSeconds' => 1800,
+
+    // Seconds to delay video encode jobs created by the asynchronous upload inspection job
+    'videoQueueDelaySeconds' => 10,
 
     // Retry failed video encode jobs this many times before marking the queue job as failed
     'videoEncodeMaxRetries' => 2,
@@ -145,7 +155,7 @@ return [
     // Seconds to wait before retrying a failed video encode job
     'videoEncodeRetryDelaySeconds' => 120,
 
-    // Legacy entry field handles to inspect for video assets when queueing entries manually
+    // Field handles used only when public element-scanning methods are called explicitly
     'autoEncodeVideoFieldHandles' => [],
 
     // Default video options used when an asset upload queues encoding
@@ -154,10 +164,11 @@ return [
     // Extra options recorded with queued encodes, for example ['watermark' => true]
     'autoEncodeEncodingOptions' => [],
 
-    // Queue GIF encoding when new GIF assets are uploaded
+    // Enqueue one asynchronous inspection job when a new GIF asset is uploaded.
+    // Entry saves and existing asset metadata saves are never inspected automatically.
     'queueGifsOnSave' => false,
 
-    // Legacy entry field handles to inspect for GIF assets when queueing entries manually
+    // Field handles used only when public element-scanning methods are called explicitly
     'autoEncodeGifFieldHandles' => [],
 
     // Default GIF options used when an asset upload queues encoding

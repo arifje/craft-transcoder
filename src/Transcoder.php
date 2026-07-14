@@ -11,14 +11,11 @@
 namespace nystudio107\transcoder;
 
 use Craft;
-use craft\base\ElementInterface;
 use craft\base\Model;
 use craft\base\Plugin;
 use craft\console\Application as ConsoleApplication;
 use craft\elements\Asset;
-use craft\elements\Entry;
 use craft\events\DefineAssetThumbUrlEvent;
-use craft\events\ElementEvent;
 use craft\events\ModelEvent;
 use craft\events\PluginEvent;
 use craft\events\RegisterCacheOptionsEvent;
@@ -29,7 +26,6 @@ use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\FileHelper;
 use craft\helpers\UrlHelper;
 use craft\services\Assets;
-use craft\services\Elements;
 use craft\services\Plugins;
 use craft\services\Utilities;
 use craft\utilities\ClearCaches;
@@ -37,6 +33,7 @@ use craft\web\twig\variables\CraftVariable;
 use craft\web\UrlManager;
 use craft\web\View;
 use nystudio107\transcoder\gql\TranscoderGql;
+use nystudio107\transcoder\jobs\InspectMediaAsset;
 use nystudio107\transcoder\models\Settings;
 use nystudio107\transcoder\services\ServicesTrait;
 use nystudio107\transcoder\utilities\EncodingUtility;
@@ -73,18 +70,11 @@ class Transcoder extends Plugin
     public static ?Settings $settings;
 
     /**
-     * Asset IDs already inspected for queueing in the current request.
+     * Asset IDs that already received an inspection job in this request.
      *
      * @var array<int, bool>
      */
-    protected array $queuedAssetSaveChecks = [];
-
-    /**
-     * Element IDs already inspected for queueing in the current request.
-     *
-     * @var array<int, bool>
-     */
-    protected array $queuedElementSaveChecks = [];
+    protected array $queuedAssetInspectionJobs = [];
 
     // Public Properties
     // =========================================================================
@@ -314,26 +304,11 @@ class Transcoder extends Plugin
             Asset::EVENT_AFTER_SAVE,
             function (ModelEvent $event) {
                 $asset = $event->sender;
-                if (!$asset instanceof Asset) {
+                if (!$asset instanceof Asset || !$event->isNew) {
                     return;
                 }
 
-                $this->queueMediaForSavedAsset($asset);
-            }
-        );
-        Event::on(
-            Elements::class,
-            Elements::EVENT_AFTER_SAVE_ELEMENT,
-            function (ElementEvent $event) {
-                $element = $event->element;
-                if ($element instanceof Asset) {
-                    $this->queueMediaForSavedAsset($element);
-                    return;
-                }
-
-                if ($element instanceof Entry) {
-                    $this->queueMediaForSavedElement($element);
-                }
+                $this->queueMediaInspectionForUploadedAsset($asset);
             }
         );
         // Handler: Plugins::EVENT_AFTER_INSTALL_PLUGIN
@@ -380,18 +355,14 @@ class Transcoder extends Plugin
     }
 
     /**
-     * Queue missing media encodes for a saved asset.
+     * Queue asynchronous inspection for a newly uploaded media asset.
      *
      * @param Asset $asset
      * @return void
      */
-    protected function queueMediaForSavedAsset(Asset $asset): void
+    protected function queueMediaInspectionForUploadedAsset(Asset $asset): void
     {
         if (!$asset->id) {
-            return;
-        }
-
-        if (!$this->transcode->isVideoQueueEnabled() && !$this->transcode->isGifQueueEnabled()) {
             return;
         }
 
@@ -399,85 +370,20 @@ class Transcoder extends Plugin
             return;
         }
 
-        if ($this->transcode->shouldDeferAssetQueue($asset)) {
-            Craft::info('Transcoder: skipping asset #' . $asset->id . ' until Craft resolves its final source path or URL.', __METHOD__);
+        if (isset($this->queuedAssetInspectionJobs[$asset->id])) {
             return;
         }
 
-        if (isset($this->queuedAssetSaveChecks[$asset->id])) {
-            return;
-        }
+        $this->queuedAssetInspectionJobs[$asset->id] = true;
+        $settings = $this->getSettings();
+        $jobId = Craft::$app->getQueue()->push(new InspectMediaAsset([
+            'assetId' => $asset->id,
+            'attempt' => 1,
+            'maxRetries' => max(0, (int)$settings->mediaInspectionMaxRetries),
+            'retryDelaySeconds' => max(0, (int)$settings->mediaInspectionRetryDelaySeconds),
+        ]));
 
-        $this->queuedAssetSaveChecks[$asset->id] = true;
-
-        $statuses = $this->transcode->queueMediaForAsset($asset);
-        foreach ($statuses as $mediaType => $status) {
-            Craft::info(
-                Craft::t(
-                    'transcoder',
-                    'Queued {mediaType} encode for asset {id}: {status}',
-                    [
-                        'mediaType' => $mediaType,
-                        'id' => $asset->id,
-                        'status' => $status['status'] ?? 'unknown',
-                    ]
-                ),
-                __METHOD__
-            );
-        }
-    }
-
-    /**
-     * Queue missing media encodes for a saved content element.
-     *
-     * @param ElementInterface $element
-     * @return void
-     */
-    protected function queueMediaForSavedElement(ElementInterface $element): void
-    {
-        if (!$element->id) {
-            return;
-        }
-
-        if (method_exists($element, 'getIsDraft') && $element->getIsDraft()) {
-            return;
-        }
-
-        if (method_exists($element, 'getIsRevision') && $element->getIsRevision()) {
-            return;
-        }
-
-        if (!$this->transcode->isVideoQueueEnabled() && !$this->transcode->isGifQueueEnabled()) {
-            return;
-        }
-
-        if (isset($this->queuedElementSaveChecks[$element->id])) {
-            return;
-        }
-
-        $this->queuedElementSaveChecks[$element->id] = true;
-
-        $queuedVideos = $this->transcode->isVideoQueueEnabled()
-            ? $this->transcode->queueVideoEncodesForElement($element)
-            : 0;
-        $queuedGifs = $this->transcode->isGifQueueEnabled()
-            ? $this->transcode->queueGifEncodesForElement($element)
-            : 0;
-
-        if ($queuedVideos > 0 || $queuedGifs > 0) {
-            Craft::info(
-                Craft::t(
-                    'transcoder',
-                    'Queued media encodes for element {id}: {videos} video(s), {gifs} GIF(s)',
-                    [
-                        'id' => $element->id,
-                        'videos' => $queuedVideos,
-                        'gifs' => $queuedGifs,
-                    ]
-                ),
-                __METHOD__
-            );
-        }
+        Craft::info('Transcoder: queued media inspection job ' . $jobId . ' for new asset #' . $asset->id, __METHOD__);
     }
 
     /**

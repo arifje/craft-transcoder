@@ -54,8 +54,10 @@ Transcoder can encode uploaded video assets to mp4/webm using the configured ffm
 Recent additions include:
 
 * Enable/disable video encoding from plugin settings.
-* Queue video encoding when a video asset is uploaded or saved.
-* Delay video jobs queued from asset upload/save events so asset renaming/moving plugins can settle the final filename before encoding starts.
+* Queue video encoding only when a new video asset is uploaded.
+* Keep Entry saves and existing asset metadata saves free of automatic Transcoder scanning.
+* Enqueue one lightweight upload-inspection job, then perform source, output and status checks asynchronously.
+* Delay video jobs created by upload inspection so asset renaming/moving plugins can settle the final filename before encoding starts.
 * Only queue video encoding for video assets.
 * Queue a missing encode from Twig/admin preview when enabled.
 * Restrict which web server names are allowed to start new encoding work.
@@ -95,12 +97,23 @@ GIF assets can be converted to mp4 so frontend templates can render them as ligh
 The GIF settings include:
 
 * Enable/disable GIF encoding independently.
-* Queue GIF encoding when GIF assets are uploaded or saved.
+* Queue GIF encoding only when a new GIF asset is uploaded.
+* Retry upload inspection asynchronously when Craft has not resolved the Asset or its source yet.
 * Only queue GIF encoding for `image/gif` assets.
 * Spread large GIF batches with a configurable queue delay.
 * Fallback to the original GIF when encoding is disabled or unavailable.
 * Queue a missing GIF encode from Twig/admin preview when enabled.
 * Poll queue-aware GIF status with `craft.transcoder.getGifStatus()` and `craft.transcoder.getGifStatusUrl()`.
+
+### Automatic Upload Processing
+
+When `queueVideosOnSave` or `queueGifsOnSave` is enabled, Transcoder reacts only to Craft's after-save event for a brand-new Asset. The upload request performs cheap ID, new-asset, media-type and setting checks, then pushes one `InspectMediaAsset` queue job and returns.
+
+The inspection job reloads the Asset and performs source availability, existing output, poster, active-job and runtime-status checks in the queue. It then uses the existing queueing methods to add `EncodeVideo`, `GenerateVideoPosters` or `EncodeGif` only when required. Temporarily unavailable Assets or sources are retried after `mediaInspectionRetryDelaySeconds`, up to `mediaInspectionMaxRetries` retries.
+
+Normal Entry saves are never scanned, and saving metadata on an existing Asset does not trigger automatic transcoding. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` configuration aliases are still accepted, but now only enable new-asset upload processing; they do not restore Entry field scanning. Public element-scanning methods remain available for explicit API calls.
+
+Craft's dedicated asset-replacement event is intentionally not registered by this workflow. Replacement uploads need a separate, explicit output-invalidation policy; ordinary Asset metadata saves remain inert.
 
 ### Watermarks
 
@@ -141,7 +154,7 @@ The Control Panel utility **Transcoder Encoding** lets admins disable encoding a
 
 When runtime encoding is disabled:
 
-* Upload/save events do not start video, poster, or GIF encoding.
+* New asset upload events do not enqueue video, poster, or GIF work.
 * Twig helpers report encoding as disabled.
 * Frontend templates can show original video/GIF assets instead of generated encodes.
 * Active tracked ffmpeg processes can be stopped when disabling encoding.

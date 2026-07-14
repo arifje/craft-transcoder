@@ -784,8 +784,15 @@ class Transcode extends Component
 	 */
 	public function isQueueableMediaAsset(Asset $asset): bool
 	{
-		return ($this->isVideoQueueEnabled() && $this->isVideoAsset($asset))
-			|| ($this->isGifQueueEnabled() && $this->isGifAsset($asset));
+		if ($this->isVideoAsset($asset)) {
+			return $this->isVideoQueueEnabled();
+		}
+
+		if ($this->isGifAsset($asset)) {
+			return $this->isGifQueueEnabled();
+		}
+
+		return false;
 	}
 
 	/**
@@ -903,8 +910,8 @@ class Transcode extends Component
 	/**
 	 * Return an entry title from numeric asset folder segments, such as /videos/12345/.
 	 *
-	 * This covers upload/save events where Craft relations may not exist yet, but
-	 * the project stores assets in per-entry folders.
+	 * This covers asynchronous upload inspection where Craft relations may not
+	 * exist yet, but the project stores assets in per-entry folders.
 	 *
 	 * @param Asset $asset
 	 * @return string|null
@@ -1268,7 +1275,10 @@ class Transcode extends Component
 	}
 
 	/**
-	 * Queue media work for a newly uploaded asset.
+	 * Inspect current media output/status and queue any missing work for an asset.
+	 *
+	 * Automatic upload processing calls this from InspectMediaAsset so these
+	 * checks never run inside the asset-save request.
 	 *
 	 * @param Asset $asset
 	 * @return array
