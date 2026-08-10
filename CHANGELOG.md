@@ -1,5 +1,15 @@
 # Transcoder Changelog
 
+## Unreleased
+
+### Added
+
+* Queue video encoding when new video assets are uploaded, with a configurable delay.
+* Add source-asset and encoding-options video filename strategies while preserving bitrate-based filenames by default.
+* Add configurable video watermark overlays.
+* Generate configured video poster formats after queued encodes.
+* Add blurred-background poster fitting to prevent black bars.
+
 ## 4.0.2 - 2024.09.30
 ## Added
 * Add `phpstan` and `ecs` code linting
