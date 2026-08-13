@@ -13,6 +13,7 @@ namespace nystudio107\transcoder\services;
 use Craft;
 use craft\base\Component;
 use craft\base\ElementInterface;
+use craft\db\Query;
 use craft\elements\Asset;
 use craft\elements\Entry;
 use craft\elements\MatrixBlock;
@@ -21,8 +22,10 @@ use craft\events\DefineAssetThumbUrlEvent;
 use craft\fs\Local;
 use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\App;
+use craft\helpers\Db;
 use craft\helpers\FileHelper;
 use craft\helpers\Json as JsonHelper;
+use craft\helpers\StringHelper;
 use craft\helpers\UrlHelper;
 use mikehaertl\shellcommand\Command as ShellCommand;
 use nystudio107\transcoder\events\TranscoderQueueEvent;
@@ -58,6 +61,25 @@ class Transcode extends Component
 	protected const MIN_VALID_VIDEO_FILE_SIZE = 16384;
 
 	protected const REMOTE_FILE_EXISTS_TIMEOUT_SECONDS = 1;
+
+	private const VIDEO_SOURCES_TABLE = '{{%transcoder_video_sources}}';
+
+	private bool $videoSourcesUnavailableLogged = false;
+
+	/**
+	 * @var array<string, Asset>
+	 */
+	private array $resolvedVideoAssetInputs = [];
+
+	/**
+	 * @var array<int, string>
+	 */
+	private array $videoSourcePathOverrides = [];
+
+	/**
+	 * @var array<int, string|null>
+	 */
+	private array $videoSourceGenerationOverrides = [];
 
 	// Suffixes to add to the generated filename params
 	protected const SUFFIX_MAP = [
@@ -223,6 +245,7 @@ class Transcode extends Component
 
 	public function getVideoUrl(string|Asset $filePath, array $videoOptions, bool $generate = true, array $encodingOptions = []): string
 	{
+		$filePath = $this->resolveVideoAssetInput($filePath);
 		$settings = Transcoder::$plugin->getSettings();
 		if (!$this->isRuntimeEncodingEnabled() || !$settings->enableVideoEncoding) {
 			return JsonHelper::encode([
@@ -544,10 +567,23 @@ class Transcode extends Component
 			$ffmpegCmd .= ' ' . $thisEncoder['audioCodecOptions'];
 		}
 
+		// Encode to a run-specific file and publish with an atomic rename. Duplicate
+		// workers can safely race for the same generation without exposing a partial
+		// file, while older source generations always target different final names.
+		$stagedEncodedFile = $encodedFile . '.part-' . bin2hex(random_bytes(8));
 		$ffmpegCmd .= ' -f ' . $thisEncoder['fileFormat']
-			. ' -y ' . escapeshellarg($encodedFile);
+			. ' -y ' . escapeshellarg($stagedEncodedFile);
 		$ffmpegCommand = $ffmpegCmd;
-		$ffmpegCmd .= ' 1> ' . $progressFile . ' 2>&1 & echo $!';
+		$ffmpegWorkerCommand = 'staged_file=' . escapeshellarg($stagedEncodedFile)
+			. '; ffmpeg_pid=; '
+			. 'trap \'trap - HUP INT TERM; if [ -n "$ffmpeg_pid" ]; then kill -TERM "$ffmpeg_pid" 2>/dev/null; wait "$ffmpeg_pid" 2>/dev/null; fi; rm -f "$staged_file"; exit 143\' HUP INT TERM; '
+			. $ffmpegCommand
+			. ' & ffmpeg_pid=$!; wait "$ffmpeg_pid"; result=$?; trap - HUP INT TERM; '
+			. 'if [ "$result" -eq 0 ]; then mv -f "$staged_file"'
+			. ' '
+			. escapeshellarg($encodedFile)
+			. '; result=$?; fi; if [ "$result" -ne 0 ]; then rm -f "$staged_file"; fi; exit "$result"';
+		$ffmpegCmd = '( ' . $ffmpegWorkerCommand . ' ) 1> ' . escapeshellarg($progressFile) . ' 2>&1 & echo $!';
 
 		if ($isDev) {
 			Craft::info("Final ffmpeg command: $ffmpegCmd", __METHOD__);
@@ -785,7 +821,7 @@ class Transcode extends Component
 	public function isQueueableMediaAsset(Asset $asset): bool
 	{
 		if ($this->isVideoAsset($asset)) {
-			return $this->isVideoQueueEnabled();
+			return $this->isVideoAutomaticQueueConfigured();
 		}
 
 		if ($this->isGifAsset($asset)) {
@@ -793,6 +829,300 @@ class Transcode extends Component
 		}
 
 		return false;
+	}
+
+	/**
+	 * Return whether an asset is a persisted video.
+	 *
+	 * This public wrapper keeps the existing protected isVideoAsset() extension point intact.
+	 *
+	 * @param Asset $asset
+	 * @return bool
+	 */
+	public function isAssetVideo(Asset $asset): bool
+	{
+		return $this->isVideoAsset($asset);
+	}
+
+	/**
+	 * Start a new shared source generation for a replaced video asset.
+	 *
+	 * @param Asset $asset
+	 * @return string
+	 */
+	public function beginVideoSourceGeneration(Asset $asset): string
+	{
+		if (!$asset->id || !$this->isVideoAsset($asset)) {
+			throw new \InvalidArgumentException('Transcoder: a persisted video asset is required to start a source generation');
+		}
+
+		$generation = bin2hex(random_bytes(16));
+		$now = Db::prepareDateForDb(new \DateTime());
+		Craft::$app->getDb()->createCommand()->upsert(
+			self::VIDEO_SOURCES_TABLE,
+			[
+				'assetId' => (int)$asset->id,
+				'sourceGeneration' => $generation,
+				'dateCreated' => $now,
+				'dateUpdated' => $now,
+				'uid' => StringHelper::UUID(),
+			],
+			[
+				'sourceGeneration' => $generation,
+				'dateUpdated' => $now,
+			]
+		)->execute();
+		$this->resolvedVideoAssetInputs = [];
+
+		return $generation;
+	}
+
+	/**
+	 * Return the current shared replacement generation for an asset.
+	 *
+	 * @param int $assetId
+	 * @return string|null
+	 */
+	public function getVideoSourceGeneration(int $assetId): ?string
+	{
+		if ($assetId <= 0) {
+			return null;
+		}
+		try {
+			$generation = (new Query())
+				->select(['sourceGeneration'])
+				->from(self::VIDEO_SOURCES_TABLE)
+				->where(['assetId' => $assetId])
+				->scalar();
+		} catch (Throwable $e) {
+			if (!$this->videoSourcesUnavailableLogged) {
+				Craft::warning('Transcoder: shared video source state is unavailable; run pending plugin migrations. ' . $e->getMessage(), __METHOD__);
+				$this->videoSourcesUnavailableLogged = true;
+			}
+			return null;
+		}
+
+		$generation = is_string($generation) ? trim($generation) : '';
+		return preg_match('/^[a-f0-9]{32}$/', $generation) === 1 ? $generation : null;
+	}
+
+	/**
+	 * Return whether a queued job still belongs to the current source.
+	 *
+	 * @param int $assetId
+	 * @param string|null $sourceGeneration
+	 * @return bool
+	 * @phpstan-impure
+	 */
+	public function isVideoSourceGenerationCurrent(int $assetId, ?string $sourceGeneration): bool
+	{
+		$current = $this->getVideoSourceGeneration($assetId);
+		if ($current === null || $sourceGeneration === null) {
+			return $current === $sourceGeneration;
+		}
+
+		return hash_equals($current, $sourceGeneration);
+	}
+
+	/**
+	 * Copy the current replacement source to local temporary storage for FFmpeg.
+	 *
+	 * @param Asset $asset
+	 * @param string|null $sourceGeneration
+	 * @return string
+	 */
+	public function getVideoSourceCopy(Asset $asset, ?string $sourceGeneration): string
+	{
+		if (!$asset->id || !$this->isVideoSourceGenerationCurrent((int)$asset->id, $sourceGeneration)) {
+			throw new \RuntimeException('Transcoder: video source generation was superseded before it could be copied');
+		}
+
+		$copy = $asset->getCopyOfFile();
+		if (!$this->isVideoSourceGenerationCurrent((int)$asset->id, $sourceGeneration)) {
+			@unlink($copy);
+			throw new \RuntimeException('Transcoder: video source generation was superseded while it was being copied');
+		}
+
+		return $copy;
+	}
+
+	/**
+	 * Run a callable with a stable source generation and optional local source copy.
+	 *
+	 * @template T
+	 * @param Asset $asset
+	 * @param string|null $sourceGeneration
+	 * @param string|null $sourcePath
+	 * @param callable(): T $callback
+	 * @return T
+	 */
+	public function withVideoSourceGeneration(Asset $asset, ?string $sourceGeneration, ?string $sourcePath, callable $callback): mixed
+	{
+		$assetId = (int)$asset->id;
+		$hadGenerationOverride = array_key_exists($assetId, $this->videoSourceGenerationOverrides);
+		$previousGeneration = $this->videoSourceGenerationOverrides[$assetId] ?? null;
+		$hadPathOverride = array_key_exists($assetId, $this->videoSourcePathOverrides);
+		$previousPath = $this->videoSourcePathOverrides[$assetId] ?? null;
+		$this->videoSourceGenerationOverrides[$assetId] = $sourceGeneration;
+		if ($sourcePath !== null && $sourcePath !== '') {
+			$this->videoSourcePathOverrides[$assetId] = $sourcePath;
+		} else {
+			unset($this->videoSourcePathOverrides[$assetId]);
+		}
+
+		try {
+			return $callback();
+		} finally {
+			if ($hadGenerationOverride) {
+				$this->videoSourceGenerationOverrides[$assetId] = $previousGeneration;
+			} else {
+				unset($this->videoSourceGenerationOverrides[$assetId]);
+			}
+			if ($hadPathOverride && $previousPath !== null) {
+				$this->videoSourcePathOverrides[$assetId] = $previousPath;
+			} else {
+				unset($this->videoSourcePathOverrides[$assetId]);
+			}
+		}
+	}
+
+	/**
+	 * Resolve the immutable source generation for the current operation.
+	 *
+	 * @param Asset $asset
+	 * @return string|null
+	 */
+	protected function resolveVideoSourceGeneration(Asset $asset): ?string
+	{
+		$assetId = (int)$asset->id;
+		if (array_key_exists($assetId, $this->videoSourceGenerationOverrides)) {
+			return $this->videoSourceGenerationOverrides[$assetId];
+		}
+
+		return $assetId > 0 ? $this->getVideoSourceGeneration($assetId) : null;
+	}
+
+	/**
+	 * Resolve a source URL/path back to a replaced Asset when it has a current generation.
+	 *
+	 * Older integrations commonly pass `asset.url` instead of the Asset itself. Resolving
+	 * that reference here keeps their video, poster, and status identities aligned with
+	 * the generation-aware queue jobs without changing the public API.
+	 *
+	 * @param Asset|string $input
+	 * @return Asset|string
+	 */
+	protected function resolveVideoAssetInput(Asset|string $input): Asset|string
+	{
+		if ($input instanceof Asset) {
+			return $input;
+		}
+
+		$reference = trim((string)App::parseEnv($input));
+		$identities = $this->getVideoSourceReferenceIdentities($reference);
+		$cacheKey = sha1(JsonHelper::encode($identities));
+		if (isset($this->resolvedVideoAssetInputs[$cacheKey])) {
+			return $this->resolvedVideoAssetInputs[$cacheKey];
+		}
+
+		$referencePath = parse_url($reference, PHP_URL_PATH);
+		$referencePath = is_string($referencePath) && $referencePath !== '' ? $referencePath : $reference;
+		$filename = rawurldecode(basename(str_replace('\\', '/', $referencePath)));
+		if ($filename === '' || $filename === '.' || $filename === DIRECTORY_SEPARATOR) {
+			return $input;
+		}
+
+		try {
+			$candidates = Asset::find()
+				->filename(Db::escapeParam($filename))
+				->kind(Asset::KIND_VIDEO)
+				->status(null)
+				->all();
+		} catch (Throwable $e) {
+			Craft::warning('Transcoder: unable to resolve video source reference "' . $reference . '": ' . $e->getMessage(), __METHOD__);
+			return $input;
+		}
+
+		$exactMatches = [];
+		$pathMatches = [];
+		foreach ($candidates as $candidate) {
+			if (!$candidate instanceof Asset
+				|| !$candidate->id
+				|| $this->getVideoSourceGeneration((int)$candidate->id) === null
+			) {
+				continue;
+			}
+
+			$references = [];
+			try {
+				$references[] = $candidate->getUrl() ?? '';
+			} catch (Throwable) {
+			}
+			try {
+				$references[] = $this->getAssetPath($candidate);
+			} catch (Throwable) {
+			}
+			try {
+				$references[] = $candidate->getPath();
+			} catch (Throwable) {
+			}
+
+			foreach (array_unique(array_filter($references)) as $candidateReference) {
+				$candidateIdentities = $this->getVideoSourceReferenceIdentities((string)$candidateReference);
+				if ($identities['exact'] !== '' && hash_equals($identities['exact'], $candidateIdentities['exact'])) {
+					$exactMatches[(int)$candidate->id] = $candidate;
+				}
+				if ($identities['path'] !== '' && hash_equals($identities['path'], $candidateIdentities['path'])) {
+					$pathMatches[(int)$candidate->id] = $candidate;
+				}
+			}
+		}
+
+		$matches = count($exactMatches) === 1
+			? $exactMatches
+			: (empty($exactMatches) && count($pathMatches) === 1 ? $pathMatches : []);
+		$asset = !empty($matches) ? reset($matches) : false;
+		if ($asset instanceof Asset) {
+			$this->resolvedVideoAssetInputs[$cacheKey] = $asset;
+		}
+
+		return $asset instanceof Asset ? $asset : $input;
+	}
+
+	/**
+	 * Return stable full-reference and URL-path identities, ignoring query strings.
+	 *
+	 * @param string $reference
+	 * @return array{exact: string, path: string}
+	 */
+	private function getVideoSourceReferenceIdentities(string $reference): array
+	{
+		$reference = trim((string)App::parseEnv($reference));
+		if ($reference === '') {
+			return ['exact' => '', 'path' => ''];
+		}
+
+		if (!$this->isUrl($reference) && file_exists($reference)) {
+			$path = str_replace('\\', '/', realpath($reference) ?: $reference);
+			return ['exact' => 'file:' . $path, 'path' => ''];
+		}
+
+		$url = $this->isUrl($reference) ? $reference : $this->normalizeSiteUrl($reference);
+		$parts = parse_url($url);
+		if (!is_array($parts) || empty($parts['host'])) {
+			$path = str_replace('\\', '/', $reference);
+			return ['exact' => 'file:' . $path, 'path' => ''];
+		}
+
+		$path = rawurldecode((string)($parts['path'] ?? '/'));
+		$path = preg_replace('~/+~', '/', '/' . ltrim($path, '/')) ?: '/';
+		$host = strtolower((string)$parts['host']);
+		$port = isset($parts['port']) ? ':' . $parts['port'] : '';
+
+		return [
+			'exact' => 'url:' . $host . $port . $path,
+			'path' => 'url-path:' . $path,
+		];
 	}
 
 	/**
@@ -1027,6 +1357,44 @@ class Transcode extends Component
 		?int $queueDelaySeconds = null
 	): array
 	{
+		$sourceGeneration = $asset->id ? $this->getVideoSourceGeneration((int)$asset->id) : null;
+
+		return $this->withVideoSourceGeneration(
+			$asset,
+			$sourceGeneration,
+			null,
+			fn(): array => $this->queueVideoEncodeForSource(
+				$asset,
+				$videoOptions,
+				$encodingOptions,
+				$ownerTitle,
+				$deferIfOriginalMissing,
+				$queueDelaySeconds
+			)
+		);
+	}
+
+	/**
+	 * Queue a video encode while source generation identity is pinned.
+	 *
+	 * @param Asset $asset
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @param string|null $ownerTitle
+	 * @param bool $deferIfOriginalMissing
+	 * @param int|null $queueDelaySeconds
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	protected function queueVideoEncodeForSource(
+		Asset $asset,
+		array $videoOptions,
+		array $encodingOptions,
+		?string $ownerTitle,
+		bool $deferIfOriginalMissing,
+		?int $queueDelaySeconds
+	): array
+	{
 		$settings = Transcoder::$plugin->getSettings();
 		if (!$this->isRuntimeEncodingEnabled()) {
 			return [
@@ -1063,11 +1431,12 @@ class Transcode extends Component
 		}
 
 		$statusKey = $this->getVideoStatusKey($asset, $videoOptions, $encodingOptions);
+		$sourceGeneration = $this->resolveVideoSourceGeneration($asset);
 		$queueLock = $this->acquireVideoQueueLock('video-asset-' . $asset->id);
 		try {
 			$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
-			$originalMissing = !$this->isAssetOriginalAvailable($asset);
+			$originalMissing = $sourceGeneration === null && !$this->isAssetOriginalAvailable($asset);
 			if ($originalMissing && !$deferIfOriginalMissing) {
 				return $status;
 			}
@@ -1097,7 +1466,7 @@ class Transcode extends Component
 			$postersInProgress = $this->isVideoPosterStatusActive($status);
 			$queueVideo = $settings->enableVideoEncoding && !$videoComplete && !$videoInProgress;
 			$queuePosters = $settings->enableVideoPosters && $missingPosters && !$postersInProgress;
-			if ($originalMissing) {
+			if ($originalMissing || $sourceGeneration !== null) {
 				unset($status['error']);
 			}
 
@@ -1120,6 +1489,7 @@ class Transcode extends Component
 
 				$jobId = $queue->push(new EncodeVideo([
 					'assetId' => $asset->id,
+					'sourceGeneration' => $sourceGeneration,
 					'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 					'videoOptions' => $videoOptions,
 					'encodingOptions' => $encodingOptions,
@@ -1143,6 +1513,7 @@ class Transcode extends Component
 			if ($queuePosters) {
 				$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
 					'assetId' => $asset->id,
+					'sourceGeneration' => $sourceGeneration,
 					'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 					'videoOptions' => $videoOptions,
 					'encodingOptions' => $encodingOptions,
@@ -1184,6 +1555,28 @@ class Transcode extends Component
 	 */
 	public function queueVideoPosters(Asset $asset, array $videoOptions = [], array $encodingOptions = [], ?string $ownerTitle = null): array
 	{
+		$sourceGeneration = $asset->id ? $this->getVideoSourceGeneration((int)$asset->id) : null;
+
+		return $this->withVideoSourceGeneration(
+			$asset,
+			$sourceGeneration,
+			null,
+			fn(): array => $this->queueVideoPostersForSource($asset, $videoOptions, $encodingOptions, $ownerTitle)
+		);
+	}
+
+	/**
+	 * Queue poster generation while source generation identity is pinned.
+	 *
+	 * @param Asset $asset
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @param string|null $ownerTitle
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	protected function queueVideoPostersForSource(Asset $asset, array $videoOptions, array $encodingOptions, ?string $ownerTitle): array
+	{
 		$settings = Transcoder::$plugin->getSettings();
 
 		if (!$this->isRuntimeEncodingEnabled()) {
@@ -1223,14 +1616,22 @@ class Transcode extends Component
 		}
 
 		$statusKey = $this->getVideoStatusKey($asset, $videoOptions, $encodingOptions);
+		$sourceGeneration = $this->resolveVideoSourceGeneration($asset);
 		$queueLock = $this->acquireVideoQueueLock('video-asset-' . $asset->id);
 		try {
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
-			if (!$this->isAssetOriginalAvailable($asset)) {
+			if ($sourceGeneration === null && !$this->isAssetOriginalAvailable($asset)) {
 				return $status;
 			}
 
-			$activeAssetStatus = $this->findActiveVideoStatusForAsset($asset, $statusKey, false, true);
+			$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
+			$activeAssetStatus = $this->findActiveVideoStatusForAsset(
+				$asset,
+				$statusKey,
+				false,
+				true,
+				$outputInfo['filenameCandidates'] ?? [$outputInfo['filename']]
+			);
 			if (!empty($activeAssetStatus)) {
 				if ($this->isAssetOriginalAvailable($asset) && $this->isOriginalVideoSourceRetryStatus($activeAssetStatus)) {
 					Craft::info('Transcoder: ignoring queued poster source-retry status for asset ' . $asset->id . ' because the original source is now reachable.', __METHOD__);
@@ -1247,6 +1648,7 @@ class Transcode extends Component
 			$videoPosterQueueDelaySeconds = max(0, (int)$settings->videoPosterQueueDelaySeconds);
 			$posterJobId = Craft::$app->getQueue()->ttr($videoQueueTtrSeconds)->delay($videoPosterQueueDelaySeconds)->push(new GenerateVideoPosters([
 				'assetId' => $asset->id,
+				'sourceGeneration' => $sourceGeneration,
 				'ownerTitle' => $ownerTitle ?: $this->getAssetOwnerTitle($asset),
 				'videoOptions' => $videoOptions,
 				'encodingOptions' => $encodingOptions,
@@ -1286,11 +1688,47 @@ class Transcode extends Component
 	 */
 	public function queueMediaForAsset(Asset $asset): array
 	{
+		$sourceGeneration = $asset->id ? $this->getVideoSourceGeneration((int)$asset->id) : null;
+
+		return $this->queueMediaForAssetGeneration($asset, $sourceGeneration);
+	}
+
+	/**
+	 * Queue media only for the source generation captured by an inspection job.
+	 *
+	 * @param Asset $asset
+	 * @param string|null $sourceGeneration
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	public function queueMediaForAssetGeneration(Asset $asset, ?string $sourceGeneration): array
+	{
+		if (!$asset->id || !$this->isVideoSourceGenerationCurrent((int)$asset->id, $sourceGeneration)) {
+			return [];
+		}
+
+		return $this->withVideoSourceGeneration(
+			$asset,
+			$sourceGeneration,
+			null,
+			fn(): array => $this->queueMediaForPinnedSource($asset)
+		);
+	}
+
+	/**
+	 * Inspect and queue while the caller's source generation is pinned.
+	 *
+	 * @param Asset $asset
+	 * @return array
+	 * @throws InvalidConfigException
+	 */
+	protected function queueMediaForPinnedSource(Asset $asset): array
+	{
 		$settings = Transcoder::$plugin->getSettings();
 		$statuses = [];
 
-		if ($this->isVideoQueueEnabled() && $this->isVideoAsset($asset)) {
-			$statuses['video'] = $this->queueVideoEncode(
+		if ($this->isVideoAutomaticQueueConfigured() && $this->isVideoAsset($asset)) {
+			$statuses['video'] = $this->queueVideoEncodeForSource(
 				$asset,
 				$settings['autoEncodeVideoOptions'] ?? [],
 				$settings['autoEncodeEncodingOptions'] ?? [],
@@ -1319,10 +1757,23 @@ class Transcode extends Component
 	 */
 	public function isVideoQueueEnabled(): bool
 	{
+		return $this->isVideoAutomaticQueueConfigured()
+			&& $this->canStartEncodingFromCurrentRequest();
+	}
+
+	/**
+	 * Return whether automatic video work is configured, independent of web hostname.
+	 *
+	 * Queue jobs run as console requests and may be intentionally restricted away from
+	 * the CP host through encodingServerNames.
+	 *
+	 * @return bool
+	 */
+	public function isVideoAutomaticQueueConfigured(): bool
+	{
 		$settings = Transcoder::$plugin->getSettings();
 
 		return $this->isRuntimeEncodingEnabled()
-			&& $this->canStartEncodingFromCurrentRequest()
 			&& ($settings->queueVideosOnSave || $settings->queueVideosOnEntrySave)
 			&& ($settings->enableVideoEncoding || $settings->enableVideoPosters);
 	}
@@ -1483,11 +1934,12 @@ class Transcode extends Component
 	 */
 	public function getVideoStatus(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = [], bool $queueIfMissing = false, bool $includeDebug = false): string
 	{
-		$status = $this->getVideoStatusData($filePath, $videoOptions, $encodingOptions);
-		$missingPosters = $filePath instanceof Asset
+		$resolvedFilePath = $this->resolveVideoAssetInput($filePath);
+		$status = $this->getVideoStatusData($resolvedFilePath, $videoOptions, $encodingOptions);
+		$missingPosters = $resolvedFilePath instanceof Asset
 			&& $this->isRuntimeEncodingEnabled()
 			&& Transcoder::$plugin->getSettings()->enableVideoPosters
-			&& $this->hasMissingVideoPosters($filePath);
+			&& $this->hasMissingVideoPosters($resolvedFilePath);
 
 		if ($queueIfMissing
 			&& $filePath instanceof Asset
@@ -1499,11 +1951,11 @@ class Transcode extends Component
 				|| (($status['status'] ?? null) === 'disabled' && $missingPosters)
 			)
 		) {
-			$status = $this->queueVideoEncode($filePath, $videoOptions, $encodingOptions);
+			$status = $this->queueVideoEncode($resolvedFilePath, $videoOptions, $encodingOptions);
 		}
 
 		if ($includeDebug) {
-			$status['debug'] = $this->getVideoStatusDebug($filePath, $videoOptions, $encodingOptions);
+			$status['debug'] = $this->getVideoStatusDebug($resolvedFilePath, $videoOptions, $encodingOptions);
 		}
 
 		return JsonHelper::encode($status);
@@ -1536,6 +1988,7 @@ class Transcode extends Component
 	 */
 	public function getVideoStatusData(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): array
 	{
+		$filePath = $this->resolveVideoAssetInput($filePath);
 		if (!$this->isRuntimeEncodingEnabled() || !Transcoder::$plugin->getSettings()->enableVideoEncoding) {
 			return [
 				'status' => 'disabled',
@@ -1729,17 +2182,20 @@ class Transcode extends Component
 	 */
 	public function writeVideoStatus(Asset|string $filePath, array $videoOptions, array $status, array $encodingOptions = []): void
 	{
-		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+		$filePath = $this->resolveVideoAssetInput($filePath);
 		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
-		$storedStatus = $this->readVideoStatus($statusKey);
-		$status = array_merge($this->getVideoPosterStatusFields($storedStatus), $status);
-		$status = array_merge($this->getVideoStatusStorageInfo($outputInfo), $status);
-		$status = $this->addAssetStatusInfo($filePath, $status);
+		$writeLock = $this->acquireVideoQueueLock('status-' . $statusKey);
+		try {
+			$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+			$storedStatus = $this->readVideoStatus($statusKey);
+			$status = array_merge($this->getVideoPosterStatusFields($storedStatus), $status);
+			$status = array_merge($this->getVideoStatusStorageInfo($outputInfo), $status);
+			$status = $this->addAssetStatusInfo($filePath, $status);
 
-		$this->writeVideoStatusByKey(
-			$statusKey,
-			$status
-		);
+			$this->writeVideoStatusByKey($statusKey, $status);
+		} finally {
+			$this->releaseVideoQueueLock($writeLock);
+		}
 	}
 
 	/**
@@ -1753,17 +2209,23 @@ class Transcode extends Component
 	 */
 	public function writeVideoPosterStatus(Asset|string $filePath, array $videoOptions, array $status, array $encodingOptions = []): void
 	{
-		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+		$filePath = $this->resolveVideoAssetInput($filePath);
 		$statusKey = $this->getVideoStatusKey($filePath, $videoOptions, $encodingOptions);
-		$storedStatus = $this->readVideoStatus($statusKey);
+		$writeLock = $this->acquireVideoQueueLock('status-' . $statusKey);
+		try {
+			$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
+			$storedStatus = $this->readVideoStatus($statusKey);
 
-		$this->writeVideoStatusByKey(
-			$statusKey,
-			$this->addAssetStatusInfo(
-				$filePath,
-				array_merge($this->getVideoStatusStorageInfo($outputInfo), $storedStatus, $status)
-			)
-		);
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo(
+					$filePath,
+					array_merge($this->getVideoStatusStorageInfo($outputInfo), $storedStatus, $status)
+				)
+			);
+		} finally {
+			$this->releaseVideoQueueLock($writeLock);
+		}
 	}
 
 	/**
@@ -1777,13 +2239,19 @@ class Transcode extends Component
 	 */
 	public function getVideoStatusKey(Asset|string $filePath, array $videoOptions = [], array $encodingOptions = []): string
 	{
+		$filePath = $this->resolveVideoAssetInput($filePath);
 		$videoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
 		$settings = Transcoder::$plugin->getSettings();
 		$videoEncoders = $settings['videoEncoders'];
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 
-		return 'video-' . sha1($this->getVideoEncodedFilename($filePath, $videoOptions) . JsonHelper::encode($encodingOptions));
+		$identity = $this->getVideoEncodedFilename($filePath, $videoOptions);
+		if ($filePath instanceof Asset && $filePath->id) {
+			$identity = 'asset:' . $filePath->id . ':generation:' . ($this->resolveVideoSourceGeneration($filePath) ?? 'legacy') . ':' . $identity;
+		}
+
+		return 'video-' . sha1($identity . JsonHelper::encode($encodingOptions));
 	}
 
 	/**
@@ -1792,6 +2260,10 @@ class Transcode extends Component
 	private function normalizeFilePath(string|Asset $input): array
 	{
 		if ($input instanceof Asset) {
+			if ($input->id && isset($this->videoSourcePathOverrides[(int)$input->id])) {
+				return ['path' => $this->videoSourcePathOverrides[(int)$input->id]];
+			}
+
 			$filePath = $this->getAssetPath($input);
 			if ($filePath !== '' && !$this->isUrl($filePath) && file_exists($filePath)) {
 				return ['path' => $filePath];
@@ -2024,6 +2496,7 @@ class Transcode extends Component
 	 */
 	public function getVideoThumbnailUrl(Asset|string $filePath, array $thumbnailOptions, bool $generate = true, bool $asPath = false, bool $synchronous = false): string|false|null
 	{
+		$filePath = $this->resolveVideoAssetInput($filePath);
 		if ($generate && !$this->isRuntimeEncodingEnabled()) {
 			return false;
 		}
@@ -2044,7 +2517,11 @@ class Transcode extends Component
 			$filePathResolved = $normalized['path'];
 		}
 
-		if (!empty($filePathResolved)) {
+		$hasVersionedAssetIdentity = $filePath instanceof Asset
+			&& $filePath->id
+			&& $this->resolveVideoSourceGeneration($filePath) !== null;
+
+		if (!empty($filePathResolved) || $hasVersionedAssetIdentity) {
 			// Destination path & public URL base
 			if (!empty($subfolder)) {
 				$destThumbnailPath = rtrim(App::parseEnv($settings['transcoderPaths']['thumbnail']), DIRECTORY_SEPARATOR)
@@ -2067,7 +2544,7 @@ class Transcode extends Component
 			// Build the file name. Poster handles and visual generation toggles should
 			// not change poster filenames; time/size/aspect options already separate them.
 			$primaryThumbnailFile = $this->getFilename(
-				$filePathResolved,
+				$filePath instanceof Asset ? $filePath : $filePathResolved,
 				$thumbnailOptions,
 				$this->getThumbnailFilenameExcludeParams()
 			);
@@ -2085,10 +2562,20 @@ class Transcode extends Component
 
 			// Public URL
 			$publicUrl = $urlBase . '/' . $destThumbnailFile;
+			$destThumbnailFilePath = $destThumbnailPath . $destThumbnailFile;
 
-			// Check if remote file exists first
-			if ($this->isUrl($filePathResolved) && $this->doesRemoteFileExist($publicUrl)) {
+			if (is_file($destThumbnailFilePath) && filesize($destThumbnailFilePath) > 0) {
+				return $asPath ? $destThumbnailFilePath : $publicUrl;
+			}
+
+			// A read-only frontend may not be able to resolve a private source, but it
+			// can still discover the exact immutable poster through its public URL.
+			if (!$asPath && $this->doesRemoteFileExist($publicUrl)) {
 				return $publicUrl;
+			}
+
+			if (empty($filePathResolved)) {
+				return false;
 			}
 
 			// Build the ffmpeg command
@@ -2116,10 +2603,17 @@ class Transcode extends Component
 			}
 
 			// Destination file path
-			$destThumbnailPath .= $destThumbnailFile;
+			$destThumbnailPath = $destThumbnailFilePath;
 
-			// Final ffmpeg command
-			$ffmpegCmd .= ' -f image2 -y ' . escapeshellarg($destThumbnailPath);
+			// Publish only complete images. This prevents duplicate workers from
+			// exposing partially written posters for the same immutable generation.
+			$stagedThumbnailPath = $destThumbnailPath . '.part-' . bin2hex(random_bytes(8));
+			$ffmpegCmd .= ' -f image2 -y ' . escapeshellarg($stagedThumbnailPath);
+			$ffmpegCmd .= ' && mv -f ' . escapeshellarg($stagedThumbnailPath) . ' ' . escapeshellarg($destThumbnailPath);
+			$thumbnailWorkerCommand = $ffmpegCmd
+				. '; result=$?; if [ "$result" -ne 0 ]; then rm -f '
+				. escapeshellarg($stagedThumbnailPath)
+				. '; fi; exit "$result"';
 
 			// Generate thumbnail if not exists
 			if (!file_exists($destThumbnailPath)) {
@@ -2131,7 +2625,7 @@ class Transcode extends Component
 
 				if ($generate) {
 					if ($synchronous) {
-						$shellOutput = $this->executeShellCommand($ffmpegCmd . ' 2>&1');
+						$shellOutput = $this->executeShellCommand('( ' . $thumbnailWorkerCommand . ' ) 2>&1');
 						Craft::info($ffmpegCmd, __METHOD__);
 
 						if (!file_exists($destThumbnailPath) || filesize($destThumbnailPath) === 0) {
@@ -2142,7 +2636,7 @@ class Transcode extends Component
 							throw new \RuntimeException($message);
 						}
 					} else {
-						$shellOutput = $this->executeShellCommand($ffmpegCmd . ' >/dev/null 2>/dev/null &');
+						$shellOutput = $this->executeShellCommand('( ' . $thumbnailWorkerCommand . ' ) >/dev/null 2>/dev/null &');
 						Craft::info($ffmpegCmd, __METHOD__);
 					}
 				} else {
@@ -3416,8 +3910,12 @@ class Transcode extends Component
 		$settings = Transcoder::$plugin->getSettings();
 		$excludeParams ??= self::EXCLUDE_PARAMS;
 		$useHashedNames ??= (bool)$settings['useHashedNames'];
-		$assetId = $includeAssetId && $filePath instanceof Asset ? $filePath->id : null;
+		$asset = $filePath instanceof Asset ? $filePath : null;
+		$assetId = $includeAssetId && $asset ? $asset->id : null;
 		$filePath = $this->getAssetPath($filePath);
+		if ($asset !== null && $filePath === '') {
+			$filePath = $asset->filename;
+		}
 
 		$validator = new UrlValidator();
 		$error = '';
@@ -3456,6 +3954,20 @@ class Transcode extends Component
 		}
 		
 		$fileName .= $options['fileSuffix'];
+		if ($asset !== null && $asset->id) {
+			$sourceGeneration = $this->resolveVideoSourceGeneration($asset);
+			if ($sourceGeneration !== null) {
+				$extension = pathinfo($fileName, PATHINFO_EXTENSION);
+				$variant = hash('sha256', $fileName . "\0" . $asset->id . "\0" . $sourceGeneration);
+				$fileName = 'asset'
+					. $asset->id
+					. '_source'
+					. substr($sourceGeneration, 0, 16)
+					. '_'
+					. substr($variant, 0, 16)
+					. ($extension !== '' ? '.' . $extension : '');
+			}
+		}
 
 		return $fileName;
 	}
@@ -4874,6 +5386,7 @@ class Transcode extends Component
 	 */
 	protected function getVideoOutputInfo(Asset|string $filePath, array $videoOptions, bool $checkOriginalExists = true): array
 	{
+		$filePath = $this->resolveVideoAssetInput($filePath);
 		$settings = Transcoder::$plugin->getSettings();
 		$subfolder = $this->getSubfolderFromPath($filePath);
 		$normalized = $this->normalizeFilePath($filePath);
@@ -4990,6 +5503,10 @@ class Transcode extends Component
 		string $primaryFilename
 	): array {
 		$candidates = [$primaryFilename];
+		if ($filePath instanceof Asset && $filePath->id && $this->resolveVideoSourceGeneration($filePath) !== null) {
+			return $candidates;
+		}
+
 		$legacyInputs = [$filePath];
 
 		if ($filePathResolved !== null && $filePathResolved !== '') {
@@ -5183,6 +5700,10 @@ class Transcode extends Component
 		string $primaryFilename
 	): array {
 		$candidates = [$primaryFilename];
+		if ($filePath instanceof Asset && $filePath->id && $this->resolveVideoSourceGeneration($filePath) !== null) {
+			return $candidates;
+		}
+
 		$legacyInputs = [$filePath];
 		$thumbnailFilenameExcludeParams = $this->getThumbnailFilenameExcludeParams();
 
@@ -5568,6 +6089,7 @@ class Transcode extends Component
 	{
 		if ($filePath instanceof Asset && $filePath->id) {
 			$status['assetId'] = (int)$filePath->id;
+			$status['sourceGeneration'] = $this->resolveVideoSourceGeneration($filePath);
 		}
 
 		return $status;
@@ -5694,6 +6216,9 @@ class Transcode extends Component
 			}
 
 			if ((int)($status['assetId'] ?? 0) !== (int)$asset->id) {
+				continue;
+			}
+			if (($status['sourceGeneration'] ?? null) !== $this->resolveVideoSourceGeneration($asset)) {
 				continue;
 			}
 
@@ -5912,13 +6437,17 @@ class Transcode extends Component
 	 */
 	protected function getVideoPosterStatusDebug(Asset|string $filePath): array
 	{
+		$filePath = $this->resolveVideoAssetInput($filePath);
 		$result = [];
 		$settings = Transcoder::$plugin->getSettings();
 		$subfolder = $this->getSubfolderFromPath($filePath);
 		$normalized = $this->normalizeFilePath($filePath);
 		$filePathResolved = $normalized['url'] ?? ($normalized['path'] ?? null);
 
-		if ($filePathResolved === null || $filePathResolved === '') {
+		$hasVersionedAssetIdentity = $filePath instanceof Asset
+			&& $filePath->id
+			&& $this->resolveVideoSourceGeneration($filePath) !== null;
+		if (($filePathResolved === null || $filePathResolved === '') && !$hasVersionedAssetIdentity) {
 			return [
 				'error' => 'Unable to resolve poster source path or URL.',
 			];
@@ -5944,7 +6473,7 @@ class Transcode extends Component
 			$options['posterFormat'] = $formatHandle;
 			$options['preventBlackBars'] = (bool)$settings->preventVideoPosterBlackBars;
 			$primaryFilename = $this->getFilename(
-				$filePathResolved,
+				$filePath instanceof Asset ? $filePath : $filePathResolved,
 				$options,
 				$this->getThumbnailFilenameExcludeParams()
 			);
@@ -5978,8 +6507,8 @@ class Transcode extends Component
 		string $destThumbnailPath,
 		?string $primaryFilename = null
 	): array {
-		$primaryFilename ??= $filePathResolved !== null
-			? $this->getFilename($filePathResolved, $thumbnailOptions, $this->getThumbnailFilenameExcludeParams())
+		$primaryFilename ??= ($filePath instanceof Asset || $filePathResolved !== null)
+			? $this->getFilename($filePath instanceof Asset ? $filePath : (string)$filePathResolved, $thumbnailOptions, $this->getThumbnailFilenameExcludeParams())
 			: '';
 
 		$candidates = [];
@@ -6311,12 +6840,20 @@ class Transcode extends Component
 	{
 		$status['key'] = $key;
 		$status['updatedAt'] = time();
+		$path = $this->getVideoStatusPath($key);
+		$tempPath = $path . '.tmp-' . bin2hex(random_bytes(8));
 
 		try {
 			FileHelper::createDirectory($this->getVideoStatusDirectory());
-			file_put_contents($this->getVideoStatusPath($key), JsonHelper::encode($status));
+			if (file_put_contents($tempPath, JsonHelper::encode($status)) === false || !@rename($tempPath, $path)) {
+				throw new \RuntimeException('Unable to atomically write Transcoder status file: ' . $path);
+			}
 		} catch (Throwable $e) {
 			Craft::error($e->getMessage(), __METHOD__);
+		} finally {
+			if (is_file($tempPath)) {
+				@unlink($tempPath);
+			}
 		}
 	}
 

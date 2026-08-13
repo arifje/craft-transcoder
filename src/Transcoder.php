@@ -21,6 +21,7 @@ use craft\events\PluginEvent;
 use craft\events\RegisterCacheOptionsEvent;
 use craft\events\RegisterComponentTypesEvent;
 use craft\events\RegisterUrlRulesEvent;
+use craft\events\ReplaceAssetEvent;
 use craft\events\TemplateEvent;
 use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\FileHelper;
@@ -92,7 +93,7 @@ class Transcoder extends Plugin
     /**
      * @var string
      */
-    public string $schemaVersion = '1.1.0';
+    public string $schemaVersion = '1.2.0';
 
     // Public Methods
     // =========================================================================
@@ -311,6 +312,23 @@ class Transcoder extends Plugin
                 $this->queueMediaInspectionForUploadedAsset($asset);
             }
         );
+        Event::on(
+            Assets::class,
+            Assets::EVENT_AFTER_REPLACE_ASSET,
+            function(ReplaceAssetEvent $event): void {
+                try {
+                    $this->queueMediaRefreshForReplacedAsset($event->asset);
+                } catch (Throwable $e) {
+                    Craft::error(
+                        'Transcoder could not queue replaced video asset #'
+                        . ($event->asset->id ?? 'unknown')
+                        . ': '
+                        . $e->getMessage(),
+                        __METHOD__
+                    );
+                }
+            }
+        );
         // Handler: Plugins::EVENT_AFTER_INSTALL_PLUGIN
         Event::on(
             Plugins::class,
@@ -384,6 +402,47 @@ class Transcoder extends Plugin
         ]));
 
         Craft::info('Transcoder: queued media inspection job ' . $jobId . ' for new asset #' . $asset->id, __METHOD__);
+    }
+
+    /**
+     * Advance a replaced video's immutable output generation and queue fresh media work.
+     *
+     * @param Asset $asset
+     * @return void
+     */
+    protected function queueMediaRefreshForReplacedAsset(Asset $asset): void
+    {
+        if (!$asset->id || !$this->transcode->isAssetVideo($asset)) {
+            return;
+        }
+
+        $sourceGeneration = $this->transcode->beginVideoSourceGeneration($asset);
+        if (!$this->transcode->isVideoAutomaticQueueConfigured()) {
+            Craft::info(
+                'Transcoder: marked replacement generation ' . $sourceGeneration . ' for video asset #' . $asset->id,
+                __METHOD__
+            );
+            return;
+        }
+
+        $settings = $this->getSettings();
+        $jobId = Craft::$app->getQueue()->push(new InspectMediaAsset([
+            'assetId' => $asset->id,
+            'sourceGeneration' => $sourceGeneration,
+            'attempt' => 1,
+            'maxRetries' => max(0, (int)($settings['mediaInspectionMaxRetries'] ?? 5)),
+            'retryDelaySeconds' => max(0, (int)($settings['mediaInspectionRetryDelaySeconds'] ?? 10)),
+        ]));
+
+        Craft::info(
+            'Transcoder: queued replacement inspection job '
+            . $jobId
+            . ' for video asset #'
+            . $asset->id
+            . ' generation '
+            . $sourceGeneration,
+            __METHOD__
+        );
     }
 
     /**

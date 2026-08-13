@@ -28,6 +28,11 @@ class GenerateVideoPosters extends BaseJob
     public ?int $assetId = null;
 
     /**
+     * @var string|null Immutable source generation captured when this job was queued.
+     */
+    public ?string $sourceGeneration = null;
+
+    /**
      * @var string|null
      */
     public ?string $ownerTitle = null;
@@ -80,6 +85,69 @@ class GenerateVideoPosters extends BaseJob
             return;
         }
 
+        $transcode = Transcoder::$plugin->transcode;
+        if (!$transcode->isVideoSourceGenerationCurrent((int)$asset->id, $this->sourceGeneration)) {
+            Craft::info(
+                'Transcoder poster queue job skipped superseded source generation for asset ID: ' . $this->assetId,
+                __METHOD__
+            );
+            $this->setProgress($queue, 1, Craft::t('transcoder', 'Superseded video source skipped'));
+            return;
+        }
+
+        $sourceCopy = null;
+        $sourceCopyError = null;
+        try {
+            if ($this->sourceGeneration !== null && $transcode->isRuntimeEncodingEnabled()) {
+                try {
+                    $sourceCopy = $transcode->getVideoSourceCopy($asset, $this->sourceGeneration);
+                } catch (Throwable $e) {
+                    if (!$transcode->isVideoSourceGenerationCurrent((int)$asset->id, $this->sourceGeneration)) {
+                        Craft::info(
+                            'Transcoder poster queue job skipped source generation that was superseded while copying asset ID: ' . $this->assetId,
+                            __METHOD__
+                        );
+                        $this->setProgress($queue, 1, Craft::t('transcoder', 'Superseded video source skipped'));
+                        return;
+                    }
+                    $sourceCopyError = $e;
+                }
+            }
+
+            if (!$transcode->isVideoSourceGenerationCurrent((int)$asset->id, $this->sourceGeneration)) {
+                Craft::info(
+                    'Transcoder poster queue job skipped source generation superseded before generation for asset ID: ' . $this->assetId,
+                    __METHOD__
+                );
+                $this->setProgress($queue, 1, Craft::t('transcoder', 'Superseded video source skipped'));
+                return;
+            }
+
+            $transcode->withVideoSourceGeneration(
+                $asset,
+                $this->sourceGeneration,
+                $sourceCopy,
+                function() use ($queue, $asset, $sourceCopyError): void {
+                    $this->executeForSourceGeneration($queue, $asset, $sourceCopyError);
+                }
+            );
+        } finally {
+            if ($sourceCopy !== null && is_file($sourceCopy)) {
+                @unlink($sourceCopy);
+            }
+        }
+    }
+
+    /**
+     * Execute the job while Transcode is pinned to the queued source generation.
+     *
+     * @param mixed $queue
+     * @param Asset $asset
+     * @param Throwable|null $sourceCopyError
+     * @return void
+     */
+    private function executeForSourceGeneration(mixed $queue, Asset $asset, ?Throwable $sourceCopyError): void
+    {
         if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
             Transcoder::$plugin->transcode->writeVideoPosterStatus(
                 $asset,
@@ -99,6 +167,10 @@ class GenerateVideoPosters extends BaseJob
         }
 
         try {
+            if ($sourceCopyError !== null) {
+                throw $sourceCopyError;
+            }
+
             if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
                 throw new \RuntimeException(Craft::t('transcoder', 'Original video source is not reachable yet'));
             }
@@ -119,7 +191,7 @@ class GenerateVideoPosters extends BaseJob
 
             $posters = Transcoder::$plugin->transcode->generateVideoPosters(
                 $asset,
-                function (string $formatHandle, int $current, int $total) use ($asset, $queue): void {
+                function(string $formatHandle, int $current, int $total) use ($asset, $queue): void {
                     $progress = $total > 0 ? (int)floor((($current - 1) / $total) * 100) : 0;
                     $message = Craft::t('transcoder', 'Generating video poster {current} of {total}', [
                         'current' => $current,
@@ -168,6 +240,15 @@ class GenerateVideoPosters extends BaseJob
                 'message' => $e->getMessage(),
             ]);
             Craft::error($message, __METHOD__);
+
+            if (!Transcoder::$plugin->transcode->isVideoSourceGenerationCurrent((int)$asset->id, $this->sourceGeneration)) {
+                Craft::info(
+                    'Transcoder poster queue job stopped writing status because its source generation was superseded for asset ID: ' . $this->assetId,
+                    __METHOD__
+                );
+                $this->setProgress($queue, 1, Craft::t('transcoder', 'Superseded video source skipped'));
+                return;
+            }
 
             if ($this->retryLater($queue, $asset, $message, $e)) {
                 return;
@@ -222,6 +303,7 @@ class GenerateVideoPosters extends BaseJob
         $queueTtrSeconds = max(1, $this->queueTtrSeconds);
         $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
             'assetId' => $asset->id,
+            'sourceGeneration' => $this->sourceGeneration,
             'ownerTitle' => $this->ownerTitle,
             'videoOptions' => $this->videoOptions,
             'encodingOptions' => $this->encodingOptions,
