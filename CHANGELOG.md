@@ -1,15 +1,18 @@
 # Transcoder Changelog
 
-## 4.4.41 - 2026.08.13
+## 4.4.42 - 2026.08.13
 ### Added
-* Re-encode videos and regenerate configured posters when Craft replaces a video Asset file.
-* Track a shared per-Asset source generation so replacement output remains correct across web and queue workers.
-* Resolve legacy video source URL/path arguments back to their versioned Asset when the match is unambiguous.
+* Add `refreshVideoAsset()` for integrations that intentionally replace a video Asset's source file.
 
 ### Changed
-* Give replacement generations immutable video, poster, and status identities instead of reusing an existing derivative.
-* Snapshot replacement sources for queued FFmpeg work and isolate superseded jobs from the current generation.
-* Publish videos and posters through run-specific staging files so only complete output becomes visible.
+* Queue Transcoder-owned invalidation after replacement, wait safely for any active Asset-owned encode, then remove the automatic video, configured posters, temporary files, and matching runtime status before fresh inspection.
+* Give Asset-based video and poster output an Asset-ID-qualified filename and publish output atomically, preventing collisions between same-named Assets.
+* Resolve unambiguous legacy `asset.url` calls back to their Asset so existing templates use the new owned output.
+* Replace 4.4.41's source-generation table design with explicit, filesystem-owned invalidation; no replacement state is stored in the database.
+
+## 4.4.41 - 2026.08.13
+### Changed
+* Added source-generation tracking for replaced video Assets. This implementation was superseded by the explicit invalidation API in 4.4.42.
 
 ## 4.4.40 - 2026.07.14
 ### Changed

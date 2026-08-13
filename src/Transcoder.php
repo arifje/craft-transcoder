@@ -21,7 +21,6 @@ use craft\events\PluginEvent;
 use craft\events\RegisterCacheOptionsEvent;
 use craft\events\RegisterComponentTypesEvent;
 use craft\events\RegisterUrlRulesEvent;
-use craft\events\ReplaceAssetEvent;
 use craft\events\TemplateEvent;
 use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\FileHelper;
@@ -93,6 +92,8 @@ class Transcoder extends Plugin
     /**
      * @var string
      */
+    // Keep the published 1.2.0 schema identifier for upgrade compatibility.
+    // Transcoder 4.4.42 does not create or require replacement-generation data.
     public string $schemaVersion = '1.2.0';
 
     // Public Methods
@@ -197,7 +198,7 @@ class Transcoder extends Plugin
         Event::on(
             CraftVariable::class,
             CraftVariable::EVENT_INIT,
-            function (Event $event) {
+			function (Event $event) {
                 /** @var CraftVariable $variable */
                 $variable = $event->sender;
                 $variable->set('transcoder', [
@@ -216,7 +217,7 @@ class Transcoder extends Plugin
         Event::on(
             View::class,
             View::EVENT_BEFORE_RENDER_TEMPLATE,
-            function (TemplateEvent $event) {
+			function (TemplateEvent $event) {
                 if (
                     $event->template === 'settings/plugins/_settings.twig'
                     && ($event->variables['plugin']->handle ?? null) === $this->handle
@@ -256,7 +257,7 @@ class Transcoder extends Plugin
         Event::on(
             Utilities::class,
             $eventName,
-            static function (RegisterComponentTypesEvent $event) {
+			static function (RegisterComponentTypesEvent $event) {
                 $event->types[] = EncodingUtility::class;
             }
         );
@@ -272,7 +273,7 @@ class Transcoder extends Plugin
         Event::on(
             Assets::class,
             Assets::EVENT_DEFINE_THUMB_URL,
-            static function (DefineAssetThumbUrlEvent $event) {
+			static function (DefineAssetThumbUrlEvent $event) {
                 Craft::debug(
                     'Assets::EVENT_GET_THUMB_PATH',
                     __METHOD__
@@ -291,7 +292,7 @@ class Transcoder extends Plugin
             Event::on(
                 ClearCaches::class,
                 ClearCaches::EVENT_REGISTER_CACHE_OPTIONS,
-                function (RegisterCacheOptionsEvent $event) {
+				function (RegisterCacheOptionsEvent $event) {
                     $event->options[] = [
                         'key' => 'transcoder',
                         'label' => Craft::t('transcoder', 'Transcoder caches'),
@@ -303,7 +304,7 @@ class Transcoder extends Plugin
         Event::on(
             Asset::class,
             Asset::EVENT_AFTER_SAVE,
-            function (ModelEvent $event) {
+			function (ModelEvent $event) {
                 $asset = $event->sender;
                 if (!$asset instanceof Asset || !$event->isNew) {
                     return;
@@ -312,28 +313,11 @@ class Transcoder extends Plugin
                 $this->queueMediaInspectionForUploadedAsset($asset);
             }
         );
-        Event::on(
-            Assets::class,
-            Assets::EVENT_AFTER_REPLACE_ASSET,
-            function(ReplaceAssetEvent $event): void {
-                try {
-                    $this->queueMediaRefreshForReplacedAsset($event->asset);
-                } catch (Throwable $e) {
-                    Craft::error(
-                        'Transcoder could not queue replaced video asset #'
-                        . ($event->asset->id ?? 'unknown')
-                        . ': '
-                        . $e->getMessage(),
-                        __METHOD__
-                    );
-                }
-            }
-        );
         // Handler: Plugins::EVENT_AFTER_INSTALL_PLUGIN
         Event::on(
             Plugins::class,
             Plugins::EVENT_AFTER_INSTALL_PLUGIN,
-            function (PluginEvent $event) {
+			function (PluginEvent $event) {
                 if ($event->plugin === $this) {
                     $request = Craft::$app->getRequest();
                     if ($request->isCpRequest) {
@@ -358,7 +342,7 @@ class Transcoder extends Plugin
         Event::on(
             UrlManager::class,
             UrlManager::EVENT_REGISTER_SITE_URL_RULES,
-            function (RegisterUrlRulesEvent $event) {
+			function (RegisterUrlRulesEvent $event) {
                 Craft::debug(
                     'UrlManager::EVENT_REGISTER_SITE_URL_RULES',
                     __METHOD__
@@ -402,47 +386,6 @@ class Transcoder extends Plugin
         ]));
 
         Craft::info('Transcoder: queued media inspection job ' . $jobId . ' for new asset #' . $asset->id, __METHOD__);
-    }
-
-    /**
-     * Advance a replaced video's immutable output generation and queue fresh media work.
-     *
-     * @param Asset $asset
-     * @return void
-     */
-    protected function queueMediaRefreshForReplacedAsset(Asset $asset): void
-    {
-        if (!$asset->id || !$this->transcode->isAssetVideo($asset)) {
-            return;
-        }
-
-        $sourceGeneration = $this->transcode->beginVideoSourceGeneration($asset);
-        if (!$this->transcode->isVideoAutomaticQueueConfigured()) {
-            Craft::info(
-                'Transcoder: marked replacement generation ' . $sourceGeneration . ' for video asset #' . $asset->id,
-                __METHOD__
-            );
-            return;
-        }
-
-        $settings = $this->getSettings();
-        $jobId = Craft::$app->getQueue()->push(new InspectMediaAsset([
-            'assetId' => $asset->id,
-            'sourceGeneration' => $sourceGeneration,
-            'attempt' => 1,
-            'maxRetries' => max(0, (int)($settings['mediaInspectionMaxRetries'] ?? 5)),
-            'retryDelaySeconds' => max(0, (int)($settings['mediaInspectionRetryDelaySeconds'] ?? 10)),
-        ]));
-
-        Craft::info(
-            'Transcoder: queued replacement inspection job '
-            . $jobId
-            . ' for video asset #'
-            . $asset->id
-            . ' generation '
-            . $sourceGeneration,
-            __METHOD__
-        );
     }
 
     /**

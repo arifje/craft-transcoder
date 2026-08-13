@@ -27,7 +27,7 @@ class InspectMediaAsset extends BaseJob
     public ?int $assetId = null;
 
     /**
-     * @var string|null Immutable replacement generation; null for legacy uploads.
+     * @var string|null Ignored compatibility field for jobs serialized by 4.4.41.
      */
     public ?string $sourceGeneration = null;
 
@@ -63,15 +63,6 @@ class InspectMediaAsset extends BaseJob
             return;
         }
 
-        if (!Transcoder::$plugin->transcode->isVideoSourceGenerationCurrent((int)$asset->id, $this->sourceGeneration)) {
-            Craft::info(
-                'Transcoder media inspection skipped superseded source generation for asset ID: ' . $this->assetId,
-                __METHOD__
-            );
-            $this->setProgress($queue, 1, Craft::t('transcoder', 'Newer video source already queued'));
-            return;
-        }
-
         if (!Transcoder::$plugin->transcode->isQueueableMediaAsset($asset)) {
             $this->setProgress($queue, 1, Craft::t('transcoder', 'Asset does not require automatic transcoding'));
             return;
@@ -86,7 +77,7 @@ class InspectMediaAsset extends BaseJob
             return;
         }
 
-        if ($this->sourceGeneration === null && !Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
+        if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
             $this->retryLater($queue, Craft::t('transcoder', 'Original source for asset #{id} is not reachable yet', [
                 'id' => $asset->id,
             ]));
@@ -94,7 +85,7 @@ class InspectMediaAsset extends BaseJob
         }
 
         $this->setProgress($queue, 0.5, Craft::t('transcoder', 'Checking existing Transcoder output'));
-        $statuses = Transcoder::$plugin->transcode->queueMediaForAssetGeneration($asset, $this->sourceGeneration);
+        $statuses = Transcoder::$plugin->transcode->queueMediaForAsset($asset);
 
         foreach ($statuses as $mediaType => $status) {
             Craft::info(
@@ -152,7 +143,6 @@ class InspectMediaAsset extends BaseJob
 
         Craft::$app->getQueue()->delay($delay)->push(new self([
             'assetId' => $this->assetId,
-            'sourceGeneration' => $this->sourceGeneration,
             'attempt' => $nextAttempt,
             'maxRetries' => $maxRetries,
             'retryDelaySeconds' => $delay,

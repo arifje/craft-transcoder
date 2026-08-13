@@ -21,7 +21,7 @@ use craft\helpers\StringHelper;
 class Install extends Migration
 {
     private const RUNTIME_SETTINGS_TABLE = '{{%transcoder_runtime_settings}}';
-    private const VIDEO_SOURCES_TABLE = '{{%transcoder_video_sources}}';
+    private const LEGACY_VIDEO_SOURCES_TABLE = '{{%transcoder_video_sources}}';
 
     /**
      * @inheritdoc
@@ -29,7 +29,6 @@ class Install extends Migration
     public function safeUp(): bool
     {
         $this->createRuntimeSettingsTable();
-        $this->createVideoSourcesTable();
 
         return true;
     }
@@ -39,7 +38,7 @@ class Install extends Migration
      */
     public function safeDown(): bool
     {
-        $this->dropTableIfExists(self::VIDEO_SOURCES_TABLE);
+        $this->dropTableIfExists(self::LEGACY_VIDEO_SOURCES_TABLE);
         $this->dropTableIfExists(self::RUNTIME_SETTINGS_TABLE);
 
         return true;
@@ -73,26 +72,5 @@ class Install extends Migration
             'dateUpdated' => $now,
             'uid' => StringHelper::UUID(),
         ]);
-    }
-
-    /**
-     * Create shared source-generation state for replaced video assets.
-     */
-    private function createVideoSourcesTable(): void
-    {
-        if ($this->db->tableExists(self::VIDEO_SOURCES_TABLE)) {
-            return;
-        }
-
-        $this->createTable(self::VIDEO_SOURCES_TABLE, [
-            'assetId' => $this->integer()->notNull(),
-            'sourceGeneration' => $this->string(32)->notNull(),
-            'dateCreated' => $this->dateTime()->notNull(),
-            'dateUpdated' => $this->dateTime()->notNull(),
-            'uid' => $this->uid(),
-        ]);
-        $this->addPrimaryKey(null, self::VIDEO_SOURCES_TABLE, ['assetId']);
-        $this->createIndex(null, self::VIDEO_SOURCES_TABLE, ['sourceGeneration']);
-        $this->addForeignKey(null, self::VIDEO_SOURCES_TABLE, ['assetId'], '{{%elements}}', ['id'], 'CASCADE');
     }
 }

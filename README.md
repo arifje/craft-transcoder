@@ -57,7 +57,6 @@ Recent additions include:
 * Queue video encoding only when a new video asset is uploaded.
 * Keep Entry saves and existing asset metadata saves free of automatic Transcoder scanning.
 * Enqueue one lightweight upload-inspection job, then perform source, output and status checks asynchronously.
-* Re-encode an Asset after Craft replaces its underlying video file, including replacements made by Video Enhancer.
 * Delay video jobs created by upload inspection so asset renaming/moving plugins can settle the final filename before encoding starts.
 * Only queue video encoding for video assets.
 * Queue a missing encode from Twig/admin preview when enabled.
@@ -114,15 +113,19 @@ The inspection job reloads the Asset and performs source availability, existing 
 
 Normal Entry saves are never scanned, and saving metadata on an existing Asset does not trigger automatic transcoding. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` configuration aliases are still accepted, but now only enable new-asset upload processing; they do not restore Entry field scanning. Public element-scanning methods remain available for explicit API calls.
 
-Craft's dedicated `Assets::EVENT_AFTER_REPLACE_ASSET` event advances a shared source-generation token for replaced video Assets. The new generation gets unique video, poster, lock, and status identities, so an existing derivative cannot suppress fresh work and a superseded job cannot overwrite the current result. Queue jobs encode from a Craft-managed local source copy, which also supports private remote volumes and dedicated encoding hosts configured with `encodingServerNames`. Existing integrations that pass `asset.url` instead of the Asset object are resolved to the same generation when their source match is unambiguous. Old generations are left unreachable rather than deleted during the replacement request; Transcoder's normal cache-clearing workflow can retire accumulated derivatives.
+Craft's dedicated asset-replacement event is intentionally not registered by this workflow, so ordinary Asset metadata saves remain inert. Integrations that intentionally replace the video source can explicitly refresh Transcoder after the replacement succeeds:
 
-Run Craft's pending migrations after upgrading to create the shared `transcoder_video_sources` table:
-
-```bash
-php craft migrate/all
+```php
+$result = \nystudio107\transcoder\Transcoder::$plugin
+    ->getTranscode()
+    ->refreshVideoAsset($asset);
 ```
 
-Ordinary Asset metadata and Entry saves remain inert.
+`refreshVideoAsset()` queues a lightweight Transcoder refresh job. That job waits without signaling processes if an Asset-owned encode is active, removes the exact Asset-ID-qualified automatic encode, configured poster files, matching runtime status, and safe temporary files, then queues the normal `InspectMediaAsset` workflow when automatic video processing is enabled. Missing files are treated as already clean. Transcoder computes and validates all paths itself; callers should never derive or delete Transcoder paths. Private remote Assets are copied through Craft's native temporary-file API inside the encode/poster job and cleaned up afterwards.
+
+Asset-based video and poster filenames now include the Craft Asset ID. This prevents collisions and causes each existing Asset to receive a one-time new encode/poster URL when next requested or automatically queued. Unambiguous calls that still pass `asset.url` are resolved to the same Asset-owned output. Ambiguous raw URL strings retain legacy behavior.
+
+The refresh API does not create or read a source-generation database table. If 4.4.41 was installed, its now-unused table may remain harmlessly; 4.4.42 does not depend on it. Run the normal `php craft up` after updating so Craft records the published schema update; no replacement-state table is created by 4.4.42. Queue workers must share Transcoder's configured output and Craft runtime storage. Ad-hoc thumbnails outside the configured poster formats are not managed by this API.
 
 ### Watermarks
 
