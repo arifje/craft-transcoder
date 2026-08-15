@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+* Organize video settings into separate queue, posters, and watermark tabs in the Craft control panel.
+
 ### Added
 
 * Queue video encoding when new video assets are uploaded, with a configurable delay.
