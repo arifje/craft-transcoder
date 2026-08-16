@@ -84,6 +84,29 @@ class InspectMediaAsset extends BaseJob
             return;
         }
 
+        $settings = Transcoder::$plugin->getSettings();
+        $folderPath = trim(str_replace('\\', '/', (string)($asset->folderPath ?? '')), '/');
+        if ($settings->createSubfolders && $folderPath === '') {
+            if ($this->attempt <= max(0, $this->maxRetries)) {
+                $this->retryLater($queue, Craft::t('transcoder', 'Asset #{id} has not reached its final upload folder yet', [
+                    'id' => $asset->id,
+                ]));
+                return;
+            }
+
+            Craft::warning(
+                Craft::t(
+                    'transcoder',
+                    'Asset #{id} still has no output subfolder after {attempts} attempts; using the media-specific base directory',
+                    [
+                        'id' => $asset->id,
+                        'attempts' => max(0, $this->maxRetries) + 1,
+                    ]
+                ),
+                __METHOD__
+            );
+        }
+
         $this->setProgress($queue, 0.5, Craft::t('transcoder', 'Checking existing Transcoder output'));
         $statuses = Transcoder::$plugin->transcode->queueMediaForAsset($asset);
 

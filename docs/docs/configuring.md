@@ -71,7 +71,7 @@ return [
 
 When queueing is enabled, Transcoder listens only for brand-new Assets. The upload request checks the Asset ID, the event's new-asset flag, media type and automatic queue settings, then adds one lightweight `InspectMediaAsset` job and returns. Video uploads match `video/*`; GIF uploads match `image/gif`; other Assets do not create a job.
 
-`InspectMediaAsset` reloads the Asset and performs source availability, existing output, poster, active-job and status-file checks asynchronously. It queues the required video encode, poster or GIF jobs only after those checks. If Craft has not committed or relocated the Asset/source yet, inspection retries after `mediaInspectionRetryDelaySeconds` and stops after `mediaInspectionMaxRetries` retries.
+`InspectMediaAsset` reloads the Asset and performs source availability, existing output, poster, active-job and status-file checks asynchronously. It queues the required video encode, poster or GIF jobs only after those checks. If Craft has not committed the Asset/source or populated its final upload folder yet, inspection retries after `mediaInspectionRetryDelaySeconds`, up to `mediaInspectionMaxRetries` retries. An Asset that legitimately remains in the volume root continues after that bounded settling window and uses the media-specific base output directory.
 
 Normal Entry saves do not run Transcoder field scanning or create automatic jobs. Saving metadata on an existing media Asset also does not requeue it. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` aliases remain compatible with existing configuration, but only enable new upload processing; they no longer cause Entry scanning.
 

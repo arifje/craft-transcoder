@@ -109,7 +109,7 @@ The GIF settings include:
 
 When `queueVideosOnSave` or `queueGifsOnSave` is enabled, Transcoder reacts only to Craft's after-save event for a brand-new Asset. The upload request performs cheap ID, new-asset, media-type and setting checks, then pushes one `InspectMediaAsset` queue job and returns.
 
-The inspection job reloads the Asset and performs source availability, existing output, poster, active-job and runtime-status checks in the queue. It then uses the existing queueing methods to add `EncodeVideo`, `GenerateVideoPosters` or `EncodeGif` only when required. Temporarily unavailable Assets or sources are retried after `mediaInspectionRetryDelaySeconds`, up to `mediaInspectionMaxRetries` retries.
+The inspection job reloads the Asset and performs source availability, existing output, poster, active-job and runtime-status checks in the queue. It then uses the existing queueing methods to add `EncodeVideo`, `GenerateVideoPosters` or `EncodeGif` only when required. Temporarily unavailable Assets, sources, and final upload folders are retried after `mediaInspectionRetryDelaySeconds`, up to `mediaInspectionMaxRetries` retries. If an Asset legitimately remains in its volume root, processing continues after that bounded settling window and writes to the media-specific video, thumbnail, or GIF directory.
 
 Normal Entry saves are never scanned, and saving metadata on an existing Asset does not trigger automatic transcoding. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` configuration aliases are still accepted, but now only enable new-asset upload processing; they do not restore Entry field scanning. Public element-scanning methods remain available for explicit API calls.
 

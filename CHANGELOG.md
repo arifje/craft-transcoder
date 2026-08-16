@@ -1,5 +1,10 @@
 # Transcoder Changelog
 
+## 4.4.43 - 2026.08.16
+### Fixed
+* Keep automatic video, poster, and GIF output in their media-specific base directories when a newly uploaded Asset does not have a subfolder yet.
+* Give new Assets a bounded queue-only settling window to reach their final Craft upload folder before output paths are inspected.
+
 ## 4.4.42 - 2026.08.13
 ### Added
 * Add `refreshVideoAsset()` for integrations that intentionally replace a video Asset's source file.

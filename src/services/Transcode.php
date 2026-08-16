@@ -273,17 +273,9 @@ class Transcode extends Component
 		}
 
 		// Destination path & URL
-		if (!empty($subfolder)) {
-			$destVideoPath = rtrim(App::parseEnv($settings['transcoderPaths']['video']), DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR
-				. trim($subfolder, DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR;
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['video']), '/')
-				. '/' . trim($subfolder, '/');
-		} else {
-			$destVideoPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
-		}
+		$outputLocation = $this->getMediaOutputLocation('video', $subfolder);
+		$destVideoPath = $outputLocation['path'];
+		$urlBase = $outputLocation['url'];
 
 		if ($isDev) {
 			Craft::info("Destination path: $destVideoPath", __METHOD__);
@@ -2448,6 +2440,33 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Return the media-specific output path and URL, with an optional subfolder.
+	 *
+	 * @param string $mediaType
+	 * @param string $subfolder
+	 * @return array{path: string, url: string}
+	 */
+	protected function getMediaOutputLocation(string $mediaType, string $subfolder = ''): array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$path = $settings['transcoderPaths'][$mediaType] ?? $settings['transcoderPaths']['default'];
+		$url = $settings['transcoderUrls'][$mediaType] ?? $settings['transcoderUrls']['default'];
+		$path = rtrim((string)App::parseEnv($path), '/\\') . DIRECTORY_SEPARATOR;
+		$url = rtrim((string)App::parseEnv($url), '/');
+
+		$subfolder = trim(str_replace('\\', '/', $subfolder), '/');
+		if ($subfolder !== '') {
+			$path .= str_replace('/', DIRECTORY_SEPARATOR, $subfolder) . DIRECTORY_SEPARATOR;
+			$url .= '/' . $subfolder;
+		}
+
+		return [
+			'path' => $path,
+			'url' => $url,
+		];
+	}
+
+	/**
 	 * Checks if a remote file exists via HTTP.
 	 *
 	 * @param string $url The URL to check.
@@ -2618,20 +2637,9 @@ class Transcode extends Component
 		$hasAssetIdentity = $filePath instanceof Asset && $filePath->id;
 		if (!empty($filePathResolved) || $hasAssetIdentity) {
 			// Destination path & public URL base
-			if (!empty($subfolder)) {
-				$destThumbnailPath = rtrim(App::parseEnv($settings['transcoderPaths']['thumbnail']), DIRECTORY_SEPARATOR)
-					. DIRECTORY_SEPARATOR
-					. trim($subfolder, DIRECTORY_SEPARATOR)
-					. DIRECTORY_SEPARATOR;
-
-				$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['thumbnail']), '/')
-					. '/' . trim($subfolder, '/');
-			} else {
-				$destThumbnailPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR)
-					. DIRECTORY_SEPARATOR;
-
-				$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
-			}
+			$outputLocation = $this->getMediaOutputLocation('thumbnail', $subfolder);
+			$destThumbnailPath = $outputLocation['path'];
+			$urlBase = $outputLocation['url'];
 
 			// Options
 			$thumbnailOptions = $this->coalesceOptions('defaultThumbnailOptions', $thumbnailOptions);
@@ -3635,17 +3643,9 @@ class Transcode extends Component
 			$originalExists = file_exists($filePathResolved);
 		}
 
-		if (!empty($subfolder)) {
-			$destGifPath = rtrim(App::parseEnv($settings['transcoderPaths']['gif']), DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR
-				. trim($subfolder, DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR;
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['gif']), '/')
-				. '/' . trim($subfolder, '/');
-		} else {
-			$destGifPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
-		}
+		$outputLocation = $this->getMediaOutputLocation('gif', $subfolder);
+		$destGifPath = $outputLocation['path'];
+		$urlBase = $outputLocation['url'];
 
 		$gifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
 		$videoEncoders = $settings['videoEncoders'];
@@ -3717,15 +3717,9 @@ class Transcode extends Component
 		}
 	
 		// Destination path & URL
-		if (!empty($subfolder)) {
-			$destGifPath = rtrim(App::parseEnv($settings['transcoderPaths']['gif']), DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR . trim($subfolder, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['gif']), '/')
-				. '/' . trim($subfolder, '/');
-		} else {
-			$destGifPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
-		}
+		$outputLocation = $this->getMediaOutputLocation('gif', $subfolder);
+		$destGifPath = $outputLocation['path'];
+		$urlBase = $outputLocation['url'];
 	
 		$gifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
 		$videoEncoders = $settings['videoEncoders'];
@@ -5492,17 +5486,9 @@ class Transcode extends Component
 			$originalExists = $checkOriginalExists && file_exists($filePathResolved);
 		}
 
-		if (!empty($subfolder)) {
-			$destVideoPath = rtrim(App::parseEnv($settings['transcoderPaths']['video']), DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR
-				. trim($subfolder, DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR;
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['video']), '/')
-				. '/' . trim($subfolder, '/');
-		} else {
-			$destVideoPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
-		}
+		$outputLocation = $this->getMediaOutputLocation('video', $subfolder);
+		$destVideoPath = $outputLocation['path'];
+		$urlBase = $outputLocation['url'];
 
 		$videoOptions = $this->coalesceOptions('defaultVideoOptions', $videoOptions);
 		$videoEncoders = $settings['videoEncoders'];
@@ -6533,20 +6519,9 @@ class Transcode extends Component
 			];
 		}
 
-		if (!empty($subfolder)) {
-			$destThumbnailPath = rtrim(App::parseEnv($settings['transcoderPaths']['thumbnail']), DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR
-				. trim($subfolder, DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR;
-
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['thumbnail']), '/')
-				. '/' . trim($subfolder, '/');
-		} else {
-			$destThumbnailPath = rtrim(App::parseEnv($settings['transcoderPaths']['default']), DIRECTORY_SEPARATOR)
-				. DIRECTORY_SEPARATOR;
-
-			$urlBase = rtrim(App::parseEnv($settings['transcoderUrls']['default']), '/');
-		}
+		$outputLocation = $this->getMediaOutputLocation('thumbnail', $subfolder);
+		$destThumbnailPath = $outputLocation['path'];
+		$urlBase = $outputLocation['url'];
 
 		foreach ($this->getVideoPosterFormats() as $formatHandle => $format) {
 			$options = $this->coalesceOptions('defaultThumbnailOptions', $format);
