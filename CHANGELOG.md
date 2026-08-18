@@ -1,5 +1,15 @@
 # Transcoder Changelog
 
+## 4.4.44 - 2026.08.18
+### Added
+* Add a confirm-first `transcoder/videos/repair` console command with Entry creation-date and Entry-ID scopes, dry-run output, legacy cleanup, optional Entry-directory orphan cleanup, and asynchronous repair queueing.
+* Add separate per-server concurrency limits for video/poster FFmpeg jobs and GIF FFmpeg jobs.
+
+### Changed
+* Make the configured video filename strategy solely responsible for new video filenames, and stop adding `_asset{ID}` to new video, poster, or GIF output.
+* Keep Asset-ID-qualified output from 4.4.42-4.4.43 as a legacy lookup and cleanup candidate.
+* Defer capacity-limited queue work without counting it as a failed encoding attempt.
+
 ## 4.4.43 - 2026.08.16
 ### Fixed
 * Keep automatic video, poster, and GIF output in their media-specific base directories when a newly uploaded Asset does not have a subfolder yet.

@@ -149,6 +149,12 @@ return [
     // Seconds to delay video encode jobs created by the asynchronous upload inspection job
     'videoQueueDelaySeconds' => 10,
 
+    // Maximum active video encoding/poster FFmpeg jobs on each encoding server
+    'videoMaxConcurrentJobs' => 1,
+
+    // Seconds before a job deferred by an occupied FFmpeg pool tries again
+    'encodingConcurrencyRetryDelaySeconds' => 15,
+
     // Retry failed video encode jobs this many times before marking the queue job as failed
     'videoEncodeMaxRetries' => 2,
 
@@ -176,6 +182,9 @@ return [
 
     // Seconds to delay each queued GIF job after the previous one
     'gifQueueDelaySeconds' => 15,
+
+    // Maximum active GIF FFmpeg jobs on each encoding server
+    'gifMaxConcurrentJobs' => 4,
 
     // Retry failed video poster jobs this many times before marking the queue job as failed
     'videoPosterMaxRetries' => 2,

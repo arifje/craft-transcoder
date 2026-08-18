@@ -277,6 +277,20 @@ class Settings extends Model
     public int $videoQueueDelaySeconds = 10;
 
     /**
+     * Maximum active video/poster FFmpeg jobs on each encoding server.
+     *
+     * @var int
+     */
+    public int $videoMaxConcurrentJobs = 1;
+
+    /**
+     * Seconds before a capacity-limited queue job tries again.
+     *
+     * @var int
+     */
+    public int $encodingConcurrencyRetryDelaySeconds = 15;
+
+    /**
      * Number of retries after the initial video encode attempt fails.
      *
      * @var int
@@ -353,6 +367,13 @@ class Settings extends Model
      * @var int
      */
     public int $gifQueueDelaySeconds = 15;
+
+    /**
+     * Maximum active GIF FFmpeg jobs on each encoding server.
+     *
+     * @var int
+     */
+    public int $gifMaxConcurrentJobs = 4;
 
     /**
      * Number of retries after the initial video poster generation attempt fails.
@@ -616,8 +637,19 @@ class Settings extends Model
             [['queueVideosOnSave', 'queueVideosOnEntrySave'], 'boolean'],
             [['mediaInspectionMaxRetries', 'mediaInspectionRetryDelaySeconds'], 'integer'],
             [['mediaInspectionMaxRetries', 'mediaInspectionRetryDelaySeconds'], 'number', 'min' => 0],
-            [['videoQueueTtrSeconds', 'videoQueueDelaySeconds'], 'integer'],
+            [[
+                'videoQueueTtrSeconds',
+                'videoQueueDelaySeconds',
+                'videoMaxConcurrentJobs',
+                'gifMaxConcurrentJobs',
+                'encodingConcurrencyRetryDelaySeconds',
+            ], 'integer'],
             ['videoQueueTtrSeconds', 'number', 'min' => 1],
+            [[
+                'videoMaxConcurrentJobs',
+                'gifMaxConcurrentJobs',
+                'encodingConcurrencyRetryDelaySeconds',
+            ], 'number', 'min' => 1],
             ['videoQueueDelaySeconds', 'number', 'min' => 0],
             [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'integer'],
             [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'number', 'min' => 0],

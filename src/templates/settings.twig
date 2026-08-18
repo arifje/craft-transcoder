@@ -102,6 +102,30 @@
     }) }}
 
     {{ forms.textField({
+        label: 'Maximum concurrent video jobs'|t('transcoder'),
+        instructions: 'Maximum video encoding and video poster FFmpeg jobs that may run at the same time on each encoding server. Additional jobs remain queued.'|t('transcoder'),
+        warning: macros.configWarning('videoMaxConcurrentJobs', 'transcoder'),
+        id: 'videoMaxConcurrentJobs',
+        name: 'videoMaxConcurrentJobs',
+        value: settings.videoMaxConcurrentJobs,
+        type: 'number',
+        min: 1,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Concurrency retry delay'|t('transcoder'),
+        instructions: 'Seconds before an encoding job tries again when all slots in its FFmpeg pool are occupied. Capacity waits do not count as encoding failures.'|t('transcoder'),
+        warning: macros.configWarning('encodingConcurrencyRetryDelaySeconds', 'transcoder'),
+        id: 'encodingConcurrencyRetryDelaySeconds',
+        name: 'encodingConcurrencyRetryDelaySeconds',
+        value: settings.encodingConcurrencyRetryDelaySeconds,
+        type: 'number',
+        min: 1,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
         label: 'Video encode retries'|t('transcoder'),
         instructions: 'How many times a failed video encode job should be retried before it is marked as failed.'|t('transcoder'),
         warning: macros.configWarning('videoEncodeMaxRetries', 'transcoder'),
@@ -127,7 +151,7 @@
 
     {{ forms.selectField({
         label: 'Video filename strategy'|t('transcoder'),
-        instructions: 'Choose whether encoded video filenames should stay stable per source asset or include encoding options. Existing legacy filenames are still checked before a new encode is queued.'|t('transcoder'),
+        instructions: 'Choose whether encoded video filenames should stay stable per source asset or include encoding options. This strategy fully determines new filenames; existing legacy filenames are still checked before a new encode is queued.'|t('transcoder'),
         warning: macros.configWarning('videoFilenameStrategy', 'transcoder'),
         id: 'videoFilenameStrategy',
         name: 'videoFilenameStrategy',
@@ -433,6 +457,18 @@
         value: settings.gifQueueDelaySeconds,
         type: 'number',
         min: 0,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
+        label: 'Maximum concurrent GIF jobs'|t('transcoder'),
+        instructions: 'Maximum GIF encoding FFmpeg jobs that may run at the same time on each encoding server. GIF jobs use a separate pool from videos and posters.'|t('transcoder'),
+        warning: macros.configWarning('gifMaxConcurrentJobs', 'transcoder'),
+        id: 'gifMaxConcurrentJobs',
+        name: 'gifMaxConcurrentJobs',
+        value: settings.gifMaxConcurrentJobs,
+        type: 'number',
+        min: 1,
         size: 5,
     }) }}
 </div>

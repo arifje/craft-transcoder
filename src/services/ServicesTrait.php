@@ -19,6 +19,7 @@ use yii\base\InvalidConfigException;
  * @package   Transcode
  * @since     1.2.23
  *
+ * @property EncodingConcurrencyService $encodingConcurrency
  * @property RuntimeSettingsService $runtimeSettings
  * @property Transcode $transcode
  * @property VitePluginService $vite
@@ -35,6 +36,7 @@ trait ServicesTrait
     {
         return [
             'components' => [
+                'encodingConcurrency' => EncodingConcurrencyService::class,
                 'runtimeSettings' => RuntimeSettingsService::class,
                 'transcode' => Transcode::class,
                 // Register the vite service
@@ -64,6 +66,14 @@ trait ServicesTrait
     public function getTranscode(): Transcode
     {
         return $this->get('transcode');
+    }
+
+    /**
+     * Returns the FFmpeg concurrency service.
+     */
+    public function getEncodingConcurrency(): EncodingConcurrencyService
+    {
+        return $this->get('encodingConcurrency');
     }
 
     /**

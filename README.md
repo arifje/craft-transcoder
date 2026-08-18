@@ -63,6 +63,7 @@ Recent additions include:
 * Restrict which web server names are allowed to start new encoding work.
 * Keep Craft queue jobs alive while ffmpeg runs, with queue progress updates.
 * Configure the queue timeout/TTR for long video encoding and poster jobs.
+* Limit concurrent video/poster FFmpeg work independently on each encoding server.
 * Retry failed video encode jobs after a configurable delay before marking them as failed.
 * Detect failed or suspicious ffmpeg output and show the ffmpeg command/log in queue errors.
 * Detect and clean up stale `.lock`/`.progress` files from crashed encodes.
@@ -101,6 +102,7 @@ The GIF settings include:
 * Retry upload inspection asynchronously when Craft has not resolved the Asset or its source yet.
 * Only queue GIF encoding for `image/gif` assets.
 * Spread large GIF batches with a configurable queue delay.
+* Allow a separate, higher concurrent GIF job limit.
 * Fallback to the original GIF when encoding is disabled or unavailable.
 * Queue a missing GIF encode from Twig/admin preview when enabled.
 * Poll queue-aware GIF status with `craft.transcoder.getGifStatus()` and `craft.transcoder.getGifStatusUrl()`.
@@ -110,6 +112,8 @@ The GIF settings include:
 When `queueVideosOnSave` or `queueGifsOnSave` is enabled, Transcoder reacts only to Craft's after-save event for a brand-new Asset. The upload request performs cheap ID, new-asset, media-type and setting checks, then pushes one `InspectMediaAsset` queue job and returns.
 
 The inspection job reloads the Asset and performs source availability, existing output, poster, active-job and runtime-status checks in the queue. It then uses the existing queueing methods to add `EncodeVideo`, `GenerateVideoPosters` or `EncodeGif` only when required. Temporarily unavailable Assets, sources, and final upload folders are retried after `mediaInspectionRetryDelaySeconds`, up to `mediaInspectionMaxRetries` retries. If an Asset legitimately remains in its volume root, processing continues after that bounded settling window and writes to the media-specific video, thumbnail, or GIF directory.
+
+Active FFmpeg work is limited independently on each encoding server. Video encodes and video poster jobs share the `videoMaxConcurrentJobs` pool (default `1`), while GIF encodes use `gifMaxConcurrentJobs` (default `4`). When a pool is full, the job returns to Craft's queue after `encodingConcurrencyRetryDelaySeconds` without consuming an encoding retry. This allows queue workers to keep processing unrelated Craft jobs while preventing their worker concurrency from becoming the FFmpeg concurrency.
 
 Normal Entry saves are never scanned, and saving metadata on an existing Asset does not trigger automatic transcoding. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` configuration aliases are still accepted, but now only enable new-asset upload processing; they do not restore Entry field scanning. Public element-scanning methods remain available for explicit API calls.
 
@@ -121,11 +125,35 @@ $result = \nystudio107\transcoder\Transcoder::$plugin
     ->refreshVideoAsset($asset);
 ```
 
-`refreshVideoAsset()` queues a lightweight Transcoder refresh job. That job waits without signaling processes if an Asset-owned encode is active, removes the exact Asset-ID-qualified automatic encode, configured poster files, matching runtime status, and safe temporary files, then queues the normal `InspectMediaAsset` workflow when automatic video processing is enabled. Missing files are treated as already clean. Transcoder computes and validates all paths itself; callers should never derive or delete Transcoder paths. Private remote Assets are copied through Craft's native temporary-file API inside the encode/poster job and cleaned up afterwards.
+`refreshVideoAsset()` queues a lightweight Transcoder refresh job. That job waits without signaling processes if an Asset-owned encode is active, removes the canonical automatic encode, configured poster files, recognized legacy output, matching runtime status, and safe temporary files, then queues the normal `InspectMediaAsset` workflow when automatic video processing is enabled. Missing files are treated as already clean. Transcoder computes and validates all paths itself; callers should never derive or delete Transcoder paths. Private remote Assets are copied through Craft's native temporary-file API inside the encode/poster job and cleaned up afterwards.
 
-Asset-based video and poster filenames now include the Craft Asset ID. This prevents collisions and causes each existing Asset to receive a one-time new encode/poster URL when next requested or automatically queued. Unambiguous calls that still pass `asset.url` are resolved to the same Asset-owned output. Ambiguous raw URL strings retain legacy behavior.
+New video filenames are controlled only by **Video filename strategy**. `source` uses the source filename, while `options` derives the filename from the active encoding options. The short-lived `_asset{ID}` format from Transcoder 4.4.42-4.4.43 remains a lookup and cleanup candidate, but is never used for new video, poster, or GIF output. Unambiguous calls that pass either an Asset or `asset.url` resolve to the same canonical output.
 
 The refresh API does not create or read a source-generation database table. If 4.4.41 was installed, its now-unused table may remain harmlessly; 4.4.42 does not depend on it. Run the normal `php craft up` after updating so Craft records the published schema update; no replacement-state table is created by 4.4.42. Queue workers must share Transcoder's configured output and Craft runtime storage. Ad-hoc thumbnails outside the configured poster formats are not managed by this API.
+
+### Repairing Video Output
+
+The confirm-first console command can audit a bounded Entry scope, remove recognized alternate/invalid Transcoder output, and queue missing canonical videos and configured posters:
+
+```bash
+# Entries created on or after August 17, 2026
+php craft transcoder/videos/repair --from=2026-08-17
+
+# Inclusive Entry creation-date range
+php craft transcoder/videos/repair --from=2026-08-17 --to=2026-08-31
+
+# One Entry, or a comma-separated list
+php craft transcoder/videos/repair --entry-id=4958309
+php craft transcoder/videos/repair --entry-id=4958309,4958310
+
+# Print the complete plan without changing anything
+php craft transcoder/videos/repair --from=2026-08-17 --dry-run=1
+
+# Also remove orphan video files from Entry-ID output directories
+php craft transcoder/videos/repair --entry-id=4958309 --clean-orphans=1
+```
+
+The command recursively uses the same configured video field scope as the explicit element-scanning API. It keeps valid canonical output, lists every file proposed for deletion, skips Assets with active work, and requires a yes/no confirmation before changing anything. The optional `--clean-orphans=1` sweep removes other video files only from output directories whose final path segment exactly matches a selected Entry ID; shared and root output directories are never swept, and the sweep is skipped if any Asset could not be inspected. Original Craft Assets are never modified or removed. Missing work is added to Craft's queue and continues asynchronously after the command exits, subject to the same video concurrency limit as upload-triggered work.
 
 ### Watermarks
 
@@ -310,7 +338,6 @@ Click here -> [Transcoder Documentation](https://nystudio107.com/plugins/transco
 
 Some things to do, and ideas for potential features:
 
-* Add a console command for doing encodings via console
 * Figure out a way to reliably do multi-pass video encoding
 * Add audio normalization via `loudnorm` http://k.ylo.ph/2016/04/04/loudnorm.html
 

@@ -88,9 +88,69 @@ class EncodeVideo extends BaseJob
             return;
         }
 
-        Transcoder::$plugin->transcode->withLocalVideoSource($asset, function(?Throwable $sourceError) use ($queue, $asset): void {
-            $this->executeWithSource($queue, $asset, $sourceError);
-        });
+        $slot = null;
+        $settings = Transcoder::$plugin->getSettings();
+        if (Transcoder::$plugin->transcode->isRuntimeEncodingEnabled() && $settings->enableVideoEncoding) {
+            $slot = Transcoder::$plugin->encodingConcurrency->acquire(
+                'video',
+                (int)$settings->videoMaxConcurrentJobs,
+                'video encode',
+                $asset->id
+            );
+            if ($slot === null) {
+                $this->deferForCapacity($queue, $asset);
+                return;
+            }
+        }
+
+        try {
+            Transcoder::$plugin->transcode->withLocalVideoSource($asset, function(?Throwable $sourceError) use ($queue, $asset): void {
+                $this->executeWithSource($queue, $asset, $sourceError);
+            });
+        } finally {
+            $slot?->release();
+        }
+    }
+
+    /**
+     * Return this encode to the queue without consuming a failure attempt.
+     */
+    protected function deferForCapacity(mixed $queue, Asset $asset): void
+    {
+        $settings = Transcoder::$plugin->getSettings();
+        $delay = max(1, (int)$settings->encodingConcurrencyRetryDelaySeconds);
+        $queueTtrSeconds = max(1, $this->queueTtrSeconds);
+        $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
+            'assetId' => $asset->id,
+            'ownerTitle' => $this->ownerTitle,
+            'videoOptions' => $this->videoOptions,
+            'encodingOptions' => $this->encodingOptions,
+            'queueTtrSeconds' => $queueTtrSeconds,
+            'attempt' => $this->attempt,
+            'maxRetries' => $this->maxRetries,
+            'retryDelaySeconds' => $this->retryDelaySeconds,
+        ]));
+        $message = Craft::t('transcoder', 'Waiting for an available video encoding slot; retrying in {seconds}s', [
+            'seconds' => $delay,
+        ]);
+
+        $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
+        Transcoder::$plugin->transcode->writeVideoStatus(
+            $asset,
+            $this->videoOptions,
+            array_merge($status, [
+                'status' => 'queued',
+                'url' => '',
+                'progress' => 0,
+                'jobId' => $jobId,
+                'queueTtrSeconds' => $queueTtrSeconds,
+                'info' => $message,
+                'capacityDelay' => $delay,
+            ]),
+            $this->encodingOptions
+        );
+        $this->setProgress($queue, 1, $message);
+        Craft::info('Transcoder deferred video encode for asset #' . $asset->id . ': ' . $message, __METHOD__);
     }
 
     /**

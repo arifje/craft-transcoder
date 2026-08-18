@@ -291,9 +291,7 @@ class Transcode extends Component
 		$videoFilenameInput = $filePath instanceof Asset ? $filePath : ($filePathResolved ?? '');
 		$destVideoFile = $this->getVideoEncodedFilename(
 			$videoFilenameInput,
-			$videoOptions,
-			null,
-			$filePath instanceof Asset
+			$videoOptions
 		);
 		$videoFilenameCandidates = $this->getVideoFilenameCandidates(
 			$filePath,
@@ -301,17 +299,13 @@ class Transcode extends Component
 			$videoOptions,
 			$destVideoFile
 		);
-		if (!($filePath instanceof Asset)) {
-			$destVideoFile = $this->getExistingVideoFilenameCandidate(
-				$destVideoPath,
-				$filePath,
-				$filePathResolved,
-				$videoOptions,
-				$destVideoFile
-			);
-		} else {
-			$videoFilenameCandidates = [$destVideoFile];
-		}
+		$destVideoFile = $this->getExistingVideoFilenameCandidate(
+			$destVideoPath,
+			$filePath,
+			$filePathResolved,
+			$videoOptions,
+			$destVideoFile
+		);
 		$encodedFile   = $destVideoPath . $destVideoFile;
 		$publicUrl     = $urlBase . '/' . $destVideoFile;
 
@@ -633,22 +627,9 @@ class Transcode extends Component
 	public function queueVideoEncodesForElement(ElementInterface $element): int
 	{
 		$settings = Transcoder::$plugin->getSettings();
-		$fieldHandles = $settings['autoEncodeVideoFieldHandles'] ?? [];
 		$videoOptions = $settings['autoEncodeVideoOptions'] ?? [];
 		$encodingOptions = $settings['autoEncodeEncodingOptions'] ?? [];
-		$assets = [];
-
-		if (!empty($fieldHandles)) {
-			foreach ($fieldHandles as $fieldHandle) {
-				try {
-					$this->collectVideoAssets($element->getFieldValue($fieldHandle), $assets);
-				} catch (Throwable $e) {
-					Craft::warning('Unable to inspect Transcoder field handle "' . $fieldHandle . '": ' . $e->getMessage(), __METHOD__);
-				}
-			}
-		} else {
-			$this->collectVideoAssetsFromElement($element, $assets);
-		}
+		$assets = $this->getVideoAssetsForElement($element);
 
 		$queued = 0;
 		foreach ($assets as $asset) {
@@ -676,6 +657,36 @@ class Transcode extends Component
 		}
 
 		return $queued;
+	}
+
+	/**
+	 * Return video Assets found through the configured fields of an element.
+	 *
+	 * This is intentionally explicit API/console behavior. Entry save events do
+	 * not call it.
+	 *
+	 * @return Asset[]
+	 */
+	public function getVideoAssetsForElement(ElementInterface $element): array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$fieldHandles = $settings['autoEncodeVideoFieldHandles'] ?? [];
+		$assets = [];
+		$visitedElements = [];
+
+		if (!empty($fieldHandles)) {
+			foreach ($fieldHandles as $fieldHandle) {
+				try {
+					$this->collectVideoAssets($element->getFieldValue($fieldHandle), $assets, $visitedElements);
+				} catch (Throwable $e) {
+					Craft::warning('Unable to inspect Transcoder field handle "' . $fieldHandle . '": ' . $e->getMessage(), __METHOD__);
+				}
+			}
+		} else {
+			$this->collectVideoAssetsFromElement($element, $assets, $visitedElements);
+		}
+
+		return array_values($assets);
 	}
 
 	/**
@@ -1376,10 +1387,257 @@ class Transcode extends Component
 	}
 
 	/**
+	 * Build a read-only repair plan for one video Asset.
+	 *
+	 * @return array{
+	 *     assetId: int,
+	 *     filename: string,
+	 *     folderPath: string,
+	 *     sourceAvailable: bool,
+	 *     active: bool,
+	 *     canonicalVideo: array{filename: string, path: string, exists: bool, valid: bool, size: int},
+	 *     posters: array<string, array{filename: string, path: string, exists: bool, size: int}>,
+	 *     missingPosterHandles: string[],
+	 *     cleanupFiles: array<int, array{path: string, kind: string, reason: string, size: int}>,
+	 *     queueVideo: bool,
+	 *     queuePosters: bool,
+	 *     actionable: bool
+	 * }
+	 */
+	public function getVideoAssetRepairPlan(Asset $asset): array
+	{
+		if (!$asset->id || !$this->isVideoAsset($asset)) {
+			throw new RuntimeException('Transcoder can only inspect a persisted video Asset.');
+		}
+
+		/** @var Settings $settings */
+		$settings = Transcoder::$plugin->getSettings();
+		$videoOptions = $settings['autoEncodeVideoOptions'] ?? [];
+		$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions, false);
+		$canonicalFilename = (string)($outputInfo['canonicalFilename'] ?? $outputInfo['filename']);
+		$canonicalPath = (string)($outputInfo['canonicalEncodedFile'] ?? $outputInfo['encodedFile']);
+		$canonicalSize = is_file($canonicalPath) ? max(0, (int)@filesize($canonicalPath)) : 0;
+		$canonicalExists = is_file($canonicalPath);
+		$canonicalValid = $canonicalExists && $canonicalSize >= self::MIN_VALID_VIDEO_FILE_SIZE;
+		$cleanupFiles = [];
+
+		$addCleanupFile = static function (array &$files, string $path, string $kind, string $reason): void {
+			if ((!is_file($path) && !is_link($path)) || isset($files[$path])) {
+				return;
+			}
+
+			$files[$path] = [
+				'path' => $path,
+				'kind' => $kind,
+				'reason' => $reason,
+				'size' => is_file($path) ? max(0, (int)@filesize($path)) : 0,
+			];
+		};
+
+		if ($settings->enableVideoEncoding) {
+			if ($canonicalExists && !$canonicalValid) {
+				$addCleanupFile($cleanupFiles, $canonicalPath, 'output', 'invalid canonical video');
+			}
+
+			$videoDirectory = dirname($canonicalPath);
+			foreach ($outputInfo['filenameCandidates'] ?? [] as $candidateFilename) {
+				$candidatePath = $videoDirectory . DIRECTORY_SEPARATOR . $candidateFilename;
+				if ($candidatePath !== $canonicalPath) {
+					$addCleanupFile($cleanupFiles, $candidatePath, 'output', 'alternate video filename');
+				}
+			}
+		}
+
+		$posters = [];
+		$missingPosterHandles = [];
+		$canonicalOutputPaths = [$canonicalPath => true];
+		$validCanonicalOutputPaths = $canonicalValid ? [$canonicalPath => true] : [];
+		if ($settings->enableVideoPosters) {
+			foreach ($this->getVideoPosterStatusDebug($asset) as $handle => $poster) {
+				if (!is_array($poster) || !is_string($poster['primaryFilename'] ?? null) || !is_string($poster['destinationPath'] ?? null)) {
+					continue;
+				}
+
+				$posterPath = rtrim($poster['destinationPath'], DIRECTORY_SEPARATOR)
+					. DIRECTORY_SEPARATOR
+					. $poster['primaryFilename'];
+				$posterSize = is_file($posterPath) ? max(0, (int)@filesize($posterPath)) : 0;
+				$posterExists = is_file($posterPath) && $posterSize > 0;
+				$canonicalOutputPaths[$posterPath] = true;
+				if ($posterExists) {
+					$validCanonicalOutputPaths[$posterPath] = true;
+				}
+				$posters[(string)$handle] = [
+					'filename' => $poster['primaryFilename'],
+					'path' => $posterPath,
+					'exists' => $posterExists,
+					'size' => $posterSize,
+				];
+
+				if (!$posterExists) {
+					$missingPosterHandles[] = (string)$handle;
+					if (is_file($posterPath) || is_link($posterPath)) {
+						$addCleanupFile($cleanupFiles, $posterPath, 'output', 'invalid canonical poster');
+					}
+				}
+
+				foreach ($poster['candidates'] ?? [] as $candidate) {
+					$candidatePath = is_array($candidate) ? ($candidate['path'] ?? null) : null;
+					if (is_string($candidatePath) && $candidatePath !== $posterPath) {
+						$addCleanupFile($cleanupFiles, $candidatePath, 'output', 'alternate poster filename');
+					}
+				}
+			}
+		}
+		foreach (array_keys($validCanonicalOutputPaths) as $validCanonicalPath) {
+			unset($cleanupFiles[$validCanonicalPath]);
+		}
+
+		$queueVideo = (bool)$settings->enableVideoEncoding && !$canonicalValid;
+		$queuePosters = (bool)$settings->enableVideoPosters && !empty($missingPosterHandles);
+		$videoSuffixes = [];
+		foreach ($settings->videoEncoders as $encoder) {
+			$suffix = strtolower((string)($encoder['fileSuffix'] ?? ''));
+			if ($suffix !== '') {
+				$videoSuffixes[$suffix] = true;
+			}
+		}
+		$metadata = $this->getAutomaticVideoAssetRefreshMetadata($asset);
+		if ($queueVideo || $queuePosters || !empty($cleanupFiles)) {
+			foreach ($metadata['pathsByKind'] as $kind => $paths) {
+				foreach ($paths as $path) {
+					if (!is_string($path)) {
+						continue;
+					}
+					if ($kind === 'output' && isset($canonicalOutputPaths[$path])) {
+						continue;
+					}
+					if ($kind === 'output') {
+						$outputTypePath = preg_replace('/\.part-[a-f0-9]+$/i', '', $path) ?: $path;
+						$suffix = '.' . strtolower(pathinfo($outputTypePath, PATHINFO_EXTENSION));
+						$isVideoOutput = isset($videoSuffixes[$suffix]);
+						if (($isVideoOutput && !$settings->enableVideoEncoding)
+							|| (!$isVideoOutput && !$settings->enableVideoPosters)
+						) {
+							continue;
+						}
+					}
+					$addCleanupFile(
+						$cleanupFiles,
+						$path,
+						$kind,
+						$kind === 'output' ? 'alternate generated output' : 'stale Transcoder runtime state'
+					);
+				}
+			}
+		}
+
+		$active = !empty($this->findActiveVideoStatusForAsset($asset, null, true, true, [], false))
+			|| $this->isAutomaticVideoAssetWorkActive($asset)
+			|| $this->hasAutomaticVideoAssetStagingFiles($asset);
+		if ($active) {
+			$cleanupFiles = [];
+		}
+
+		return [
+			'assetId' => (int)$asset->id,
+			'filename' => (string)$asset->filename,
+			'folderPath' => trim(str_replace('\\', '/', (string)($asset->folderPath ?? '')), '/'),
+			'sourceAvailable' => $this->isAssetOriginalAvailable($asset),
+			'active' => $active,
+			'canonicalVideo' => [
+				'filename' => $canonicalFilename,
+				'path' => $canonicalPath,
+				'exists' => $canonicalExists,
+				'valid' => $canonicalValid,
+				'size' => $canonicalSize,
+			],
+			'posters' => $posters,
+			'missingPosterHandles' => $missingPosterHandles,
+			'cleanupFiles' => array_values($cleanupFiles),
+			'queueVideo' => !$active && $queueVideo,
+			'queuePosters' => !$active && $queuePosters,
+			'actionable' => !$active && ($queueVideo || $queuePosters || !empty($cleanupFiles)),
+		];
+	}
+
+	/**
+	 * Apply a freshly computed video repair plan and queue missing work.
+	 *
+	 * @return array{removedFiles: int, queued: bool, status: array, plan: array}
+	 */
+	public function repairVideoAsset(Asset $asset): array
+	{
+		$plan = $this->getVideoAssetRepairPlan($asset);
+		if (!$plan['actionable']) {
+			return [
+				'removedFiles' => 0,
+				'queued' => false,
+				'status' => [],
+				'plan' => $plan,
+			];
+		}
+
+		$removedFiles = $this->removeVideoRepairFiles($plan['cleanupFiles']);
+
+		$status = [];
+		if ($plan['queueVideo'] || $plan['queuePosters']) {
+			/** @var Settings $settings */
+			$settings = Transcoder::$plugin->getSettings();
+			$status = $this->queueVideoEncode(
+				$asset,
+				$settings['autoEncodeVideoOptions'] ?? [],
+				$settings['autoEncodeEncodingOptions'] ?? [],
+				$this->getAssetOwnerTitle($asset),
+				true,
+				max(0, (int)$settings->videoQueueDelaySeconds)
+			);
+		}
+
+		return [
+			'removedFiles' => $removedFiles,
+			'queued' => ($status['status'] ?? null) === 'queued',
+			'status' => $status,
+			'plan' => $plan,
+		];
+	}
+
+	/**
+	 * Remove files from a confirmed video repair plan after validating roots.
+	 *
+	 * @param array<int, array{path: string, kind: string}> $files
+	 */
+	public function removeVideoRepairFiles(array $files): int
+	{
+		$validatedPaths = [];
+		foreach ($files as $file) {
+			$path = $file['path'];
+			$kind = $file['kind'];
+			if (!is_file($path) && !is_link($path)) {
+				continue;
+			}
+			if (!$this->isSafeAutomaticRefreshPath($path, $kind)) {
+				throw new RuntimeException('Refusing to remove a Transcoder file outside its managed roots: ' . $path);
+			}
+			$validatedPaths[$path] = true;
+		}
+
+		$removedFiles = 0;
+		foreach (array_keys($validatedPaths) as $path) {
+			if (!@unlink($path) && (is_file($path) || is_link($path))) {
+				throw new RuntimeException('Unable to remove managed Transcoder file: ' . $path);
+			}
+			$removedFiles++;
+		}
+
+		return $removedFiles;
+	}
+
+	/**
 	 * Queue invalidation and regeneration after an integration replaces a video Asset.
 	 *
 	 * The destructive filesystem work runs in Transcoder's queue, not in the
-	 * replacement request. Only Asset-ID-qualified automatic output is managed.
+	 * replacement request. Canonical and recognized legacy automatic output is managed.
 	 *
 	 * @param Asset $asset
 	 * @return array{queued: bool, jobId: mixed}
@@ -1503,7 +1761,7 @@ class Transcode extends Component
 	}
 
 	/**
-	 * Delete only exact, Asset-ID-qualified automatic video and poster files.
+	 * Delete exact canonical and recognized legacy automatic video/poster files.
 	 */
 	protected function invalidateAutomaticVideoAssetOutput(Asset $asset): int
 	{
@@ -1532,7 +1790,7 @@ class Transcode extends Component
 	}
 
 	/**
-	 * Compute exact current paths plus legacy paths proven by Asset-owned status.
+	 * Compute exact canonical and Asset-ID-qualified legacy paths.
 	 *
 	 * @return array{pathsByKind: array<string, string[]>, lockPaths: string[], publishTargets: string[], statuses: array[]}
 	 */
@@ -1545,13 +1803,17 @@ class Transcode extends Component
 		$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions, false);
 		$statusKey = $this->getVideoStatusKey($asset, $videoOptions, $encodingOptions);
 		$statusPath = $this->getVideoStatusPath($statusKey);
+		$canonicalFilename = $outputInfo['canonicalFilename'] ?? $outputInfo['filename'];
+		$canonicalOutput = $outputInfo['canonicalEncodedFile'] ?? $outputInfo['encodedFile'];
+		$canonicalLock = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $canonicalFilename . '.lock';
+		$canonicalProgress = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $canonicalFilename . '.progress';
 		$pathsByKind = [
-			'output' => [$outputInfo['encodedFile']],
-			'temporary' => [$outputInfo['lockFile'], $outputInfo['progressFile']],
+			'output' => [$canonicalOutput, $outputInfo['encodedFile']],
+			'temporary' => [$canonicalLock, $canonicalProgress, $outputInfo['lockFile'], $outputInfo['progressFile']],
 			'status' => [$statusPath],
 		];
-		$lockPaths = [$outputInfo['lockFile']];
-		$publishTargets = [$outputInfo['encodedFile']];
+		$lockPaths = [$canonicalLock, $outputInfo['lockFile']];
+		$publishTargets = [$canonicalOutput, $outputInfo['encodedFile']];
 		$statuses = [$this->readVideoStatus($statusKey)];
 
 		$posters = $this->getVideoPosterStatusDebug($asset);
@@ -1572,17 +1834,15 @@ class Transcode extends Component
 		$videoEncoders = $settings['videoEncoders'];
 		$encoder = $videoEncoders[$resolvedVideoOptions['videoEncoder']];
 		$resolvedVideoOptions['fileSuffix'] = $encoder['fileSuffix'];
-		$legacyStatusFilename = $this->getVideoEncodedFilename($asset, $resolvedVideoOptions, null, false);
+		$legacyStatusFilename = $this->getLegacyAssetIdVideoEncodedFilename($asset, $resolvedVideoOptions);
 		$legacyStatusKey = 'video-' . sha1($legacyStatusFilename . JsonHelper::encode($encodingOptions));
 		$resolvedVideoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
-		$legacyFilename = $this->getVideoEncodedFilename($asset, $resolvedVideoOptions, null, false);
+		$legacyFilename = $this->getLegacyAssetIdVideoEncodedFilename($asset, $resolvedVideoOptions);
 		$legacyStatus = $this->readVideoStatus($legacyStatusKey);
-		$legacyOwned = false;
-		if ($legacyFilename !== $outputInfo['filename']
-			&& (int)($legacyStatus['assetId'] ?? 0) === (int)$asset->id
-		) {
-			$legacyOwned = true;
-			$legacyOutput = dirname($outputInfo['encodedFile']) . DIRECTORY_SEPARATOR . $legacyFilename;
+		$legacyIncluded = false;
+		if ($legacyFilename !== $canonicalFilename) {
+			$legacyIncluded = true;
+			$legacyOutput = dirname($canonicalOutput) . DIRECTORY_SEPARATOR . $legacyFilename;
 			$legacyLock = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $legacyFilename . '.lock';
 			$legacyProgress = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $legacyFilename . '.progress';
 			$pathsByKind['output'][] = $legacyOutput;
@@ -1591,17 +1851,18 @@ class Transcode extends Component
 			$pathsByKind['status'][] = $this->getVideoStatusPath($legacyStatusKey);
 			$lockPaths[] = $legacyLock;
 			$publishTargets[] = $legacyOutput;
-			$statuses[] = $legacyStatus;
+			if (!empty($legacyStatus)) {
+				$statuses[] = $legacyStatus;
+			}
 
 			foreach ($posters as $poster) {
 				if (!is_array($poster) || !is_array($poster['options'] ?? null) || !is_string($poster['destinationPath'] ?? null)) {
 					continue;
 				}
-				$legacyPosterFilename = $this->getFilename(
+				$legacyPosterFilename = $this->getLegacyAssetIdFilename(
 					$asset,
 					$poster['options'],
-					$this->getThumbnailFilenameExcludeParams(),
-					false
+					$this->getThumbnailFilenameExcludeParams()
 				);
 				$legacyPoster = rtrim($poster['destinationPath'], DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $legacyPosterFilename;
 				$pathsByKind['output'][] = $legacyPoster;
@@ -1615,7 +1876,7 @@ class Transcode extends Component
 			}
 		}
 		$knownStatusPaths = [$statusPath];
-		if ($legacyOwned) {
+		if ($legacyIncluded) {
 			$knownStatusPaths[] = $this->getVideoStatusPath($legacyStatusKey);
 		}
 		foreach ($knownStatusPaths as $knownStatusPath) {
@@ -2219,12 +2480,10 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 
-		return 'video-' . sha1($this->getVideoEncodedFilename(
-			$filePath,
-			$videoOptions,
-			null,
-			$filePath instanceof Asset
-		) . JsonHelper::encode($encodingOptions));
+		return 'video-' . sha1(
+			$this->getVideoEncodedFilename($filePath, $videoOptions)
+			. JsonHelper::encode($encodingOptions)
+		);
 	}
 
 	/**
@@ -2261,7 +2520,7 @@ class Transcode extends Component
 
 	/**
 	 * Resolve an unambiguous Asset URL/path to its Asset so integrations using
-	 * `asset.url` receive the same Asset-ID-qualified derivative as Asset callers.
+	 * `asset.url` receive the same canonical derivative as Asset callers.
 	 */
 	protected function resolveVideoAssetInput(Asset|string $input): Asset|string
 	{
@@ -2649,20 +2908,16 @@ class Transcode extends Component
 			$primaryThumbnailFile = $this->getFilename(
 				$filePath instanceof Asset ? $filePath : $filePathResolved,
 				$thumbnailOptions,
-				$this->getThumbnailFilenameExcludeParams(),
-				$filePath instanceof Asset
+				$this->getThumbnailFilenameExcludeParams()
 			);
-			$allowLegacyCandidates = !($filePath instanceof Asset);
 			$destThumbnailFile = $primaryThumbnailFile;
-			if ($allowLegacyCandidates) {
-				$destThumbnailFile = $this->getExistingThumbnailFilenameCandidate(
-					$destThumbnailPath,
-					$filePath,
-					$filePathResolved,
-					$thumbnailOptions,
-					$destThumbnailFile
-				);
-			}
+			$destThumbnailFile = $this->getExistingThumbnailFilenameCandidate(
+				$destThumbnailPath,
+				$filePath,
+				$filePathResolved,
+				$thumbnailOptions,
+				$destThumbnailFile
+			);
 			if ($destThumbnailFile !== $primaryThumbnailFile) {
 				Craft::info('Transcoder: using existing legacy video poster/thumbnail filename ' . $destThumbnailFile . ' for ' . $filePathResolved, __METHOD__);
 			}
@@ -3223,7 +3478,7 @@ class Transcode extends Component
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 		$videoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
 
-		return $this->getVideoEncodedFilename($filePath, $videoOptions, null, $filePath instanceof Asset);
+		return $this->getVideoEncodedFilename($filePath, $videoOptions);
 	}
 
 	/**
@@ -3995,15 +4250,41 @@ class Transcode extends Component
 		Asset|string $filePath,
 		array $options,
 		?array $excludeParams = null,
-		bool $includeAssetId = false,
 		?bool $useHashedNames = null
 	): string
 	{
+		return $this->buildFilename($filePath, $options, $excludeParams, '', $useHashedNames);
+	}
+
+	/**
+	 * Reproduce the short-lived Asset-ID-qualified filename format for lookup
+	 * and cleanup only. New output must always use getFilename().
+	 */
+	protected function getLegacyAssetIdFilename(
+		Asset $asset,
+		array $options,
+		?array $excludeParams = null,
+		?bool $useHashedNames = null
+	): string {
+		$assetIdSuffix = $asset->id ? '_asset' . $asset->id : '';
+
+		return $this->buildFilename($asset, $options, $excludeParams, $assetIdSuffix, $useHashedNames);
+	}
+
+	/**
+	 * Build a generated filename from a source and encoding options.
+	 */
+	private function buildFilename(
+		Asset|string $filePath,
+		array $options,
+		?array $excludeParams,
+		string $legacySourceSuffix,
+		?bool $useHashedNames
+	): string {
 		$settings = Transcoder::$plugin->getSettings();
 		$excludeParams ??= self::EXCLUDE_PARAMS;
 		$useHashedNames ??= (bool)$settings['useHashedNames'];
 		$asset = $filePath instanceof Asset ? $filePath : null;
-		$assetId = $includeAssetId && $asset ? $asset->id : null;
 		$filePath = $this->getAssetPath($filePath);
 		if ($asset !== null && $filePath === '') {
 			$filePath = $asset->filename;
@@ -4017,10 +4298,7 @@ class Transcode extends Component
 		} else {
 			$pathParts = pathinfo($filePath);
 		}
-		$fileName = $pathParts['filename'];
-		if ($assetId) {
-			$fileName .= '_asset' . $assetId;
-		}
+		$fileName = $pathParts['filename'] . $legacySourceSuffix;
 
 		// Add our options to the file name
 		foreach ($options as $key => $value) {
@@ -4049,7 +4327,7 @@ class Transcode extends Component
 		if (strlen($fileName) > self::GENERATED_FILENAME_MAX_BYTES) {
 			$extension = pathinfo($fileName, PATHINFO_EXTENSION);
 			$identity = hash('sha256', $fileName);
-			$fileName = ($assetId ? 'asset' . $assetId . '_' : 'transcoder_')
+			$fileName = ($legacySourceSuffix !== '' && $asset?->id ? 'asset' . $asset->id . '_' : 'transcoder_')
 				. $identity
 				. ($extension !== '' ? '.' . $extension : '');
 		}
@@ -5495,28 +5773,23 @@ class Transcode extends Component
 		$thisEncoder = $videoEncoders[$videoOptions['videoEncoder']];
 		$videoOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
 		$videoOptions['autoCropVideoBlackBars'] = (bool)$settings->autoCropVideoBlackBars;
-		$destVideoFile = $this->getVideoEncodedFilename(
+		$canonicalVideoFile = $this->getVideoEncodedFilename(
 			$filePath instanceof Asset ? $filePath : ($filePathResolved ?? ''),
-			$videoOptions,
-			null,
-			$filePath instanceof Asset
+			$videoOptions
 		);
-		$videoFilenameCandidates = [$destVideoFile];
-		if (!($filePath instanceof Asset)) {
-			$videoFilenameCandidates = $this->getVideoFilenameCandidates(
-				$filePath,
-				$filePathResolved,
-				$videoOptions,
-				$destVideoFile
-			);
-			$destVideoFile = $this->getExistingVideoFilenameCandidate(
-				$destVideoPath,
-				$filePath,
-				$filePathResolved,
-				$videoOptions,
-				$destVideoFile
-			);
-		}
+		$videoFilenameCandidates = $this->getVideoFilenameCandidates(
+			$filePath,
+			$filePathResolved,
+			$videoOptions,
+			$canonicalVideoFile
+		);
+		$destVideoFile = $this->getExistingVideoFilenameCandidate(
+			$destVideoPath,
+			$filePath,
+			$filePathResolved,
+			$videoOptions,
+			$canonicalVideoFile
+		);
 
 		$videoFilenameCandidates = array_values(array_unique(array_merge([$destVideoFile], $videoFilenameCandidates)));
 
@@ -5526,6 +5799,9 @@ class Transcode extends Component
 			'filename' => $destVideoFile,
 			'encodedFile' => $destVideoPath . $destVideoFile,
 			'publicUrl' => $urlBase . '/' . $destVideoFile,
+			'canonicalFilename' => $canonicalVideoFile,
+			'canonicalEncodedFile' => $destVideoPath . $canonicalVideoFile,
+			'canonicalPublicUrl' => $urlBase . '/' . $canonicalVideoFile,
 			'lockFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock',
 			'progressFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress',
 			'filenameCandidates' => $videoFilenameCandidates,
@@ -5585,6 +5861,11 @@ class Transcode extends Component
 		string $primaryFilename
 	): array {
 		$candidates = [$primaryFilename];
+		if ($filePath instanceof Asset) {
+			// Keep the 4.4.42-4.4.43 name near the front so read-only remote
+			// checks find it within their deliberately small HTTP request budget.
+			$candidates[] = $this->getLegacyAssetIdVideoEncodedFilename($filePath, $videoOptions);
+		}
 		$legacyInputs = [$filePath];
 
 		if ($filePathResolved !== null && $filePathResolved !== '') {
@@ -5615,8 +5896,8 @@ class Transcode extends Component
 			}
 			$seenInputs[$inputKey] = true;
 
-			$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', false, false);
-			$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', false, true);
+			$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', false);
+			$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', true);
 			$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'options');
 			$candidates[] = $this->getFilename(
 				$legacyInput,
@@ -5625,14 +5906,13 @@ class Transcode extends Component
 			);
 
 			if ($legacyInput instanceof Asset) {
-				$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', true, false);
-				$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'source', true, true);
-				$candidates[] = $this->getVideoEncodedFilename($legacyInput, $videoOptions, 'options', true);
-				$candidates[] = $this->getFilename(
+				$candidates[] = $this->getLegacyAssetIdVideoEncodedFilename($legacyInput, $videoOptions, 'source', false);
+				$candidates[] = $this->getLegacyAssetIdVideoEncodedFilename($legacyInput, $videoOptions, 'source', true);
+				$candidates[] = $this->getLegacyAssetIdVideoEncodedFilename($legacyInput, $videoOptions, 'options');
+				$candidates[] = $this->getLegacyAssetIdFilename(
 					$legacyInput,
 					$videoOptions,
-					array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate'])),
-					true
+					array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate']))
 				);
 			}
 		}
@@ -5720,12 +6000,11 @@ class Transcode extends Component
 			);
 
 			if ($legacyInput instanceof Asset) {
-				$candidates[] = $this->getFilename($legacyInput, $gifOptions, null, true);
-				$candidates[] = $this->getFilename(
+				$candidates[] = $this->getLegacyAssetIdFilename($legacyInput, $gifOptions);
+				$candidates[] = $this->getLegacyAssetIdFilename(
 					$legacyInput,
 					$gifOptions,
-					array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate'])),
-					true
+					array_values(array_diff(self::EXCLUDE_PARAMS, ['videoBitRate']))
 				);
 			}
 		}
@@ -5833,22 +6112,20 @@ class Transcode extends Component
 			);
 
 			if ($legacyInput instanceof Asset) {
-				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions, $thumbnailFilenameExcludeParams, true);
-				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptions, null, true);
-				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat, null, true);
-				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPreventBlackBars, null, true);
-				$candidates[] = $this->getFilename($legacyInput, $thumbnailOptionsWithoutPosterRuntimeOptions, null, true);
-				$candidates[] = $this->getFilename(
+				$candidates[] = $this->getLegacyAssetIdFilename($legacyInput, $thumbnailOptions, $thumbnailFilenameExcludeParams);
+				$candidates[] = $this->getLegacyAssetIdFilename($legacyInput, $thumbnailOptions);
+				$candidates[] = $this->getLegacyAssetIdFilename($legacyInput, $thumbnailOptionsWithoutPosterFormat);
+				$candidates[] = $this->getLegacyAssetIdFilename($legacyInput, $thumbnailOptionsWithoutPreventBlackBars);
+				$candidates[] = $this->getLegacyAssetIdFilename($legacyInput, $thumbnailOptionsWithoutPosterRuntimeOptions);
+				$candidates[] = $this->getLegacyAssetIdFilename(
 					$legacyInput,
 					$thumbnailOptions,
-					array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat']))),
-					true
+					array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat'])))
 				);
-				$candidates[] = $this->getFilename(
+				$candidates[] = $this->getLegacyAssetIdFilename(
 					$legacyInput,
 					$thumbnailOptions,
-					array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat', 'preventBlackBars']))),
-					true
+					array_values(array_unique(array_merge(self::EXCLUDE_PARAMS, ['posterFormat', 'preventBlackBars'])))
 				);
 			}
 		}
@@ -5897,7 +6174,6 @@ class Transcode extends Component
 	 * @param Asset|string $filePath
 	 * @param array $videoOptions
 	 * @param string|null $strategy
-	 * @param bool $includeAssetId
 	 * @param bool|null $useHashedNames
 	 * @return string
 	 * @throws InvalidConfigException
@@ -5906,7 +6182,6 @@ class Transcode extends Component
 		Asset|string $filePath,
 		array $videoOptions,
 		?string $strategy = null,
-		bool $includeAssetId = false,
 		?bool $useHashedNames = null
 	): string {
 		$strategy ??= Transcoder::$plugin->getSettings()->videoFilenameStrategy ?: 'source';
@@ -5918,7 +6193,28 @@ class Transcode extends Component
 			$filePath,
 			$videoOptions,
 			$this->getVideoFilenameExcludeParams($videoOptions, $strategy),
-			$includeAssetId,
+			$useHashedNames
+		);
+	}
+
+	/**
+	 * Reproduce the Asset-ID-qualified video filename used by 4.4.42-4.4.43.
+	 */
+	protected function getLegacyAssetIdVideoEncodedFilename(
+		Asset $asset,
+		array $videoOptions,
+		?string $strategy = null,
+		?bool $useHashedNames = null
+	): string {
+		$strategy ??= Transcoder::$plugin->getSettings()->videoFilenameStrategy ?: 'source';
+		if ($useHashedNames === null && $strategy === 'source') {
+			$useHashedNames = false;
+		}
+
+		return $this->getLegacyAssetIdFilename(
+			$asset,
+			$videoOptions,
+			$this->getVideoFilenameExcludeParams($videoOptions, $strategy),
 			$useHashedNames
 		);
 	}
@@ -6260,6 +6556,7 @@ class Transcode extends Component
 	 * @param bool $includeVideo
 	 * @param bool $includePosters
 	 * @param array $filenameCandidates
+	 * @param bool $cleanupStale
 	 * @return array
 	 */
 	protected function findActiveVideoStatusForAsset(
@@ -6267,7 +6564,8 @@ class Transcode extends Component
 		?string $excludeKey = null,
 		bool $includeVideo = true,
 		bool $includePosters = true,
-		array $filenameCandidates = []
+		array $filenameCandidates = [],
+		bool $cleanupStale = true
 	): array
 	{
 		if (!$asset->id) {
@@ -6323,7 +6621,7 @@ class Transcode extends Component
 				return $status;
 			}
 
-			if ($videoActive) {
+			if ($videoActive && $cleanupStale) {
 				$this->removeEncodeTempFiles($lockFile, $progressFile);
 			}
 		}
@@ -6530,8 +6828,7 @@ class Transcode extends Component
 			$primaryFilename = $this->getFilename(
 				$filePath instanceof Asset ? $filePath : $filePathResolved,
 				$options,
-				$this->getThumbnailFilenameExcludeParams(),
-				$filePath instanceof Asset
+				$this->getThumbnailFilenameExcludeParams()
 			);
 
 			$result[$formatHandle] = [
@@ -6657,9 +6954,17 @@ class Transcode extends Component
 	 *
 	 * @param ElementInterface $element
 	 * @param array $assets
+	 * @param array $visitedElements
 	 */
-	protected function collectVideoAssetsFromElement(ElementInterface $element, array &$assets): void
+	protected function collectVideoAssetsFromElement(ElementInterface $element, array &$assets, array &$visitedElements): void
 	{
+		$elementId = $element->id ?? null;
+		$elementKey = get_class($element) . ':' . ($elementId ?: spl_object_id($element));
+		if (isset($visitedElements[$elementKey])) {
+			return;
+		}
+		$visitedElements[$elementKey] = true;
+
 		$fieldLayout = $element->getFieldLayout();
 		if ($fieldLayout === null) {
 			return;
@@ -6667,7 +6972,7 @@ class Transcode extends Component
 
 		foreach ($fieldLayout->getCustomFields() as $field) {
 			try {
-				$this->collectVideoAssets($element->getFieldValue($field->handle), $assets);
+				$this->collectVideoAssets($element->getFieldValue($field->handle), $assets, $visitedElements);
 			} catch (Throwable $e) {
 				Craft::warning('Unable to inspect Transcoder field handle "' . $field->handle . '": ' . $e->getMessage(), __METHOD__);
 			}
@@ -6679,8 +6984,9 @@ class Transcode extends Component
 	 *
 	 * @param mixed $value
 	 * @param array $assets
+	 * @param array $visitedElements
 	 */
-	protected function collectVideoAssets(mixed $value, array &$assets): void
+	protected function collectVideoAssets(mixed $value, array &$assets, array &$visitedElements): void
 	{
 		if ($value instanceof Asset) {
 			if ($this->isVideoAsset($value)) {
@@ -6691,19 +6997,19 @@ class Transcode extends Component
 
 		if ($value instanceof ElementQueryInterface) {
 			foreach ($value->all() as $element) {
-				$this->collectVideoAssets($element, $assets);
+				$this->collectVideoAssets($element, $assets, $visitedElements);
 			}
 			return;
 		}
 
 		if ($value instanceof ElementInterface) {
-			$this->collectVideoAssetsFromElement($value, $assets);
+			$this->collectVideoAssetsFromElement($value, $assets, $visitedElements);
 			return;
 		}
 
 		if (is_iterable($value)) {
 			foreach ($value as $item) {
-				$this->collectVideoAssets($item, $assets);
+				$this->collectVideoAssets($item, $assets, $visitedElements);
 			}
 		}
 	}

@@ -81,6 +81,18 @@ class EncodeGif extends BaseJob
             return;
         }
 
+        $settings = Transcoder::$plugin->getSettings();
+        $slot = Transcoder::$plugin->encodingConcurrency->acquire(
+            'gif',
+            (int)$settings->gifMaxConcurrentJobs,
+            'GIF encode',
+            $asset->id
+        );
+        if ($slot === null) {
+            $this->deferForCapacity($queue, $asset);
+            return;
+        }
+
         try {
             if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
                 throw new \RuntimeException(Craft::t('transcoder', 'Original GIF source is not reachable yet'));
@@ -137,7 +149,44 @@ class EncodeGif extends BaseJob
             );
 
             throw $e;
+        } finally {
+            $slot->release();
         }
+    }
+
+    /**
+     * Return this GIF encode to the queue without consuming a failure attempt.
+     */
+    protected function deferForCapacity(mixed $queue, Asset $asset): void
+    {
+        $settings = Transcoder::$plugin->getSettings();
+        $delay = max(1, (int)$settings->encodingConcurrencyRetryDelaySeconds);
+        $jobId = Craft::$app->getQueue()->delay($delay)->push(new self([
+            'assetId' => $asset->id,
+            'gifOptions' => $this->gifOptions,
+            'attempt' => $this->attempt,
+            'maxRetries' => $this->maxRetries,
+            'retryDelaySeconds' => $this->retryDelaySeconds,
+        ]));
+        $message = Craft::t('transcoder', 'Waiting for an available GIF encoding slot; retrying in {seconds}s', [
+            'seconds' => $delay,
+        ]);
+        $status = Transcoder::$plugin->transcode->getGifStatusData($asset, $this->gifOptions);
+
+        Transcoder::$plugin->transcode->writeGifStatus(
+            $asset,
+            $this->gifOptions,
+            array_merge($status, [
+                'status' => 'queued',
+                'url' => '',
+                'progress' => 0,
+                'jobId' => $jobId,
+                'info' => $message,
+                'capacityDelay' => $delay,
+            ])
+        );
+        $this->setProgress($queue, 1, $message);
+        Craft::info('Transcoder deferred GIF encode for asset #' . $asset->id . ': ' . $message, __METHOD__);
     }
 
     /**
