@@ -2,7 +2,7 @@
   "name": "nystudio107/craft-transcoder",
   "description": "Transcode video & audio files to various formats, and provide video thumbnails",
   "type": "craft-plugin",
-  "version": "4.4.44",
+  "version": "5.0.0",
   "keywords": [
     "craft",
     "cms",
@@ -29,8 +29,9 @@
     }
   ],
   "require": {
-    "craftcms/cms": "^4.0.0",
-    "nystudio107/craft-plugin-vite": "^4.0.0",
+    "php": "^8.2",
+    "craftcms/cms": "^5.0.0",
+    "nystudio107/craft-plugin-vite": "^5.0.0",
     "mikehaertl/php-shellcommand": "~1.2"
   },
   "require-dev": {
@@ -41,9 +42,20 @@
   "scripts": {
     "phpstan": "phpstan --ansi --memory-limit=1G",
     "check-cs": "ecs check --ansi",
-    "fix-cs": "ecs check --fix --ansi"
+    "fix-cs": "ecs check --fix --ansi",
+    "test": [
+      "@php tests/asset-save-resaving-harness.php",
+      "@php tests/craft-save-event-compatibility-harness.php",
+      "@php tests/encoding-concurrency-harness.php",
+      "@php tests/media-filename-strategy-harness.php",
+      "@php tests/media-output-location-harness.php"
+    ],
+    "test:craft5": "@php tests/craft5/integration.php"
   },
   "config": {
+    "platform": {
+      "php": "8.2.0"
+    },
     "allow-plugins": {
       "craftcms/plugin-installer": true,
       "yiisoft/yii2-composer": true

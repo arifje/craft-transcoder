@@ -16,12 +16,12 @@ namespace nystudio107\transcoder\models;
 final class EncodingSlot
 {
     /**
-     * @param resource $handle
+     * @param resource|null $handle
      */
     public function __construct(
         private mixed $handle,
         public int $number,
-        public string $pool
+        public string $pool,
     ) {
     }
 

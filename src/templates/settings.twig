@@ -46,7 +46,7 @@
 
     {{ forms.lightswitchField({
         label: 'Queue videos on asset upload'|t('transcoder'),
-        instructions: 'Enqueue one lightweight inspection job when a new video asset is uploaded. Source, output and status checks run in the queue; Entry saves and asset metadata saves are not inspected.'|t('transcoder'),
+        instructions: 'Enqueue one lightweight inspection job when a new video asset is uploaded. Source, output and status checks run in the queue; Entry saves, asset metadata saves and Craft bulk resaves/upgrades are not inspected.'|t('transcoder'),
         warning: macros.configWarning('queueVideosOnSave', 'transcoder'),
         id: 'queueVideosOnSave',
         name: 'queueVideosOnSave',
@@ -441,7 +441,7 @@
 
     {{ forms.lightswitchField({
         label: 'Queue GIFs on asset upload'|t('transcoder'),
-        instructions: 'Enqueue one lightweight inspection job when a new GIF asset is uploaded. Source, output and status checks run in the queue; Entry saves and asset metadata saves are not inspected.'|t('transcoder'),
+        instructions: 'Enqueue one lightweight inspection job when a new GIF asset is uploaded. Source, output and status checks run in the queue; Entry saves, asset metadata saves and Craft bulk resaves/upgrades are not inspected.'|t('transcoder'),
         warning: macros.configWarning('queueGifsOnSave', 'transcoder'),
         id: 'queueGifsOnSave',
         name: 'queueGifsOnSave',

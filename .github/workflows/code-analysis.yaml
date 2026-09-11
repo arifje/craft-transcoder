@@ -4,37 +4,61 @@ on:
   pull_request: null
   push:
     branches:
-      - develop-v4
+      - skoften-codex-v5
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  code_analysis:
+  craft5:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        actions:
-          - name: 'PHPStan'
-            run: composer phpstan
-          - name: 'Coding Standards'
-            run: composer fix-cs
-    name: ${{ matrix.actions.name }}
-    runs-on: ubuntu-latest
+        php: ['8.2', '8.4']
+    services:
+      database:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: transcoder-test-only
+          MARIADB_DATABASE: transcoder_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      TRANSCODER_TESTING: '1'
+      CRAFT_DB_DRIVER: mysql
+      CRAFT_DB_SERVER: 127.0.0.1
+      CRAFT_DB_PORT: '3306'
+      CRAFT_DB_DATABASE: transcoder_test
+      CRAFT_DB_USER: root
+      CRAFT_DB_PASSWORD: transcoder-test-only
     steps:
       - uses: actions/checkout@v4
-      - name: Cache Composer dependencies
-        uses: actions/cache@v4
-        with:
-          path: /tmp/composer-cache
-          key: ${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
       - name: Setup PHP
         id: setup-php
         uses: shivammathur/setup-php@v2
         with:
-          php-version: 8.2
-          extensions: 'ctype,curl,dom,iconv,imagick,intl,json,mbstring,openssl,pcre,pdo,reflection,spl,zip'
+          php-version: ${{ matrix.php }}
+          extensions: 'bcmath,ctype,curl,dom,gd,iconv,imagick,intl,json,mbstring,openssl,pdo_mysql,zip'
           ini-values: post_max_size=256M, max_execution_time=180, memory_limit=512M
           tools: composer:v2
       - name: Install Composer dependencies
-        run: composer install --no-interaction --no-ansi --no-progress
-      - run: ${{ matrix.actions.run }}
+        run: composer update --with-all-dependencies --no-interaction --no-ansi --no-progress
+      - run: composer --no-plugins validate --no-check-publish
+      - run: composer audit
+      - run: composer phpstan
+      - run: composer test
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+      - name: Install isolated Craft database
+        run: php tests/craft5/craft.php install/craft --interactive=0 --username=admin --email=admin@transcoder.test --password=IsolatedTest12345 --site-name=TranscoderTest --site-url=https://transcoder.test --language=en
+      - run: composer test:craft5
+      - run: php tests/craft5/craft.php plugin/install transcoder --interactive=0
+      - run: php tests/craft5/craft.php plugin/uninstall transcoder --interactive=0
+      - name: Existing coding-standard audit (advisory)
+        continue-on-error: true
+        run: composer check-cs

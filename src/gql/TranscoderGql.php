@@ -13,9 +13,13 @@ namespace nystudio107\transcoder\gql;
 use Craft;
 use craft\elements\Asset;
 use craft\events\DefineGqlTypeFieldsEvent;
+use craft\events\RegisterGqlSchemaComponentsEvent;
 use craft\gql\GqlEntityRegistry;
 use craft\gql\TypeManager;
+use craft\helpers\Gql as GqlHelper;
 use craft\helpers\Json as JsonHelper;
+use craft\services\Gql;
+use GraphQL\Error\UserError;
 use GraphQL\Type\Definition\ObjectType;
 use GraphQL\Type\Definition\Type;
 use nystudio107\transcoder\Transcoder;
@@ -32,6 +36,12 @@ class TranscoderGql
      */
     public static function register(): void
     {
+        Event::on(Gql::class, Gql::EVENT_REGISTER_GQL_SCHEMA_COMPONENTS, static function(RegisterGqlSchemaComponentsEvent $event) {
+            $event->queries['Transcoder'] = [
+                'transcoder:encode' => ['label' => Craft::t('transcoder', 'Start Transcoder encoding and poster generation (trusted tokens only)')],
+                'transcoder:debug' => ['label' => Craft::t('transcoder', 'Read Transcoder diagnostic details (trusted tokens only)')],
+            ];
+        });
         Event::on(
             TypeManager::class,
             TypeManager::EVENT_DEFINE_GQL_TYPE_FIELDS,
@@ -60,6 +70,7 @@ class TranscoderGql
                     return null;
                 }
 
+                self::authorizeActions($arguments);
                 $videoOptions = self::decodeOptions($arguments['videoOptions'] ?? null, 'videoOptions');
                 $encodingOptions = self::decodeOptions($arguments['encodingOptions'] ?? null, 'encodingOptions');
                 $status = Transcoder::$plugin->transcode->getVideoStatus(
@@ -114,6 +125,7 @@ class TranscoderGql
                     return null;
                 }
 
+                self::authorizeActions($arguments);
                 return Transcoder::$plugin->transcode->getVideoPosterUrl(
                     $source,
                     (string)($arguments['formatHandle'] ?? ''),
@@ -139,6 +151,7 @@ class TranscoderGql
                     return [];
                 }
 
+                self::authorizeActions($arguments);
                 return self::normalizePosterUrls(Transcoder::$plugin->transcode->getVideoPosterUrls(
                     $source,
                     (bool)($arguments['generate'] ?? false)
@@ -156,6 +169,7 @@ class TranscoderGql
                     return null;
                 }
 
+                self::authorizeActions($arguments);
                 $status = Transcoder::$plugin->transcode->getGifStatus(
                     $source,
                     self::decodeOptions($arguments['gifOptions'] ?? null, 'gifOptions'),
@@ -204,6 +218,19 @@ class TranscoderGql
                 'description' => 'JSON encoded Transcoder encoding options.',
             ],
         ];
+    }
+
+    /**
+     * Reading an Asset must not implicitly grant encoding or diagnostic access.
+     */
+    private static function authorizeActions(array $arguments): void
+    {
+        if ((!empty($arguments['queueIfMissing']) || !empty($arguments['generate'])) && !GqlHelper::canSchema('transcoder', 'encode')) {
+            throw new UserError('This GraphQL schema does not allow Transcoder encoding.');
+        }
+        if (!empty($arguments['includeDebug']) && !GqlHelper::canSchema('transcoder', 'debug')) {
+            throw new UserError('This GraphQL schema does not allow Transcoder diagnostics.');
+        }
     }
 
     /**
@@ -429,8 +456,25 @@ class TranscoderGql
     private static function decodeStatus(string $status): array
     {
         $decoded = JsonHelper::decodeIfJson($status, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+        if (GqlHelper::canSchema('transcoder', 'debug')) {
+            return $decoded;
+        }
 
-        return is_array($decoded) ? $decoded : [];
+        // rawJson must not bypass the diagnostic permission by exposing paths or commands.
+        $public = array_intersect_key($decoded, array_flip([
+            'status', 'url', 'progress', 'filename', 'jobId', 'key', 'updatedAt',
+            'posterStatus', 'posterProgress', 'posterJobId', 'posterUrls',
+        ]));
+        if (!empty($decoded['error'])) {
+            $public['error'] = 'Transcoding failed. Contact an administrator for details.';
+        }
+        if (!empty($decoded['posterError'])) {
+            $public['posterError'] = 'Poster generation failed. Contact an administrator for details.';
+        }
+        return $public;
     }
 
     /**

@@ -232,7 +232,8 @@ class Settings extends Model
     public bool $clearCaches = false;
 
     /**
-     * Queue video encoding when new video assets are uploaded.
+     * Queue video encoding when new video assets are uploaded outside a Craft
+     * bulk resave or upgrade operation.
      *
      * @var bool
      */
@@ -329,7 +330,8 @@ class Settings extends Model
     public array $autoEncodeEncodingOptions = [];
 
     /**
-     * Queue GIF encoding when new GIF assets are uploaded.
+     * Queue GIF encoding when new GIF assets are uploaded outside a Craft bulk
+     * resave or upgrade operation.
      *
      * @var bool
      */

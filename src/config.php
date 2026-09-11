@@ -134,7 +134,8 @@ return [
     'clearCaches' => false,
 
     // Enqueue one asynchronous inspection job when a new video asset is uploaded.
-    // Entry saves and existing asset metadata saves are never inspected automatically.
+    // Entry saves, existing asset metadata saves, and Craft bulk resaves/upgrades
+    // are never inspected automatically.
     'queueVideosOnSave' => false,
 
     // Retry asynchronous upload inspection this many times if the Asset or its source is not ready yet
@@ -171,7 +172,8 @@ return [
     'autoEncodeEncodingOptions' => [],
 
     // Enqueue one asynchronous inspection job when a new GIF asset is uploaded.
-    // Entry saves and existing asset metadata saves are never inspected automatically.
+    // Entry saves, existing asset metadata saves, and Craft bulk resaves/upgrades
+    // are never inspected automatically.
     'queueGifsOnSave' => false,
 
     // Field handles used only when public element-scanning methods are called explicitly

@@ -11,8 +11,8 @@ namespace nystudio107\transcoder\console\controllers;
 use Craft;
 use craft\console\Controller;
 use craft\elements\Asset;
-use craft\elements\Entry;
 use craft\elements\db\EntryQuery;
+use craft\elements\Entry;
 use craft\helpers\Console;
 use DateTimeImmutable;
 use DateTimeInterface;
@@ -280,9 +280,6 @@ class VideosController extends Controller
                 $ids[] = (int)$rawId;
             }
             $ids = array_values(array_unique($ids));
-            if (empty($ids)) {
-                throw new \InvalidArgumentException('--entry-id must contain one or more positive numeric IDs.');
-            }
 
             $query->id($ids);
             return [

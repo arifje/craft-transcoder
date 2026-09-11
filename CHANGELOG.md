@@ -1,5 +1,22 @@
 # Transcoder Changelog
 
+## 5.0.0 - Unreleased
+### Added
+* Dedicated Craft CMS 5 release line, requiring PHP 8.2+ and the Craft 5 Vite integration.
+* Craft 5 integration tests for uploads, queued video/GIF/poster generation, nested Matrix content, GraphQL, settings, and runtime migrations.
+* Explicit GraphQL schema permissions for requesting encoding/poster generation (`transcoder:encode`) and diagnostics (`transcoder:debug`). Existing schemas retain read-only status and URL access; grant new permissions only to trusted server-side tokens.
+
+### Fixed
+* Skip automatic media inspection immediately when Craft marks an Asset as `resaving`, preventing bulk resaves, propagation work, and upgrades from enqueueing transcoding jobs or reaching media/status checks.
+* Resolve Matrix asset owner titles through Craft 5 nested Entries instead of the removed MatrixBlock class.
+* Include a volume's filesystem subpath when resolving local source files.
+* Correct legacy audio/GIF destination fallback precedence and controller response types; validate crop coordinates before arithmetic.
+
+### Changed
+* Register utilities using the native Craft 5 event and expose the concrete settings model to static analysis.
+* Keep normal new uploads and explicit replacement/manual transcoding APIs unchanged; existing Asset metadata saves remain inert.
+* Preserve both filename strategies, existing output discovery, and schema version 1.2.0. No new database table or naming migration is introduced.
+
 ## 4.4.44 - 2026.08.18
 ### Added
 * Add a confirm-first `transcoder/videos/repair` console command with Entry creation-date and Entry-ID scopes, dry-run output, legacy cleanup, optional Entry-directory orphan cleanup, and asynchronous repair queueing.

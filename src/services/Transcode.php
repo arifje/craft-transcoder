@@ -14,9 +14,9 @@ use Craft;
 use craft\base\Component;
 use craft\base\ElementInterface;
 use craft\base\LocalFsInterface;
+use craft\base\NestedElementInterface;
 use craft\elements\Asset;
 use craft\elements\Entry;
-use craft\elements\MatrixBlock;
 use craft\elements\db\ElementQueryInterface;
 use craft\events\DefineAssetThumbUrlEvent;
 use craft\helpers\Assets as AssetsHelper;
@@ -741,14 +741,13 @@ class Transcode extends Component
 	{
 		$candidates = [];
 
-		foreach (['folderPath', 'path', 'url'] as $attribute) {
-			try {
-				$value = $asset->$attribute ?? null;
-				if ($value !== null && $value !== '') {
-					$candidates[] = (string)$value;
+		try {
+			foreach ([$asset->folderPath, $asset->getPath()] as $value) {
+				if ($value !== '') {
+					$candidates[] = $value;
 				}
-			} catch (Throwable) {
 			}
+		} catch (Throwable) {
 		}
 
 		try {
@@ -936,27 +935,43 @@ class Transcode extends Component
 	 */
 	protected function getMatrixBlockOwnerTitle(Asset $asset): ?string
 	{
-		if (!class_exists(MatrixBlock::class)) {
-			return null;
-		}
-
 		try {
-			$query = MatrixBlock::find();
+			// Matrix blocks are nested Entries in Craft 5.
+			$query = Entry::find()->fieldId(':notempty:');
 			$query->relatedTo(['targetElement' => $asset]);
 			$this->prepareOwnerLookupQuery($query);
 
 			$block = $query->one();
-			if ($block instanceof ElementInterface && method_exists($block, 'getOwner')) {
-				$owner = $block->getOwner();
-				if ($owner instanceof ElementInterface) {
-					return $this->getElementTitle($owner);
-				}
+			if ($block instanceof Entry) {
+				return $this->getRootOwnerTitle($block);
 			}
 		} catch (Throwable $e) {
 			Craft::debug('Unable to resolve Transcoder Matrix owner title for asset ' . $asset->id . ': ' . $e->getMessage(), __METHOD__);
 		}
 
 		return null;
+	}
+
+	/**
+	 * Resolve the containing article through any number of nested Matrix entries.
+	 */
+	protected function getRootOwnerTitle(ElementInterface $element): ?string
+	{
+		$visited = [];
+		while ($element instanceof NestedElementInterface) {
+			$key = $element->id ?? spl_object_id($element);
+			if (isset($visited[$key])) {
+				break;
+			}
+			$visited[$key] = true;
+			$owner = $element->getOwner();
+			if ($owner === null) {
+				break;
+			}
+			$element = $owner;
+		}
+
+		return $this->getElementTitle($element);
 	}
 
 	/**
@@ -973,7 +988,7 @@ class Transcode extends Component
 			$this->prepareOwnerLookupQuery($query);
 
 			$entry = $query->one();
-			return $entry instanceof ElementInterface ? $this->getElementTitle($entry) : null;
+			return $entry instanceof ElementInterface ? $this->getRootOwnerTitle($entry) : null;
 		} catch (Throwable $e) {
 			Craft::debug('Unable to resolve Transcoder related entry title for asset ' . $asset->id . ': ' . $e->getMessage(), __METHOD__);
 		}
@@ -1306,7 +1321,7 @@ class Transcode extends Component
 
 			$activeAssetStatus = $this->findActiveVideoStatusForAsset($asset, $statusKey, false, true);
 			if (!empty($activeAssetStatus)) {
-				if ($this->isAssetOriginalAvailable($asset) && $this->isOriginalVideoSourceRetryStatus($activeAssetStatus)) {
+				if ($this->isOriginalVideoSourceRetryStatus($activeAssetStatus)) {
 					Craft::info('Transcoder: ignoring queued poster source-retry status for asset ' . $asset->id . ' because the original source is now reachable.', __METHOD__);
 				} else {
 					return $this->sanitizeVideoStatus($activeAssetStatus);
@@ -2672,9 +2687,6 @@ class Transcode extends Component
 	 *   the corresponding segment will be returned.
 	 *
 	 * @param string|Asset $filePath The file path or an Asset object
-	 * @param array $settings An array containing subfolder settings:
-	 *                         - 'createSubfolders' (bool)
-	 *                         - 'subfolderUrlSegment' (int)
 	 * @return string The subfolder name, with a trailing slash if found, or an empty string
 	 */
 	function getSubfolderFromPath(string|Asset $filePath): string
@@ -3265,7 +3277,7 @@ class Transcode extends Component
 		$filePath = $this->getAssetPath($filePath);
 
 		if (!empty($filePath)) {
-			$destAudioPath = $settings['transcoderPaths']['audio'] . $subfolder ?? $settings['transcoderPaths']['default'];
+			$destAudioPath = ($settings['transcoderPaths']['audio'] ?? $settings['transcoderPaths']['default']) . $subfolder;
 			$destAudioPath = App::parseEnv($destAudioPath);
 
 			$audioOptions = $this->coalesceOptions('defaultAudioOptions', $audioOptions);
@@ -3360,7 +3372,7 @@ class Transcode extends Component
 
 			// If the audio file already exists and hasn't been modified, return it.  Otherwise, start it transcoding
 			if (file_exists($destAudioPath) && (@filemtime($destAudioPath) >= @filemtime($filePath))) {
-				$url = $settings['transcoderUrls']['audio'] . $subfolder ?? $settings['transcoderUrls']['default'];
+				$url = ($settings['transcoderUrls']['audio'] ?? $settings['transcoderUrls']['default']) . $subfolder;
 				$result = App::parseEnv($url) . $destAudioFile;
 			} else {
 				// Kick off the transcoding
@@ -3368,7 +3380,7 @@ class Transcode extends Component
 
 				if ($synchronous) {
 					Craft::info($ffmpegCmd, __METHOD__);
-					$url = $settings['transcoderUrls']['audio'] . $subfolder ?? $settings['transcoderUrls']['default'];
+					$url = ($settings['transcoderUrls']['audio'] ?? $settings['transcoderUrls']['default']) . $subfolder;
 					$result = App::parseEnv($url) . $destAudioFile;
 				} else {
 					Craft::info($ffmpegCmd . "\nffmpeg PID: " . $pid, __METHOD__);
@@ -3932,7 +3944,7 @@ class Transcode extends Component
 	 * @param Asset|string $filePath path to the original video or an Asset
 	 * @param array $gifOptions of options for the GIF file
 	 *
-	 * @return string|false|null URL or path of the GIF file
+	 * @return string JSON-encoded GIF status
 	 * @throws InvalidConfigException
 	 */
 
@@ -4154,7 +4166,7 @@ class Transcode extends Component
 
 		if (!empty($filePath)) {
 			// Dest path
-			$destVideoPath = $settings['transcoderPaths']['gif'] . $subfolder ?? $settings['transcoderPaths']['default'];
+			$destVideoPath = ($settings['transcoderPaths']['gif'] ?? $settings['transcoderPaths']['default']) . $subfolder;
 			$destVideoPath = App::parseEnv($destVideoPath);
 
 			// Options
@@ -4164,7 +4176,7 @@ class Transcode extends Component
 			$destVideoFile = $this->getFilename($filePath, $gifOptions);
 			
 			// Convert to a public URL
-			$url = $settings['transcoderUrls']['gif'] . $subfolder ?? $settings['transcoderUrls']['default'];
+			$url = ($settings['transcoderUrls']['gif'] ?? $settings['transcoderUrls']['default']) . $subfolder;
 			$publicUrl = App::parseEnv($url) . $destVideoFile;
 			
 			// Check if the file exists via HTTP first when the url is passed as an argument instead of an asset object
@@ -4220,7 +4232,7 @@ class Transcode extends Component
 
 			// If the video file already exists and hasn't been modified, return it.  Otherwise, start it transcoding
 			if (file_exists($destVideoPath) && (@filemtime($destVideoPath) >= @filemtime($filePath))) {
-				$url = $settings['transcoderUrls']['gif'] . $subfolder ?? $settings['transcoderUrls']['default'];
+				$url = ($settings['transcoderUrls']['gif'] ?? $settings['transcoderUrls']['default']) . $subfolder;
 				$result = App::parseEnv($url) . $destVideoFile;
 			} elseif (!$generate) {         
 				$result = '';
@@ -4311,7 +4323,7 @@ class Transcode extends Component
 					$suffix = self::SUFFIX_MAP[$key];
 				}
 				if (is_bool($value)) {
-					$value = $value ? $key : 'no' . $key;
+					$value = $key;
 				}
 				if (!in_array($key, $excludeParams, true)) {
 					$fileName .= '_' . $value . $suffix;
@@ -4360,7 +4372,7 @@ class Transcode extends Component
 				$fs = $assetVolume->getFs();
 				if ($fs instanceof LocalFsInterface) {
 					$sourcePath = rtrim($fs->getRootPath(), DIRECTORY_SEPARATOR);
-					$sourcePath .= '' === $sourcePath ? '' : DIRECTORY_SEPARATOR;
+					$sourcePath .= DIRECTORY_SEPARATOR . $assetVolume->getSubpath();
 					$folderPath = '';
 					try {
 						$folderPath = rtrim($asset->getFolder()->path, DIRECTORY_SEPARATOR);
@@ -5620,7 +5632,10 @@ class Transcode extends Component
 	 */
 	protected function isDetectedCropSafe(array $crop, int $sourceWidth, int $sourceHeight): bool
 	{
-		[$width, $height, $x, $y] = $crop;
+		if (count($crop) !== 4 || count(array_filter($crop, 'is_int')) !== 4) {
+			return false;
+		}
+		[$width, $height, $x, $y] = array_map('intval', $crop);
 		if ($width <= 0 || $height <= 0 || $x < 0 || $y < 0) {
 			return false;
 		}
@@ -7291,6 +7306,7 @@ class Transcode extends Component
 	/**
 	 * Return whether a process stored in a lock file is still running.
 	 *
+	 * @phpstan-impure
 	 * @param string $lockFile
 	 * @return bool
 	 */

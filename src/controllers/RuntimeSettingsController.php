@@ -12,9 +12,9 @@ namespace nystudio107\transcoder\controllers;
 
 use Craft;
 use craft\web\Controller;
-use craft\web\Response;
 use nystudio107\transcoder\Transcoder;
 use Throwable;
+use yii\web\Response;
 
 /**
  * Saves runtime settings from CP utilities.

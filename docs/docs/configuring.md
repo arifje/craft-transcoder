@@ -19,7 +19,7 @@ If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.
 
 ## Queueing Media on Asset Upload
 
-Transcoder can queue video encoding, poster generation, and GIF encoding when a new media asset is uploaded, so templates do not have to trigger ffmpeg work. Entry saves and existing Asset metadata saves are not inspected.
+Transcoder can queue video encoding, poster generation, and GIF encoding when a new media asset is uploaded, so templates do not have to trigger ffmpeg work. Entry saves, existing Asset metadata saves, and Asset saves performed by Craft bulk resaves or upgrades are not inspected.
 
 The `enableVideoEncoding`, `enableVideoPosters`, `enableGifEncoding`, `enableDownloadFileEndpoint`, `queueVideosOnSave`, `queueGifsOnSave`, `mediaInspectionMaxRetries`, `mediaInspectionRetryDelaySeconds`, `videoMaxConcurrentJobs`, `gifMaxConcurrentJobs`, `encodingConcurrencyRetryDelaySeconds`, `gifQueueDelaySeconds`, and `videoPosterFormats` settings can also be managed from the plugin’s Control Panel settings screen. Values defined in `config/transcoder.php` take precedence over values saved from the Control Panel.
 
@@ -80,7 +80,7 @@ When queueing is enabled, Transcoder listens only for brand-new Assets. The uplo
 
 Video encoding and poster generation share a per-server FFmpeg pool controlled by `videoMaxConcurrentJobs` (default `1`). GIF encoding uses its own `gifMaxConcurrentJobs` pool (default `4`). A job that cannot acquire a slot is delayed by `encodingConcurrencyRetryDelaySeconds` and returned to Craft's queue without incrementing its normal failure attempt. The locks are local to each encoding host, so separate queue servers protect their own CPU independently and no database migration is required.
 
-Normal Entry saves do not run Transcoder field scanning or create automatic jobs. Saving metadata on an existing media Asset also does not requeue it. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` aliases remain compatible with existing configuration, but only enable new upload processing; they no longer cause Entry scanning.
+Normal Entry saves do not run Transcoder field scanning or create automatic jobs. Saving metadata on an existing media Asset also does not requeue it. When Craft marks an Asset as `resaving`, Transcoder returns before media classification, settings access, status checks, or queue access; this prevents bulk resaves, propagation work, and upgrades from starting automatic transcoding. Normal new uploads remain eligible. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` aliases remain compatible with existing configuration, but only enable new upload processing; they no longer cause Entry scanning.
 
 Craft also exposes a dedicated replacement event, but Transcoder intentionally does not treat every existing-Asset save as new media. Code that deliberately replaces a source video can call `Transcoder::$plugin->getTranscode()->refreshVideoAsset($asset)` after the replacement succeeds. The call queues a refresh job; that job waits without signaling processes if an Asset-owned encode is active, removes its canonical automatic encode, configured posters, recognized legacy output, safe temporary files, and matching runtime status, then queues standard inspection. Missing output is a successful no-op, and ordinary metadata saves remain inert.
 

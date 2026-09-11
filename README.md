@@ -1,6 +1,6 @@
 [![Scrutinizer Code Quality](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/badges/quality-score.png?b=v4)](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/?branch=v4) [![Code Coverage](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/badges/coverage.png?b=v4)](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/?branch=v4) [![Build Status](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/badges/build.png?b=v4)](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/build-status/v4) [![Code Intelligence Status](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/badges/code-intelligence.svg?b=v4)](https://scrutinizer-ci.com/code-intelligence)
 
-# Transcoder plugin for Craft CMS 4.x
+# Transcoder plugin for Craft CMS 5
 
 Transcode video & audio files to various formats, convert GIFs to mp4, generate video posters, and optionally watermark encoded videos.
 
@@ -10,7 +10,7 @@ Transcode video & audio files to various formats, convert GIFs to mp4, generate 
 
 ## Requirements
 
-This plugin requires Craft CMS 4.0.0 or later.
+This branch (`skoften-codex-v5`) requires Craft CMS 5.x and PHP 8.2 or later. Keep using the 4.x release line on Craft CMS 4.
 
 Transcoder also needs [ffmpeg](https://ffmpeg.org/) and [ffprobe](https://ffmpeg.org/ffprobe.html) on every server that runs encoding work. On Ubuntu, you can install them with:
 
@@ -37,7 +37,7 @@ To install Transcoder, follow these steps:
 
 You can also install Transcoder via the **Plugin Store** in the Craft Control Panel.
 
-Transcoder works on Craft 4.x.
+For the Craft 5 upgrade checklist, compatibility audit, and test instructions, see [Craft 5 compatibility](docs/craft5-compatibility.md). Version 5.0.0 is prepared on this branch and is not yet tagged or published.
 
 To install `ffmpeg` on Centos 6/7, you can follow the guide [How to Install FFmpeg on CentOS](https://www.vultr.com/docs/how-to-install-ffmpeg-on-centos)
 
@@ -115,7 +115,7 @@ The inspection job reloads the Asset and performs source availability, existing 
 
 Active FFmpeg work is limited independently on each encoding server. Video encodes and video poster jobs share the `videoMaxConcurrentJobs` pool (default `1`), while GIF encodes use `gifMaxConcurrentJobs` (default `4`). When a pool is full, the job returns to Craft's queue after `encodingConcurrencyRetryDelaySeconds` without consuming an encoding retry. This allows queue workers to keep processing unrelated Craft jobs while preventing their worker concurrency from becoming the FFmpeg concurrency.
 
-Normal Entry saves are never scanned, and saving metadata on an existing Asset does not trigger automatic transcoding. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` configuration aliases are still accepted, but now only enable new-asset upload processing; they do not restore Entry field scanning. Public element-scanning methods remain available for explicit API calls.
+Normal Entry saves are never scanned, and saving metadata on an existing Asset does not trigger automatic transcoding. Asset saves marked `resaving` by Craft are rejected before media classification, settings access, status checks, or queue access, so bulk resaves, propagation work, and upgrades cannot start automatic transcoding. Normal new uploads remain eligible. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` configuration aliases are still accepted, but now only enable new-asset upload processing; they do not restore Entry field scanning. Public element-scanning methods remain available for explicit API calls.
 
 Craft's dedicated asset-replacement event is intentionally not registered by this workflow, so ordinary Asset metadata saves remain inert. Integrations that intentionally replace the video source can explicitly refresh Transcoder after the replacement succeeds:
 
@@ -268,6 +268,8 @@ Available asset fields:
 * `transcoderGifStatusUrl(gifOptions)`
 
 `videoOptions`, `encodingOptions`, and `gifOptions` are JSON-encoded strings. `queueIfMissing` defaults to `false`; when set to `true`, Transcoder still respects the runtime kill switch, the feature-specific enable/disable settings, and `encodingServerNames`.
+
+In version 5, `queueIfMissing: true` and poster `generate: true` require the schema's **Transcoder encoding** permission (`transcoder:encode`). Diagnostics require `transcoder:debug`; without it, failure messages are generic and `rawJson` excludes internal details. Grant these only to trusted server-side tokens, never public/browser tokens. The examples below that request encoding or debug data assume these permissions are enabled.
 
 Example video query:
 

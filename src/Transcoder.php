@@ -159,6 +159,17 @@ class Transcoder extends Plugin
         }
     }
 
+    /**
+     * Return the plugin's configured settings model.
+     */
+    public function getSettings(): Settings
+    {
+        /** @var Settings $settings */
+        $settings = parent::getSettings();
+
+        return $settings;
+    }
+
     // Protected Methods
     // =========================================================================
 
@@ -198,7 +209,7 @@ class Transcoder extends Plugin
         Event::on(
             CraftVariable::class,
             CraftVariable::EVENT_INIT,
-			function (Event $event) {
+            function(Event $event) {
                 /** @var CraftVariable $variable */
                 $variable = $event->sender;
                 $variable->set('transcoder', [
@@ -217,7 +228,7 @@ class Transcoder extends Plugin
         Event::on(
             View::class,
             View::EVENT_BEFORE_RENDER_TEMPLATE,
-			function (TemplateEvent $event) {
+            function(TemplateEvent $event) {
                 if (
                     $event->template === 'settings/plugins/_settings.twig'
                     && ($event->variables['plugin']->handle ?? null) === $this->handle
@@ -250,14 +261,10 @@ class Transcoder extends Plugin
      */
     protected function registerUtilities(): void
     {
-        $eventName = defined(Utilities::class . '::EVENT_REGISTER_UTILITIES')
-            ? Utilities::EVENT_REGISTER_UTILITIES
-            : Utilities::EVENT_REGISTER_UTILITY_TYPES;
-
         Event::on(
             Utilities::class,
-            $eventName,
-			static function (RegisterComponentTypesEvent $event) {
+            Utilities::EVENT_REGISTER_UTILITIES,
+            static function(RegisterComponentTypesEvent $event) {
                 $event->types[] = EncodingUtility::class;
             }
         );
@@ -273,7 +280,7 @@ class Transcoder extends Plugin
         Event::on(
             Assets::class,
             Assets::EVENT_DEFINE_THUMB_URL,
-			static function (DefineAssetThumbUrlEvent $event) {
+            static function(DefineAssetThumbUrlEvent $event) {
                 Craft::debug(
                     'Assets::EVENT_GET_THUMB_PATH',
                     __METHOD__
@@ -292,7 +299,7 @@ class Transcoder extends Plugin
             Event::on(
                 ClearCaches::class,
                 ClearCaches::EVENT_REGISTER_CACHE_OPTIONS,
-				function (RegisterCacheOptionsEvent $event) {
+                function(RegisterCacheOptionsEvent $event) {
                     $event->options[] = [
                         'key' => 'transcoder',
                         'label' => Craft::t('transcoder', 'Transcoder caches'),
@@ -304,20 +311,15 @@ class Transcoder extends Plugin
         Event::on(
             Asset::class,
             Asset::EVENT_AFTER_SAVE,
-			function (ModelEvent $event) {
-                $asset = $event->sender;
-                if (!$asset instanceof Asset || !$event->isNew) {
-                    return;
-                }
-
-                $this->queueMediaInspectionForUploadedAsset($asset);
+            function(ModelEvent $event) {
+                $this->handleAssetAfterSave($event);
             }
         );
         // Handler: Plugins::EVENT_AFTER_INSTALL_PLUGIN
         Event::on(
             Plugins::class,
             Plugins::EVENT_AFTER_INSTALL_PLUGIN,
-			function (PluginEvent $event) {
+            function(PluginEvent $event) {
                 if ($event->plugin === $this) {
                     $request = Craft::$app->getRequest();
                     if ($request->isCpRequest) {
@@ -342,7 +344,7 @@ class Transcoder extends Plugin
         Event::on(
             UrlManager::class,
             UrlManager::EVENT_REGISTER_SITE_URL_RULES,
-			function (RegisterUrlRulesEvent $event) {
+            function(RegisterUrlRulesEvent $event) {
                 Craft::debug(
                     'UrlManager::EVENT_REGISTER_SITE_URL_RULES',
                     __METHOD__
@@ -354,6 +356,23 @@ class Transcoder extends Plugin
                 );
             }
         );
+    }
+
+    /**
+     * Queue inspection after a new Asset upload, excluding Craft bulk resaves.
+     */
+    protected function handleAssetAfterSave(ModelEvent $event): void
+    {
+        $asset = $event->sender;
+        if (!$asset instanceof Asset || $asset->resaving) {
+            return;
+        }
+
+        if (!$event->isNew) {
+            return;
+        }
+
+        $this->queueMediaInspectionForUploadedAsset($asset);
     }
 
     /**
