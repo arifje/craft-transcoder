@@ -126,6 +126,18 @@
     }) }}
 
     {{ forms.textField({
+        label: 'Maximum concurrency wait'|t('transcoder'),
+        instructions: 'Maximum elapsed seconds a video, poster or GIF job may wait for a free FFmpeg slot before failing. Default: 3600 (one hour). Increase this for large legitimate backlogs.'|t('transcoder'),
+        warning: macros.configWarning('encodingConcurrencyMaxWaitSeconds', 'transcoder'),
+        id: 'encodingConcurrencyMaxWaitSeconds',
+        name: 'encodingConcurrencyMaxWaitSeconds',
+        value: settings.encodingConcurrencyMaxWaitSeconds,
+        type: 'number',
+        min: 1,
+        size: 5,
+    }) }}
+
+    {{ forms.textField({
         label: 'Video encode retries'|t('transcoder'),
         instructions: 'How many times a failed video encode job should be retried before it is marked as failed.'|t('transcoder'),
         warning: macros.configWarning('videoEncodeMaxRetries', 'transcoder'),

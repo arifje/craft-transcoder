@@ -37,7 +37,7 @@ To install Transcoder, follow these steps:
 
 You can also install Transcoder via the **Plugin Store** in the Craft Control Panel.
 
-For the Craft 5 upgrade checklist, compatibility audit, and test instructions, see [Craft 5 compatibility](docs/craft5-compatibility.md). Version 5.0.0 is prepared on this branch and is not yet tagged or published.
+For the Craft 5 upgrade checklist, compatibility audit, and test instructions, see [Craft 5 compatibility](docs/craft5-compatibility.md). Version 5.0.1 includes the queue-recovery fixes; Craft 4 sites must use the 4.x release line instead.
 
 To install `ffmpeg` on Centos 6/7, you can follow the guide [How to Install FFmpeg on CentOS](https://www.vultr.com/docs/how-to-install-ffmpeg-on-centos)
 
@@ -114,6 +114,10 @@ When `queueVideosOnSave` or `queueGifsOnSave` is enabled, Transcoder reacts only
 The inspection job reloads the Asset and performs source availability, existing output, poster, active-job and runtime-status checks in the queue. It then uses the existing queueing methods to add `EncodeVideo`, `GenerateVideoPosters` or `EncodeGif` only when required. Temporarily unavailable Assets, sources, and final upload folders are retried after `mediaInspectionRetryDelaySeconds`, up to `mediaInspectionMaxRetries` retries. If an Asset legitimately remains in its volume root, processing continues after that bounded settling window and writes to the media-specific video, thumbnail, or GIF directory.
 
 Active FFmpeg work is limited independently on each encoding server. Video encodes and video poster jobs share the `videoMaxConcurrentJobs` pool (default `1`), while GIF encodes use `gifMaxConcurrentJobs` (default `4`). When a pool is full, the job returns to Craft's queue after `encodingConcurrencyRetryDelaySeconds` without consuming an encoding retry. This allows queue workers to keep processing unrelated Craft jobs while preventing their worker concurrency from becoming the FFmpeg concurrency.
+
+Capacity waiting is bounded by `encodingConcurrencyMaxWaitSeconds` (default `3600`, one hour), measured from the first capacity deferral across replacement jobs. After that deadline, the job fails visibly instead of creating another delayed job. Increase the limit for legitimate large backlogs. A slot can be held by a PHP worker preparing a source before FFmpeg starts. Lock-open and filesystem-locking errors fail immediately with the path, native error and worker UID; they are not treated as a full pool. Busy-slot logs include the last recorded holder for diagnosis, not as proof that its PID is still alive.
+
+After an infrastructure outage, inspect the failure and the worker/lock-holder logs before retrying jobs. Check the reported directory's ownership/permissions, disk space and the queue workers' operating-system user. Restarting Redis does not repair local lock permissions or stop surviving PHP workers. Stop encoding workers and verify that no processes hold the locks before repairing permissions or removing obsolete locks; deleting a live lock can allow parallel processes to exceed the limit. Do not wipe all of `/tmp` or the Transcoder status directory. Once recovered, retry one job first, then review failed/duplicate jobs before resuming the backlog.
 
 Normal Entry saves are never scanned, and saving metadata on an existing Asset does not trigger automatic transcoding. Asset saves marked `resaving` by Craft are rejected before media classification, settings access, status checks, or queue access, so bulk resaves, propagation work, and upgrades cannot start automatic transcoding. Normal new uploads remain eligible. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` configuration aliases are still accepted, but now only enable new-asset upload processing; they do not restore Entry field scanning. Public element-scanning methods remain available for explicit API calls.
 

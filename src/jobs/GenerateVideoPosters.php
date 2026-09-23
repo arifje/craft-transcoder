@@ -22,6 +22,8 @@ use Throwable;
  */
 class GenerateVideoPosters extends BaseJob
 {
+    use CapacityWaitTrait;
+
     /**
      * @var int|null
      */
@@ -114,9 +116,11 @@ class GenerateVideoPosters extends BaseJob
      */
     protected function deferForCapacity(mixed $queue, Asset $asset): void
     {
+        $this->beginCapacityWait();
         $settings = Transcoder::$plugin->getSettings();
         $delay = max(1, (int)$settings->encodingConcurrencyRetryDelaySeconds);
         $queueTtrSeconds = max(1, $this->queueTtrSeconds);
+        $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
         $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
             'assetId' => $asset->id,
             'ownerTitle' => $this->ownerTitle,
@@ -126,27 +130,29 @@ class GenerateVideoPosters extends BaseJob
             'attempt' => $this->attempt,
             'maxRetries' => $this->maxRetries,
             'retryDelaySeconds' => $this->retryDelaySeconds,
+            'capacityWaitStartedAt' => $this->capacityWaitStartedAt,
         ]));
         $message = Craft::t('transcoder', 'Waiting for an available video encoding slot; retrying posters in {seconds}s', [
             'seconds' => $delay,
         ]);
-        $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
-
-        Transcoder::$plugin->transcode->writeVideoPosterStatus(
-            $asset,
-            $this->videoOptions,
-            array_merge($status, [
-                'posterStatus' => 'queued',
-                'posterProgress' => 0,
-                'posterMessage' => $message,
-                'posterError' => '',
-                'posterJobId' => $jobId,
-                'posterQueueTtrSeconds' => $queueTtrSeconds,
-                'posterCapacityDelay' => $delay,
-            ]),
-            $this->encodingOptions
-        );
-        $this->setProgress($queue, 1, $message);
+        $this->recordCapacityDeferral($jobId, function() use ($queue, $asset, $status, $jobId, $queueTtrSeconds, $message, $delay): void {
+            Transcoder::$plugin->transcode->writeVideoPosterStatus(
+                $asset,
+                $this->videoOptions,
+                array_merge($status, [
+                    'posterStatus' => 'queued',
+                    'posterProgress' => 0,
+                    'posterMessage' => $message,
+                    'posterError' => '',
+                    'posterJobId' => $jobId,
+                    'posterQueueTtrSeconds' => $queueTtrSeconds,
+                    'posterCapacityDelay' => $delay,
+                    'posterCapacityWaitStartedAt' => $this->capacityWaitStartedAt,
+                ]),
+                $this->encodingOptions
+            );
+            $this->setProgress($queue, 1, $message);
+        });
         Craft::info('Transcoder deferred poster generation for asset #' . $asset->id . ': ' . $message, __METHOD__);
     }
 

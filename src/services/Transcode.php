@@ -875,13 +875,17 @@ class Transcode extends Component
 	 */
 	public function withLocalVideoSource(Asset $asset, callable $callback): mixed
 	{
+		$sourceCopy = null;
 		try {
-			if ($asset->getVolume()->getFs() instanceof LocalFsInterface) {
-				return $callback(null);
+			if (!$asset->getVolume()->getFs() instanceof LocalFsInterface) {
+				$sourceCopy = $asset->getCopyOfFile();
 			}
-			$sourceCopy = $asset->getCopyOfFile();
 		} catch (Throwable $e) {
 			return $callback($e);
+		}
+		// Only source-resolution failures belong in the catch above, never callback failures.
+		if ($sourceCopy === null) {
+			return $callback(null);
 		}
 		$assetId = (int)$asset->id;
 		$previousPath = $this->videoSourcePathOverrides[$assetId] ?? null;

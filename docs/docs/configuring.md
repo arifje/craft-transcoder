@@ -46,6 +46,7 @@ return [
     'videoMaxConcurrentJobs' => 1,
     'gifMaxConcurrentJobs' => 4,
     'encodingConcurrencyRetryDelaySeconds' => 15,
+    'encodingConcurrencyMaxWaitSeconds' => 3600,
 
     // Options passed to getVideoUrl() by the queue job.
     'autoEncodeVideoOptions' => [],
@@ -79,6 +80,8 @@ When queueing is enabled, Transcoder listens only for brand-new Assets. The uplo
 `InspectMediaAsset` reloads the Asset and performs source availability, existing output, poster, active-job and status-file checks asynchronously. It queues the required video encode, poster or GIF jobs only after those checks. If Craft has not committed the Asset/source or populated its final upload folder yet, inspection retries after `mediaInspectionRetryDelaySeconds`, up to `mediaInspectionMaxRetries` retries. An Asset that legitimately remains in the volume root continues after that bounded settling window and uses the media-specific base output directory.
 
 Video encoding and poster generation share a per-server FFmpeg pool controlled by `videoMaxConcurrentJobs` (default `1`). GIF encoding uses its own `gifMaxConcurrentJobs` pool (default `4`). A job that cannot acquire a slot is delayed by `encodingConcurrencyRetryDelaySeconds` and returned to Craft's queue without incrementing its normal failure attempt. The locks are local to each encoding host, so separate queue servers protect their own CPU independently and no database migration is required.
+
+`encodingConcurrencyMaxWaitSeconds` limits elapsed waiting time across those delayed jobs (default `3600`, minimum `1`), and is also available in the Control Panel settings. Exhausted waits fail visibly for manual recovery instead of looping forever. Increase it when a large legitimate backlog needs longer. Permission/open errors and non-contention locking errors fail immediately with filesystem diagnostics. Never delete or bypass locks while encoding workers are running.
 
 Normal Entry saves do not run Transcoder field scanning or create automatic jobs. Saving metadata on an existing media Asset also does not requeue it. When Craft marks an Asset as `resaving`, Transcoder returns before media classification, settings access, status checks, or queue access; this prevents bulk resaves, propagation work, and upgrades from starting automatic transcoding. Normal new uploads remain eligible. The deprecated `queueVideosOnEntrySave` and `queueGifsOnEntrySave` aliases remain compatible with existing configuration, but only enable new upload processing; they no longer cause Entry scanning.
 

@@ -1,6 +1,6 @@
 # Craft 5 Compatibility Audit
 
-Branch: `skoften-codex-v5`. Prepared version: **5.0.0**, not yet published.
+Branch: `skoften-codex-v5`. Version: **5.0.1**.
 
 This release line requires Craft CMS 5 and PHP 8.2+. Keep the 4.x plugin release line for Craft 4 installations. The audit follows [Craft's plugin upgrade guide](https://craftcms.com/docs/5.x/extend/updating-plugins.html) and checks the installed Craft source, not just dependency constraints.
 

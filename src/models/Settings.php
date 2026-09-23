@@ -292,6 +292,11 @@ class Settings extends Model
     public int $encodingConcurrencyRetryDelaySeconds = 15;
 
     /**
+     * Maximum elapsed seconds waiting for an FFmpeg slot before failing visibly.
+     */
+    public int $encodingConcurrencyMaxWaitSeconds = 3600;
+
+    /**
      * Number of retries after the initial video encode attempt fails.
      *
      * @var int
@@ -645,12 +650,14 @@ class Settings extends Model
                 'videoMaxConcurrentJobs',
                 'gifMaxConcurrentJobs',
                 'encodingConcurrencyRetryDelaySeconds',
+                'encodingConcurrencyMaxWaitSeconds',
             ], 'integer'],
             ['videoQueueTtrSeconds', 'number', 'min' => 1],
             [[
                 'videoMaxConcurrentJobs',
                 'gifMaxConcurrentJobs',
                 'encodingConcurrencyRetryDelaySeconds',
+                'encodingConcurrencyMaxWaitSeconds',
             ], 'number', 'min' => 1],
             ['videoQueueDelaySeconds', 'number', 'min' => 0],
             [['videoEncodeMaxRetries', 'videoEncodeRetryDelaySeconds'], 'integer'],

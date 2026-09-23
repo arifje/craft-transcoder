@@ -1,5 +1,12 @@
 # Transcoder Changelog
 
+## 5.0.1 - 2026.09.23
+### Fixed
+* Bound video, poster and GIF capacity waiting with `encodingConcurrencyMaxWaitSeconds` (default one hour) instead of indefinitely creating delayed jobs.
+* Distinguish occupied concurrency slots from filesystem locking failures; include native error details and worker UID in lock failures and record busy-slot holder diagnostics.
+* Avoid failing a predecessor after a delayed capacity successor has already been queued when status/progress storage fails.
+* Invoke local-source encoding callbacks only once when they throw, preventing cache/encoding failures from repeating work inside the same job.
+
 ## 5.0.0 - Unreleased
 ### Added
 * Dedicated Craft CMS 5 release line, requiring PHP 8.2+ and the Craft 5 Vite integration.
