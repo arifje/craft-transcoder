@@ -22,6 +22,8 @@ use Throwable;
  */
 class EncodeVideo extends BaseJob
 {
+    use CapacityWaitTrait;
+
     private const POLL_INTERVAL_SECONDS = 2;
     private const QUEUE_TIMEOUT_GRACE_SECONDS = 5;
 
@@ -117,9 +119,11 @@ class EncodeVideo extends BaseJob
      */
     protected function deferForCapacity(mixed $queue, Asset $asset): void
     {
+        $this->beginCapacityWait();
         $settings = Transcoder::$plugin->getSettings();
         $delay = max(1, (int)$settings->encodingConcurrencyRetryDelaySeconds);
         $queueTtrSeconds = max(1, $this->queueTtrSeconds);
+        $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
         $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
             'assetId' => $asset->id,
             'ownerTitle' => $this->ownerTitle,
@@ -129,27 +133,30 @@ class EncodeVideo extends BaseJob
             'attempt' => $this->attempt,
             'maxRetries' => $this->maxRetries,
             'retryDelaySeconds' => $this->retryDelaySeconds,
+            'capacityWaitStartedAt' => $this->capacityWaitStartedAt,
         ]));
         $message = Craft::t('transcoder', 'Waiting for an available video encoding slot; retrying in {seconds}s', [
             'seconds' => $delay,
         ]);
 
-        $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
-        Transcoder::$plugin->transcode->writeVideoStatus(
-            $asset,
-            $this->videoOptions,
-            array_merge($status, [
-                'status' => 'queued',
-                'url' => '',
-                'progress' => 0,
-                'jobId' => $jobId,
-                'queueTtrSeconds' => $queueTtrSeconds,
-                'info' => $message,
-                'capacityDelay' => $delay,
-            ]),
-            $this->encodingOptions
-        );
-        $this->setProgress($queue, 1, $message);
+        $this->recordCapacityDeferral($jobId, function() use ($queue, $asset, $status, $jobId, $queueTtrSeconds, $message, $delay): void {
+            Transcoder::$plugin->transcode->writeVideoStatus(
+                $asset,
+                $this->videoOptions,
+                array_merge($status, [
+                    'status' => 'queued',
+                    'url' => '',
+                    'progress' => 0,
+                    'jobId' => $jobId,
+                    'queueTtrSeconds' => $queueTtrSeconds,
+                    'info' => $message,
+                    'capacityDelay' => $delay,
+                    'capacityWaitStartedAt' => $this->capacityWaitStartedAt,
+                ]),
+                $this->encodingOptions
+            );
+            $this->setProgress($queue, 1, $message);
+        });
         Craft::info('Transcoder deferred video encode for asset #' . $asset->id . ': ' . $message, __METHOD__);
     }
 

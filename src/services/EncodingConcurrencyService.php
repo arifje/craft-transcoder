@@ -45,13 +45,24 @@ class EncodingConcurrencyService extends Component
 
         for ($slotNumber = 1; $slotNumber <= $limit; $slotNumber++) {
             $path = $directory . DIRECTORY_SEPARATOR . $pool . '-' . $slotNumber . '.lock';
+            error_clear_last();
             $handle = @fopen($path, 'c+');
             if (!is_resource($handle)) {
-                throw new RuntimeException('Transcoder could not open concurrency lock file: ' . $path);
+                $reason = error_get_last()['message'] ?? 'Unknown filesystem error';
+                throw $this->lockFailure('open', $path, $reason);
             }
 
-            if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            error_clear_last();
+            $wouldBlock = 0;
+            if (!@flock($handle, LOCK_EX | LOCK_NB, $wouldBlock)) {
+                $reason = error_get_last()['message'] ?? 'The filesystem did not acquire the lock';
+                $metadata = $wouldBlock === 1 ? @stream_get_contents($handle, 4096) : '';
                 fclose($handle);
+                if ($wouldBlock !== 1) {
+                    throw $this->lockFailure('acquire', $path, $reason);
+                }
+                Craft::info('Transcoder concurrency slot is held: ' . $path
+                    . '; last recorded holder (diagnostic only): ' . ($metadata ?: 'unavailable'), __METHOD__);
                 continue;
             }
 
@@ -83,6 +94,21 @@ class EncodingConcurrencyService extends Component
         }
 
         return null;
+    }
+
+    private function lockFailure(string $operation, string $path, string $reason): RuntimeException
+    {
+        $uid = function_exists('posix_geteuid') ? (string)posix_geteuid() : 'unknown';
+
+        return new RuntimeException(sprintf(
+            'Transcoder could not %s concurrency lock file: %s. %s. Worker effective UID: %s. '
+            . 'Check lock directory/file ownership, permissions, free disk space and filesystem locking support. '
+            . 'Stop encoding workers before repairing locks; do not delete live lock files.',
+            $operation,
+            $path,
+            $reason,
+            $uid
+        ));
     }
 
     /**

@@ -1,5 +1,15 @@
 # Transcoder Changelog
 
+## 4.4.45 - 2026.09.23
+### Fixed
+* Bound video, poster and GIF capacity waiting with `encodingConcurrencyMaxWaitSeconds` (default one hour) instead of indefinitely creating delayed jobs.
+* Distinguish occupied concurrency slots from filesystem locking failures; include native error details and worker UID in lock failures and record busy-slot holder diagnostics.
+* Avoid failing a predecessor after a delayed capacity successor has already been queued when status/progress storage fails.
+* Invoke local-source encoding callbacks only once when they throw, preventing cache/encoding failures from repeating work inside the same job.
+
+### Compatibility
+* Keep Craft CMS 4 and Plugin Vite 4 dependencies unchanged. No database migration or output naming changes.
+
 ## 4.4.44 - 2026.08.18
 ### Added
 * Add a confirm-first `transcoder/videos/repair` console command with Entry creation-date and Entry-ID scopes, dry-run output, legacy cleanup, optional Entry-directory orphan cleanup, and asynchronous repair queueing.

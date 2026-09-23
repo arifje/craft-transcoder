@@ -155,6 +155,9 @@ return [
     // Seconds before a job deferred by an occupied FFmpeg pool tries again
     'encodingConcurrencyRetryDelaySeconds' => 15,
 
+    // Stop capacity deferrals after this many elapsed seconds; fail for manual recovery
+    'encodingConcurrencyMaxWaitSeconds' => 3600,
+
     // Retry failed video encode jobs this many times before marking the queue job as failed
     'videoEncodeMaxRetries' => 2,
 
