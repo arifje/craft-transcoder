@@ -1117,7 +1117,8 @@ class Transcode extends Component
 		array $encodingOptions = [],
 		?string $ownerTitle = null,
 		bool $deferIfOriginalMissing = false,
-		?int $queueDelaySeconds = null
+		?int $queueDelaySeconds = null,
+		bool $recoverMissingOutputs = false
 	): array
 	{
 		$settings = Transcoder::$plugin->getSettings();
@@ -1158,6 +1159,14 @@ class Transcode extends Component
 		$statusKey = $this->getVideoStatusKey($asset, $videoOptions, $encodingOptions);
 		$queueLock = $this->acquireVideoQueueLock('video-asset-' . $asset->id);
 		try {
+			if ($recoverMissingOutputs) {
+				if (!is_resource($queueLock)) {
+					throw new RuntimeException('Could not lock video recovery; no files were changed.');
+				}
+				if (!$this->clearInactiveVideoRecoveryState($asset)) {
+					return ['status' => 'queued', 'info' => 'Existing video/poster work is active; recovery skipped.'];
+				}
+			}
 			$outputInfo = $this->getVideoOutputInfo($asset, $videoOptions);
 			$status = $this->getVideoStatusData($asset, $videoOptions, $encodingOptions);
 			$originalMissing = !$this->isAssetOriginalAvailable($asset);
@@ -1403,6 +1412,47 @@ class Transcode extends Component
 		}
 
 		return $statuses;
+	}
+
+	/**
+	 * Clear only inactive status/temporary files, never generated media, under the asset queue lock.
+	 */
+	protected function clearInactiveVideoRecoveryState(Asset $asset): bool
+	{
+		$metadata = $this->getAutomaticVideoAssetRefreshMetadata($asset);
+		foreach ($metadata['lockPaths'] as $path) {
+			if (is_file($path) && $this->isProcessRunningFromLockFile($path)) {
+				return false;
+			}
+		}
+		$queue = Craft::$app->getQueue();
+		foreach ($metadata['statuses'] as $status) {
+			foreach (['jobId', 'posterJobId'] as $key) {
+				if (!empty($status[$key])) {
+					$state = $queue->status($status[$key]);
+					if (in_array($state, [\yii\queue\Queue::STATUS_WAITING, \yii\queue\Queue::STATUS_RESERVED], true)) {
+						return false;
+					}
+				}
+			}
+			// Older/direct encodes may not have a queue ID. Keep recent untracked work intact.
+			if ((empty($status['jobId']) && ($status['status'] ?? null) === 'encoding'
+				|| empty($status['posterJobId']) && ($status['posterStatus'] ?? null) === 'generating')
+				&& $this->isRecentVideoStatus($status, $this->getAutomaticVideoAssetActiveMaxAge())) {
+				return false;
+			}
+		}
+		if ($this->hasAutomaticVideoAssetStagingFiles($asset)) {
+			return false;
+		}
+		$files = [];
+		foreach (['status', 'temporary'] as $kind) {
+			foreach ($metadata['pathsByKind'][$kind] ?? [] as $path) {
+				$files[] = ['path' => $path, 'kind' => $kind];
+			}
+		}
+		$this->removeVideoRepairFiles($files);
+		return true;
 	}
 
 	/**
@@ -7095,7 +7145,7 @@ class Transcode extends Component
 	 * @param Asset $asset
 	 * @return bool
 	 */
-	protected function isVideoAsset(Asset $asset): bool
+	public function isVideoAsset(Asset $asset): bool
 	{
 		if (!$asset->id) {
 			return false;

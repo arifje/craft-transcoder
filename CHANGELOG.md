@@ -1,5 +1,9 @@
 # Transcoder Changelog
 
+## 5.0.2 - 2026.09.23
+### Added
+* Add a permission-controlled "Retry missing video/posters" button to the video Asset editor sidebar. Recovery runs asynchronously, preserves generated media and active jobs, and clears inactive error state before checking for missing outputs.
+
 ## 5.0.1 - 2026.09.23
 ### Fixed
 * Bound video, poster and GIF capacity waiting with `encodingConcurrencyMaxWaitSeconds` (default one hour) instead of indefinitely creating delayed jobs.
