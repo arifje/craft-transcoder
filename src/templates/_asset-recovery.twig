@@ -1,0 +1,44 @@
+<div class="meta transcoder-asset-recovery">
+    <h2>{{ 'Transcoder'|t('transcoder') }}</h2>
+    <button type="button" class="btn js-transcoder-retry-video"
+            data-asset-id="{{ assetId }}" data-site-id="{{ siteId }}"
+            style="max-width: 100%; white-space: normal;">
+        {{ 'Retry missing video/posters'|t('transcoder') }}
+    </button>
+    <span class="spinner hidden" aria-hidden="true"></span>
+    <p class="transcoder-recovery-message small" role="status" aria-live="polite"></p>
+</div>
+
+{% js %}
+if (!window.transcoderAssetRecoveryRegistered) {
+    window.transcoderAssetRecoveryRegistered = true;
+    document.addEventListener('click', function(event) {
+        var button = event.target.closest('.js-transcoder-retry-video');
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled) return;
+        var panel = button.closest('.transcoder-asset-recovery');
+        var message = panel.querySelector('.transcoder-recovery-message');
+        var spinner = panel.querySelector('.spinner');
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+        spinner.classList.remove('hidden');
+        message.classList.remove('error');
+        message.textContent = '';
+        Craft.sendActionRequest('POST', 'transcoder/media-recovery/retry', {
+            data: {assetId: button.dataset.assetId, siteId: button.dataset.siteId}
+        }).then(function(response) {
+            message.textContent = response.data.message;
+        }).catch(function(error) {
+            button.disabled = false;
+            message.classList.add('error');
+            message.textContent = (error.response && error.response.data && error.response.data.message)
+                || Craft.t('transcoder', 'Could not queue the check. Please try again later.');
+        }).finally(function() {
+            button.removeAttribute('aria-busy');
+            spinner.classList.add('hidden');
+        });
+    });
+}
+{% endjs %}

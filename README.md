@@ -137,6 +137,12 @@ The refresh API does not create or read a source-generation database table. If 4
 
 ### Repairing Video Output
 
+Editors can double-click a video Asset and use **Transcoder > Retry missing video/posters** in its sidebar (also available on the full Asset editor). Grant their user group the **Transcoder: Retry missing video encodes and posters** permission, alongside permission to view and edit the Asset's volume. Administrators have access automatically.
+
+The button queues a background inspection without saving the Asset or Entry. It checks for missing videos and configured posters, clears inactive error/status files, and queues the required jobs. Valid generated media is preserved; active jobs/processes are left alone. It is not a force-regenerate or filename-cleanup action. Existing failed queue records are not deleted.
+
+Manual recovery works independently of automatic-upload switches and with `allowAdminChanges=false`. It still respects the runtime encoding switch, enabled video/poster features, allowed encoding servers, queue delays and concurrency limits. Opening the sidebar performs no output/source checks. Source availability retries remain bounded by the media inspection settings.
+
 The confirm-first console command can audit a bounded Entry scope, remove recognized alternate/invalid Transcoder output, and queue missing canonical videos and configured posters:
 
 ```bash

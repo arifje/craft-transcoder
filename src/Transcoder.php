@@ -122,6 +122,7 @@ class Transcoder extends Plugin
         $this->registerSettingsTabs();
         // Register CP utilities
         $this->registerUtilities();
+        \nystudio107\transcoder\services\AssetEditor::register();
         // We've loaded!
         Craft::info(
             Craft::t(

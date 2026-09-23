@@ -26,6 +26,9 @@ class InspectMediaAsset extends BaseJob
      */
     public ?int $assetId = null;
 
+    /** Explicit editor recovery is independent of automatic-upload settings. */
+    public bool $recoverMissingVideoOutputs = false;
+
     /**
      * @var string|null Ignored compatibility field for jobs serialized by 4.4.41.
      */
@@ -63,7 +66,17 @@ class InspectMediaAsset extends BaseJob
             return;
         }
 
-        if (!Transcoder::$plugin->transcode->isQueueableMediaAsset($asset)) {
+        $transcode = Transcoder::$plugin->transcode;
+        if ($this->recoverMissingVideoOutputs) {
+            $settings = Transcoder::$plugin->getSettings();
+            if (!$transcode->isRuntimeEncodingEnabled() || (!$settings->enableVideoEncoding && !$settings->enableVideoPosters)) {
+                $this->setProgress($queue, 1, Craft::t('transcoder', 'Video recovery disabled'));
+                return;
+            }
+        }
+        if ($this->recoverMissingVideoOutputs
+            ? !$transcode->isVideoAsset($asset)
+            : !$transcode->isQueueableMediaAsset($asset)) {
             $this->setProgress($queue, 1, Craft::t('transcoder', 'Asset does not require automatic transcoding'));
             return;
         }
@@ -108,7 +121,17 @@ class InspectMediaAsset extends BaseJob
         }
 
         $this->setProgress($queue, 0.5, Craft::t('transcoder', 'Checking existing Transcoder output'));
-        $statuses = Transcoder::$plugin->transcode->queueMediaForAsset($asset);
+        $statuses = $this->recoverMissingVideoOutputs
+            ? ['video' => $transcode->queueVideoEncode(
+                $asset,
+                $settings['autoEncodeVideoOptions'] ?? [],
+                $settings['autoEncodeEncodingOptions'] ?? [],
+                null,
+                false,
+                max(0, (int)$settings->videoQueueDelaySeconds),
+                true
+            )]
+            : $transcode->queueMediaForAsset($asset);
 
         foreach ($statuses as $mediaType => $status) {
             Craft::info(
@@ -169,6 +192,7 @@ class InspectMediaAsset extends BaseJob
             'attempt' => $nextAttempt,
             'maxRetries' => $maxRetries,
             'retryDelaySeconds' => $delay,
+            'recoverMissingVideoOutputs' => $this->recoverMissingVideoOutputs,
         ]));
 
         Craft::warning($message, __METHOD__);
@@ -180,7 +204,9 @@ class InspectMediaAsset extends BaseJob
      */
     protected function defaultDescription(): ?string
     {
-        $description = Craft::t('transcoder', 'Inspecting media asset #{id}', [
+        $description = Craft::t('transcoder', $this->recoverMissingVideoOutputs
+            ? 'Checking missing video/posters for asset #{id}'
+            : 'Inspecting media asset #{id}', [
             'id' => $this->assetId ?? 'unknown',
         ]);
 
