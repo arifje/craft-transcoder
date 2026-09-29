@@ -74,6 +74,7 @@ class GenerateVideoPosters extends BaseJob
      */
     public function execute($queue): void
     {
+        $this->startExecutionClock();
         $asset = Asset::find()->id($this->assetId)->one();
 
         if (!$asset instanceof Asset) {
@@ -87,19 +88,22 @@ class GenerateVideoPosters extends BaseJob
             return;
         }
 
-        $slot = null;
         $settings = Transcoder::$plugin->getSettings();
-        if (Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
-            $slot = Transcoder::$plugin->encodingConcurrency->acquire(
-                'video',
-                (int)$settings->videoMaxConcurrentJobs,
-                'video poster generation',
-                $asset->id
-            );
-            if ($slot === null) {
-                $this->deferForCapacity($queue, $asset);
-                return;
-            }
+        if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
+            // Check before acquiring a slot or copying a remote source.
+            $this->markDisabled($queue, $asset);
+            return;
+        }
+
+        $slot = Transcoder::$plugin->encodingConcurrency->acquire(
+            'video',
+            (int)$settings->videoMaxConcurrentJobs,
+            'video poster generation',
+            $asset->id
+        );
+        if ($slot === null) {
+            $this->deferForCapacity($queue, $asset);
+            return;
         }
 
         try {
@@ -107,7 +111,7 @@ class GenerateVideoPosters extends BaseJob
                 $this->executeWithSource($queue, $asset, $sourceError);
             });
         } finally {
-            $slot?->release();
+            $slot->release();
         }
     }
 
@@ -121,7 +125,7 @@ class GenerateVideoPosters extends BaseJob
         $delay = max(1, (int)$settings->encodingConcurrencyRetryDelaySeconds);
         $queueTtrSeconds = max(1, $this->queueTtrSeconds);
         $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
-        $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
+        $jobId = $this->pushCapacityReplacement(new self([
             'assetId' => $asset->id,
             'ownerTitle' => $this->ownerTitle,
             'videoOptions' => $this->videoOptions,
@@ -131,7 +135,7 @@ class GenerateVideoPosters extends BaseJob
             'maxRetries' => $this->maxRetries,
             'retryDelaySeconds' => $this->retryDelaySeconds,
             'capacityWaitStartedAt' => $this->capacityWaitStartedAt,
-        ]));
+        ]), $delay, $queueTtrSeconds);
         $message = Craft::t('transcoder', 'Waiting for an available video encoding slot; retrying posters in {seconds}s', [
             'seconds' => $delay,
         ]);
@@ -157,25 +161,56 @@ class GenerateVideoPosters extends BaseJob
     }
 
     /**
+     * @inheritdoc
+     */
+    protected function onCapacityWaitExpired(string $message): void
+    {
+        $asset = Asset::find()->id($this->assetId)->one();
+        if (!$asset instanceof Asset) {
+            return;
+        }
+
+        Transcoder::$plugin->transcode->writeVideoPosterStatus(
+            $asset,
+            $this->videoOptions,
+            [
+                'posterStatus' => 'error',
+                'posterProgress' => 0,
+                'posterError' => $message,
+                'posterMessage' => Craft::t('transcoder', 'Video poster generation failed'),
+            ],
+            $this->encodingOptions
+        );
+    }
+
+    /**
+     * Record that encoding is switched off and finish without error.
+     */
+    private function markDisabled(mixed $queue, Asset $asset): void
+    {
+        Transcoder::$plugin->transcode->writeVideoPosterStatus(
+            $asset,
+            $this->videoOptions,
+            [
+                'status' => 'disabled',
+                'url' => '',
+                'progress' => 0,
+                'posterStatus' => 'disabled',
+                'posterProgress' => 0,
+                'posterMessage' => Craft::t('transcoder', 'Encoding disabled'),
+            ],
+            $this->encodingOptions
+        );
+        $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+    }
+
+    /**
      * Execute with a directly reachable source or a temporary Craft-managed copy.
      */
     private function executeWithSource(mixed $queue, Asset $asset, ?Throwable $sourceError): void
     {
         if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
-            Transcoder::$plugin->transcode->writeVideoPosterStatus(
-                $asset,
-                $this->videoOptions,
-                [
-                    'status' => 'disabled',
-                    'url' => '',
-                    'progress' => 0,
-                    'posterStatus' => 'disabled',
-                    'posterProgress' => 0,
-                    'posterMessage' => Craft::t('transcoder', 'Encoding disabled'),
-                ],
-                $this->encodingOptions
-            );
-            $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+            $this->markDisabled($queue, $asset);
             return;
         }
 

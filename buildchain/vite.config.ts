@@ -14,13 +14,11 @@ export default defineConfig(({command}) => ({
     emptyOutDir: true,
     manifest: 'manifest.json',
     outDir: '../src/web/assets/dist',
+    sourcemap: true,
     rollupOptions: {
       input: {
         app: 'src/js/app.ts',
         welcome: 'src/js/welcome.ts',
-      },
-      output: {
-        sourcemap: true
       },
     }
   },
@@ -34,8 +32,9 @@ export default defineConfig(({command}) => ({
     viteCompressionPlugin({
       filter: /\.(js|mjs|json|css|map)$/i
     }),
+    // Keep the bundle report out of the shipped dist directory
     visualizer({
-      filename: '../src/web/assets/dist/stats.html',
+      filename: 'stats.html',
       template: 'treemap',
       sourcemap: true,
     }),

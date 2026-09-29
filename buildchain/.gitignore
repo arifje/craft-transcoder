@@ -26,3 +26,4 @@ dist-ssr
 # Misc directories & files
 coverage/*
 .stylelintcache
+stats.html

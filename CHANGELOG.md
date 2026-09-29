@@ -1,5 +1,40 @@
 # Transcoder Changelog
 
+## 5.0.3 - 2026.09.29
+### Security
+* Sanitize every caller-supplied media option (Twig, GraphQL, jobs) before it reaches ffmpeg: numeric options must be numeric, `aspectRatio`/`letterboxColor`/encoder handles are allowlisted, and unsafe `preVideoFilters` are dropped. GraphQL only accepts presentation options and never `preVideoFilters`; `encodingOptions` are reduced to `watermark`.
+* Shell-escape all ffmpeg arguments: `-vf` filter graphs, frame/bit/sample rates, channels, seek/duration values and progress-file redirects (previously unescaped for GIF and audio encodes).
+* Restrict the protocols ffmpeg/ffprobe may open for each input (`file` for local sources, HTTP(S) for URLs), so crafted playlists or concat files cannot fetch other files or URLs.
+* Status endpoints and GraphQL share one redaction allowlist; ffmpeg commands, logs, source paths and raw errors are only returned to admins or `transcoder:debug` schemas. Web responses no longer include the ffmpeg command.
+* Fix anonymous access on the front-end controller: status/progress polling works without login again, and `download-file` requires login unless `enableDownloadFileEndpoint` is on.
+* Reject path traversal in the progress endpoint.
+* Move ffmpeg lock/progress files, watermark rasters and concurrency slot locks from the shared system temp directory into Craft's runtime storage, validate PIDs read from lock files, treat processes owned by another user as running, and only signal PIDs that still belong to an ffmpeg worker.
+* Shell- and filesystem-bound settings (`ffmpegPath`, `ffprobePath`, `ffprobeOptions`, encoder presets, default/auto-encode options, output paths/URLs) can only be set in `config/transcoder.php`; CP saves restore them, and validation rejects shell metacharacters.
+* The runtime kill switch no longer fails open: if it cannot be read, the last known value is used, and encoding stays paused when no value is known.
+
+### Fixed
+* Push GIF jobs with a TTR (`queueTtrSeconds`, default 3600) and measure video/GIF job deadlines from the start of the job, stopping ffmpeg before Craft's worker hard-kills the job. Jobs stop ffmpeg whenever they give up their concurrency slot.
+* Wait loops end on `disabled` (and stop ffmpeg) or on untracked `pending` states instead of holding a worker until the timeout; jobs check the kill switch before acquiring a slot or copying a remote source.
+* Stalled encodes are terminated instead of only losing their lock file, so a retry cannot start a second ffmpeg for the same output.
+* Twig/GraphQL requests no longer start ffmpeg directly for Assets; `getVideoUrl()`/`getGifUrl()` queue the encode so ffmpeg only runs inside the configured concurrency slots.
+* GIF output is staged and published atomically, and GIF queue decisions are locked per Asset.
+* A completed encode is no longer deleted because of a benign ffmpeg log warning; staged output is only published after ffmpeg succeeds.
+* Same-named sources in different volumes (or with `createSubfolders` disabled) no longer share one output: the first Asset owns the canonical file and others fall back to the Asset-ID filename; refresh/repair never deletes another Asset's output.
+* Poster jobs no longer overwrite the status, URL or error of a queued/running/finished video encode, and capacity deferrals no longer revert newer poster fields.
+* Capacity replacement jobs run ahead of newly queued work, and an exhausted capacity wait records an error instead of leaving the status `queued`.
+* Assets in a real `user_123` folder are no longer mistaken for temporary uploads.
+* Refreshing a video Asset holds the per-asset queue lock while removing files.
+* Retries are classified by exception type rather than translated message text.
+* Settings: empty checkbox/table fields no longer cause a TypeError on save; watermark sizes/positions, `subfolderUrlSegment`, encoder presets and output locations are validated.
+
+### Changed
+* Schema version 1.3.0 so existing installs run the runtime-settings migration.
+* Status lookups use an index of active statuses, check local locks before remote HEAD probes, cache the kill switch briefly, and prune old inactive status files and queue locks.
+* Settings and welcome templates are now `_settings.twig` / `_welcome.twig` (the welcome page keeps its `transcoder/welcome` CP route).
+* `src/config.php` now matches the model defaults.
+* Fork metadata (support links, CODEOWNERS, README) points at this repository; the upstream docs deployment workflow was removed; the CP asset bundle was rebuilt.
+* Added `phpstan/phpstan` so `composer phpstan` runs in CI, removed unused `craftcms/rector`, and added a shell-escaping regression harness.
+
 ## 5.0.2 - 2026.09.23
 ### Added
 * Add a permission-controlled "Retry missing video/posters" button to the video Asset editor sidebar. Recovery runs asynchronously, preserves generated media and active jobs, and clears inactive error state before checking for missing outputs.
@@ -26,7 +61,7 @@
 ### Changed
 * Register utilities using the native Craft 5 event and expose the concrete settings model to static analysis.
 * Keep normal new uploads and explicit replacement/manual transcoding APIs unchanged; existing Asset metadata saves remain inert.
-* Preserve both filename strategies, existing output discovery, and schema version 1.2.0. No new database table or naming migration is introduced.
+* Preserve both filename strategies and existing output discovery. (The runtime-settings table added in this line is created by `m260519_100000_create_runtime_settings_table`; see 5.0.3 for the schema version bump.)
 
 ## 4.4.44 - 2026.08.18
 ### Added

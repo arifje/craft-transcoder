@@ -3,15 +3,15 @@
 
 {% set title = 'Welcome to Transcoder!' %}
 
-{% set docsUrl = "https://github.com/nystudio107/craft-transcoder/blob/v1/README.md" %}
-{% set linkGetStarted = "https://github.com/nystudio107/craft-transcoder" %}
+{% set docsUrl = "https://github.com/arifje/craft-transcoder/blob/skoften-codex-v5/README.md" %}
+{% set linkGetStarted = cpUrl('settings/plugins/transcoder') %}
 
 {% do view.registerAssetBundle("nystudio107\\transcoder\\assetbundles\\transcoder\\TranscoderAsset") %}
 {% set baseAssetsUrl = view.getAssetManager().getPublishedUrl('@nystudio107/transcoder/web/assets/dist', true) %}
 
 {% set crumbs = [
-    { label: "Transcoder", url: url('transcoder') },
-    { label: "Welcome"|t, url: url('transcoder/welcome') },
+    { label: "Transcoder"|t('transcoder'), url: cpUrl('settings/plugins/transcoder') },
+    { label: "Welcome"|t('transcoder'), url: cpUrl('transcoder/welcome') },
 ] %}
 
 {% block head %}
@@ -41,9 +41,7 @@
             &nbsp;
         </p>
         <p>
-            <a href="{{ linkGetStarted }}" target="_blank" rel="noopener">
-                <button class="btn submit">Get Started</button>
-            </a>
+            <a class="btn submit" href="{{ linkGetStarted }}">{{ 'Get Started'|t('transcoder') }}</a>
         </p>
     </div>
     <div style="text-align:center; margin:0 auto; padding: 0;">

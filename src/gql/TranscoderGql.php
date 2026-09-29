@@ -31,6 +31,26 @@ use yii\base\Event;
  */
 class TranscoderGql
 {
+    private const ALLOWED_VIDEO_OPTIONS = [
+        'videoEncoder',
+        'videoBitRate',
+        'videoFrameRate',
+        'audioBitRate',
+        'audioSampleRate',
+        'audioChannels',
+        'width',
+        'height',
+        'sharpen',
+        'aspectRatio',
+        'letterboxColor',
+    ];
+
+    private const ALLOWED_GIF_OPTIONS = [
+        'videoEncoder',
+        'width',
+        'height',
+    ];
+
     /**
      * Register GraphQL hooks.
      */
@@ -459,31 +479,10 @@ class TranscoderGql
         if (!is_array($decoded)) {
             return [];
         }
-        if (GqlHelper::canSchema('transcoder', 'debug')) {
-            return $decoded;
-        }
-
         // rawJson must not bypass the diagnostic permission by exposing paths or commands.
-        $public = array_intersect_key($decoded, array_flip([
-            'status', 'url', 'progress', 'filename', 'jobId', 'key', 'updatedAt',
-            'posterStatus', 'posterProgress', 'posterJobId', 'posterUrls',
-        ]));
-        if (!empty($decoded['error'])) {
-            $public['error'] = 'Transcoding failed. Contact an administrator for details.';
-        }
-        if (!empty($decoded['posterError'])) {
-            $public['posterError'] = 'Poster generation failed. Contact an administrator for details.';
-        }
-        return $public;
+        return Transcoder::$plugin->transcode->getPublicStatus($decoded, GqlHelper::canSchema('transcoder', 'debug'));
     }
 
-    /**
-     * Decode JSON encoded options from GraphQL args.
-     *
-     * @param mixed $value
-     * @param string $argumentName
-     * @return array
-     */
     private static function decodeOptions(mixed $value, string $argumentName): array
     {
         if ($value === null || $value === '') {
@@ -506,7 +505,25 @@ class TranscoderGql
             return [];
         }
 
-        return is_array($decoded) ? $decoded : [];
+        return is_array($decoded) ? self::filterOptions($decoded, $argumentName) : [];
+    }
+
+    /**
+     * Restrict options supplied through GraphQL to presentation settings.
+     *
+     * Tokens must never be able to inject ffmpeg filters or encoder arguments,
+     * so only allowlisted keys survive and their values are format-checked.
+     */
+    private static function filterOptions(array $options, string $argumentName): array
+    {
+        if ($argumentName === 'encodingOptions') {
+            return array_key_exists('watermark', $options) ? ['watermark' => (bool)$options['watermark']] : [];
+        }
+
+        $allowed = $argumentName === 'gifOptions' ? self::ALLOWED_GIF_OPTIONS : self::ALLOWED_VIDEO_OPTIONS;
+        $options = array_intersect_key($options, array_flip($allowed));
+
+        return Transcoder::$plugin->transcode->sanitizeMediaOptions($options);
     }
 
     /**

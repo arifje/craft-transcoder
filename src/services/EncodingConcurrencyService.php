@@ -113,11 +113,14 @@ class EncodingConcurrencyService extends Component
 
     /**
      * Local runtime locks protect each encoding host independently.
+     *
+     * Kept in Craft's runtime storage rather than the system temp directory, so
+     * web and queue processes share the same locks (no systemd `PrivateTmp`
+     * split), successive deploy releases share them, and other local users
+     * cannot pre-create the files.
      */
     protected function getLockDirectory(): string
     {
-        $installationKey = substr(sha1(Craft::$app->getBasePath()), 0, 12);
-
-        return sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'craft-transcoder-' . $installationKey;
+        return Craft::$app->getPath()->getRuntimePath() . DIRECTORY_SEPARATOR . 'transcoder-locks';
     }
 }

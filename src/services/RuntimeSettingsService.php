@@ -25,23 +25,46 @@ class RuntimeSettingsService extends Component
     private const TABLE = '{{%transcoder_runtime_settings}}';
 
     /**
+     * Seconds a read value is reused, so status polling does not query the
+     * database on every call while long-running jobs still notice changes.
+     */
+    private const CACHE_SECONDS = 5;
+
+    private ?bool $encodingEnabled = null;
+
+    private float $encodingEnabledReadAt = 0.0;
+
+    /**
      * Return whether Transcoder may start ffmpeg work.
+     *
+     * If the setting cannot be read, the last known value is reused. Without a
+     * known value encoding stays off, so the kill switch never fails open.
      *
      * @return bool
      */
     public function isEncodingEnabled(): bool
     {
+        if ($this->encodingEnabled !== null && (microtime(true) - $this->encodingEnabledReadAt) < self::CACHE_SECONDS) {
+            return $this->encodingEnabled;
+        }
+
         try {
             $value = (new Query())
                 ->select(['encodingEnabled'])
                 ->from(self::TABLE)
                 ->scalar();
         } catch (Throwable $e) {
-            Craft::warning('Transcoder: Could not read runtime settings: ' . $e->getMessage(), __METHOD__);
-            return true;
+            Craft::error('Transcoder: Could not read runtime settings; '
+                . ($this->encodingEnabled === null ? 'encoding is paused until they can be read' : 'using the last known value')
+                . '. Run pending migrations if the transcoder_runtime_settings table is missing. ' . $e->getMessage(), __METHOD__);
+
+            return $this->encodingEnabled ?? false;
         }
 
-        return $value === false ? true : (bool)$value;
+        $this->encodingEnabled = $value === false ? true : (bool)$value;
+        $this->encodingEnabledReadAt = microtime(true);
+
+        return $this->encodingEnabled;
     }
 
     /**
@@ -65,6 +88,8 @@ class RuntimeSettingsService extends Component
                     'dateUpdated' => $now,
                 ])
                 ->execute();
+            $this->encodingEnabled = $enabled;
+            $this->encodingEnabledReadAt = microtime(true);
             return;
         }
 
@@ -76,5 +101,7 @@ class RuntimeSettingsService extends Component
                 'uid' => StringHelper::UUID(),
             ])
             ->execute();
+        $this->encodingEnabled = $enabled;
+        $this->encodingEnabledReadAt = microtime(true);
     }
 }

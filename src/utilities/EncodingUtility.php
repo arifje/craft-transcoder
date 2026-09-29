@@ -16,9 +16,16 @@ use nystudio107\transcoder\Transcoder;
 
 /**
  * CP Utility for runtime encoding controls.
+ *
+ * @author    nystudio107
+ * @package   Transcode
+ * @since     5.0.0
  */
 class EncodingUtility extends Utility
 {
+    // Public Methods
+    // =========================================================================
+
     /**
      * @inheritdoc
      */
@@ -41,14 +48,6 @@ class EncodingUtility extends Utility
     public static function icon(): ?string
     {
         return dirname(__DIR__) . '/icon.svg';
-    }
-
-    /**
-     * @inheritdoc
-     */
-    public static function iconPath(): ?string
-    {
-        return self::icon();
     }
 
     /**

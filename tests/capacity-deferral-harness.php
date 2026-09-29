@@ -74,9 +74,16 @@ namespace {
         public bool $failPush = false;
         public bool $failProgress = false;
         public int $delaySeconds = 0;
+        public ?int $priority = null;
 
         public function ttr(int $seconds): self
         {
+            return $this;
+        }
+
+        public function priority(int $priority): self
+        {
+            $this->priority = $priority;
             return $this;
         }
 
@@ -142,6 +149,7 @@ namespace {
         $queue->jobs = [];
         $method->invoke($job, $queue, $asset);
         check(count($queue->jobs) === 1 && $queue->delaySeconds === 15, "$class must queue one delayed successor");
+        check($queue->priority !== null && $queue->priority < 1024, "$class successor must run ahead of newly queued jobs");
         $next = $queue->jobs[0];
         check($next->capacityWaitStartedAt === $job->capacityWaitStartedAt && $next->attempt === 1, "$class must persist deadline without consuming failure attempt");
         $method->invoke($next, $queue, $asset);
@@ -173,6 +181,7 @@ namespace {
             check(count($queue->jobs) === ($beforePush ? 0 : 1), "$class $failure must not fork the retry chain");
         }
     }
-    check(count(Craft::$warnings) === 6, 'Post-push failures must remain visible in logs');
+    $deferralWarnings = array_filter(Craft::$warnings, static fn(string $warning) => str_contains($warning, 'capacity replacement job'));
+    check(count($deferralWarnings) === 6, 'Post-push failures must remain visible in logs');
     fwrite(STDOUT, "capacity deferral harness passed\n");
 }

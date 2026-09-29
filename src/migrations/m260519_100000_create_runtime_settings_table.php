@@ -10,8 +10,8 @@
 
 namespace nystudio107\transcoder\migrations;
 
-use craft\db\Query;
 use craft\db\Migration;
+use craft\db\Query;
 use craft\helpers\Db;
 use craft\helpers\StringHelper;
 

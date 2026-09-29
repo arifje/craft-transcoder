@@ -21,7 +21,16 @@
  * Once copied to 'craft/config', this file will be multi-environment aware as
  * well, so you can have different settings groups for each environment, just as
  * you do for 'general.php'
+ *
+ * The values below mirror the defaults in models/Settings.php.
+ *
+ * Shell- and filesystem-bound settings (ffmpegPath, ffprobePath,
+ * ffprobeOptions, transcoderPaths, transcoderUrls, videoEncoders,
+ * audioEncoders, and the default*Options / autoEncode*Options arrays) can
+ * only be changed here; the Control Panel settings form never saves them.
  */
+
+use craft\helpers\App;
 
 return [
 
@@ -38,20 +47,20 @@ return [
     // Yii2 aliases are supported here
     'transcoderPaths' => [
         'default' => '@webroot/transcoder/',
-        'video' => '@webroot/transcoder/video/',
-        'audio' => '@webroot/transcoder/audio/',
-        'thumbnail' => '@webroot/transcoder/thumbnail/',
-        'gif' => '@webroot/transcoder/gif/',
+        'video' => '@webroot/transcoder/',
+        'audio' => '@webroot/transcoder/',
+        'thumbnail' => '@webroot/transcoder/',
+        'gif' => '@webroot/transcoder/',
     ],
 
     // The URL where the transcoded videos are stored; must have a trailing /
     // Yii2 aliases are supported here
     'transcoderUrls' => [
         'default' => '@web/transcoder/',
-        'video' => '@web/transcoder/video/',
-        'audio' => '@web/transcoder/audio/',
-        'thumbnail' => '@web/transcoder/thumbnail/',
-        'gif' => '@web/transcoder/gif/',
+        'video' => '@web/transcoder/',
+        'audio' => '@web/transcoder/',
+        'thumbnail' => '@web/transcoder/',
+        'gif' => '@web/transcoder/',
     ],
 
     // Determines whether the download file endpoint should be enabled for anonymous frontend access
@@ -71,9 +80,10 @@ return [
 
     // Optional environment/config overrides for the watermark source.
     // These are checked before the legacy Craft Asset ID and are safer across environments.
-    // The URL fallback is a free MIT-licensed Bootstrap Icons SVG placeholder.
-    'videoWatermarkPath' => getenv('TRANSCODER_WATERMARK_PATH') ?: '',
-    'videoWatermarkUrl' => getenv('TRANSCODER_WATERMARK_URL') ?: 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/icons/play-circle.svg',
+    // For a quick test, a free MIT-licensed Bootstrap Icons SVG placeholder works as the URL:
+    // https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/icons/play-circle.svg
+    'videoWatermarkPath' => App::env('TRANSCODER_WATERMARK_PATH') ?: '',
+    'videoWatermarkUrl' => App::env('TRANSCODER_WATERMARK_URL') ?: '',
 
     // Watermark dimensions in pixels. Leave empty for original image size
     'videoWatermarkWidth' => '',
@@ -126,10 +136,11 @@ return [
     // if a upload location has a subfolder defined, add this to the transcoder paths too
     'createSubfolders' => true,
 
-	// if an URL (video.url) is passed as a parameter in getVideoUrl()
-	// we don't have an folderPath, so can look for it in the URL (often an entry or element id)
-	'subfolderUrlSegment' => false,
-	
+    // When a URL (video.url) instead of an Asset is passed to getVideoUrl() there is
+    // no folderPath, so use this 1-based URL path segment (often an entry or element
+    // ID) as the output subfolder. Set to false to disable
+    'subfolderUrlSegment' => false,
+
     // Add the Clear Caches utility to the CP?
     'clearCaches' => false,
 
@@ -307,18 +318,17 @@ return [
         'audioBitRate' => '128k',
         'audioSampleRate' => '44100',
         'audioChannels' => '2',
-        'timeInSecs' => '',
-        'seekInSecs' => '',
+        // Per-call options 'timeInSecs' and 'seekInSecs' are also supported
         'synchronous' => false,
-        'stripMetadata' => false
+        'stripMetadata' => false,
     ],
 
     // Default options for Gif encoding
     'defaultGifOptions' => [
         'videoEncoder' => 'gif',
-        'fileSuffix' => '.mp4',
-        'fileFormat' => 'gif',
-        'videoCodec' => 'libx264',
-        'videoCodecOptions' => '-pix_fmt yuv420p -movflags +faststart -filter:v crop=\'floor(in_w/2)*2:floor(in_h/2)*2\' ',
+        'fileSuffix' => '',
+        'fileFormat' => '',
+        'videoCodec' => '',
+        'videoCodecOptions' => '',
     ],
 ];

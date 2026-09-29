@@ -22,6 +22,7 @@ use craft\events\RegisterCacheOptionsEvent;
 use craft\events\RegisterComponentTypesEvent;
 use craft\events\RegisterUrlRulesEvent;
 use craft\events\TemplateEvent;
+use craft\helpers\App;
 use craft\helpers\Assets as AssetsHelper;
 use craft\helpers\FileHelper;
 use craft\helpers\UrlHelper;
@@ -35,6 +36,7 @@ use craft\web\View;
 use nystudio107\transcoder\gql\TranscoderGql;
 use nystudio107\transcoder\jobs\InspectMediaAsset;
 use nystudio107\transcoder\models\Settings;
+use nystudio107\transcoder\services\AssetEditor;
 use nystudio107\transcoder\services\ServicesTrait;
 use nystudio107\transcoder\utilities\EncodingUtility;
 use nystudio107\transcoder\variables\TranscoderVariable;
@@ -43,7 +45,7 @@ use yii\base\ErrorException;
 use yii\base\Event;
 
 /**
- * Class Transcode
+ * Class Transcoder
  *
  * @author    nystudio107
  * @package   Transcode
@@ -55,6 +57,33 @@ class Transcoder extends Plugin
     // =========================================================================
 
     use ServicesTrait;
+
+    // Const Properties
+    // =========================================================================
+
+    /**
+     * Settings that are concatenated into ffmpeg/ffprobe shell commands or
+     * control filesystem locations. They can only be set via
+     * config/transcoder.php (or a console request), never via a CP POST.
+     *
+     * @var string[]
+     */
+    public const CONFIG_ONLY_SETTINGS = [
+        'audioEncoders',
+        'autoEncodeEncodingOptions',
+        'autoEncodeGifOptions',
+        'autoEncodeVideoOptions',
+        'defaultAudioOptions',
+        'defaultGifOptions',
+        'defaultThumbnailOptions',
+        'defaultVideoOptions',
+        'ffmpegPath',
+        'ffprobeOptions',
+        'ffprobePath',
+        'transcoderPaths',
+        'transcoderUrls',
+        'videoEncoders',
+    ];
 
     // Static Properties
     // =========================================================================
@@ -68,13 +97,6 @@ class Transcoder extends Plugin
      * @var null|Settings
      */
     public static ?Settings $settings;
-
-    /**
-     * Asset IDs that already received an inspection job in this request.
-     *
-     * @var array<int, bool>
-     */
-    protected array $queuedAssetInspectionJobs = [];
 
     // Public Properties
     // =========================================================================
@@ -90,11 +112,33 @@ class Transcoder extends Plugin
     public bool $hasCpSettings = true;
 
     /**
+     * Bumped from upstream 1.2.0 so existing installs run
+     * m260519_100000_create_runtime_settings_table (the CP Utility kill switch).
+     *
      * @var string
      */
-    // Keep the published 1.2.0 schema identifier for upgrade compatibility.
-    // Transcoder 4.4.42 does not create or require replacement-generation data.
-    public string $schemaVersion = '1.2.0';
+    public string $schemaVersion = '1.3.0';
+
+    // Protected Properties
+    // =========================================================================
+
+    /**
+     * Asset IDs that already received an inspection job in this request.
+     *
+     * @var array<int, bool>
+     */
+    protected array $queuedAssetInspectionJobs = [];
+
+    // Private Properties
+    // =========================================================================
+
+    /**
+     * Config-only setting values as loaded at boot (project config merged
+     * with config/transcoder.php), restored before a web settings save.
+     *
+     * @var array<string, mixed>
+     */
+    private array $_configOnlySettingValues = [];
 
     // Public Methods
     // =========================================================================
@@ -108,6 +152,7 @@ class Transcoder extends Plugin
         self::$plugin = $this;
         // Initialize properties
         self::$settings = self::$plugin->getSettings();
+        $this->_configOnlySettingValues = $this->_getConfigOnlySettingValues();
         // Handle console commands
         if (Craft::$app instanceof ConsoleApplication) {
             $this->controllerNamespace = 'nystudio107\transcoder\console\controllers';
@@ -122,7 +167,7 @@ class Transcoder extends Plugin
         $this->registerSettingsTabs();
         // Register CP utilities
         $this->registerUtilities();
-        \nystudio107\transcoder\services\AssetEditor::register();
+        AssetEditor::register();
         // We've loaded!
         Craft::info(
             Craft::t(
@@ -142,7 +187,7 @@ class Transcoder extends Plugin
         $transcoderPaths = self::$plugin->getSettings()->transcoderPaths;
 
         foreach ($transcoderPaths as $key => $value) {
-            $dir = Craft::parseEnv($value);
+            $dir = App::parseEnv($value);
             try {
                 FileHelper::clearDirectory($dir);
                 Craft::info(
@@ -162,6 +207,8 @@ class Transcoder extends Plugin
 
     /**
      * Return the plugin's configured settings model.
+     *
+     * @return Settings
      */
     public function getSettings(): Settings
     {
@@ -169,6 +216,35 @@ class Transcoder extends Plugin
         $settings = parent::getSettings();
 
         return $settings;
+    }
+
+    /**
+     * Restore config-only (shell- and filesystem-bound) settings before a web
+     * request persists plugin settings, so a crafted CP POST cannot change the
+     * ffmpeg/ffprobe binaries, encoder option strings, or output paths.
+     *
+     * @inheritdoc
+     */
+    public function beforeSaveSettings(): bool
+    {
+        if (!Craft::$app->getRequest()->getIsConsoleRequest()) {
+            $settings = $this->getSettings();
+            foreach ($this->_configOnlySettingValues as $name => $value) {
+                $settings->$name = $value;
+            }
+        }
+
+        return parent::beforeSaveSettings();
+    }
+
+    /**
+     * @inheritdoc
+     */
+    public function afterSaveSettings(): void
+    {
+        self::$settings = $this->getSettings();
+
+        parent::afterSaveSettings();
     }
 
     // Protected Methods
@@ -188,8 +264,8 @@ class Transcoder extends Plugin
     protected function settingsHtml(): ?string
     {
         try {
-            return Craft::$app->view->renderTemplate(
-                'transcoder/settings',
+            return Craft::$app->getView()->renderTemplate(
+                'transcoder/_settings',
                 [
                     'settings' => $this->getSettings(),
                     'plugin' => $this,
@@ -323,38 +399,20 @@ class Transcoder extends Plugin
             function(PluginEvent $event) {
                 if ($event->plugin === $this) {
                     $request = Craft::$app->getRequest();
-                    if ($request->isCpRequest) {
+                    if ($request->getIsCpRequest()) {
                         Craft::$app->getResponse()->redirect(UrlHelper::cpUrl('transcoder/welcome'))->send();
                     }
                 }
             }
         );
-        $request = Craft::$app->getRequest();
-        // Install only for non-console site requests
-        if ($request->getIsSiteRequest() && !$request->getIsConsoleRequest()) {
-            $this->installSiteEventListeners();
-        }
-    }
-
-    /**
-     * Install site event listeners for site requests only
-     */
-    protected function installSiteEventListeners(): void
-    {
-        // Handler: UrlManager::EVENT_REGISTER_SITE_URL_RULES
+        // Handler: UrlManager::EVENT_REGISTER_CP_URL_RULES
+        // The welcome template is underscore-prefixed (not directly routable),
+        // so expose it through an explicit CP route.
         Event::on(
             UrlManager::class,
-            UrlManager::EVENT_REGISTER_SITE_URL_RULES,
-            function(RegisterUrlRulesEvent $event) {
-                Craft::debug(
-                    'UrlManager::EVENT_REGISTER_SITE_URL_RULES',
-                    __METHOD__
-                );
-                // Register our Control Panel routes
-                $event->rules = array_merge(
-                    $event->rules,
-                    $this->customFrontendRoutes()
-                );
+            UrlManager::EVENT_REGISTER_CP_URL_RULES,
+            static function(RegisterUrlRulesEvent $event) {
+                $event->rules['transcoder/welcome'] = ['template' => 'transcoder/_welcome'];
             }
         );
     }
@@ -408,14 +466,22 @@ class Transcoder extends Plugin
         Craft::info('Transcoder: queued media inspection job ' . $jobId . ' for new asset #' . $asset->id, __METHOD__);
     }
 
+    // Private Methods
+    // =========================================================================
+
     /**
-     * Return the custom frontend routes
+     * Return the current values of the config-only settings.
      *
-     * @return array
+     * @return array<string, mixed>
      */
-    protected function customFrontendRoutes(): array
+    private function _getConfigOnlySettingValues(): array
     {
-        return [
-        ];
+        $settings = $this->getSettings();
+        $values = [];
+        foreach (self::CONFIG_ONLY_SETTINGS as $name) {
+            $values[$name] = $settings->$name;
+        }
+
+        return $values;
     }
 }

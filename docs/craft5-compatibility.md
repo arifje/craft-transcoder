@@ -1,6 +1,6 @@
 # Craft 5 Compatibility Audit
 
-Branch: `skoften-codex-v5`. Version: **5.0.1**.
+Branch: `skoften-codex-v5`. Version: **5.0.3**.
 
 This release line requires Craft CMS 5 and PHP 8.2+. Keep the 4.x plugin release line for Craft 4 installations. The audit follows [Craft's plugin upgrade guide](https://craftcms.com/docs/5.x/extend/updating-plugins.html) and checks the installed Craft source, not just dependency constraints.
 
@@ -13,12 +13,12 @@ This release line requires Craft CMS 5 and PHP 8.2+. Keep the 4.x plugin release
 | Matrix | Replace the removed `MatrixBlock` lookup with nested Entry queries and follow the owner chain to the containing article. Explicit field scanning works with per-layout overridden field handles. |
 | Source paths | Include the volume's filesystem subpath when composing a local Asset source path. Tested with a volume sharing a filesystem via a subpath. |
 | Controllers | Match the Yii response type returned by Craft's JSON and redirect helpers. Preserve controller access and utility permission checks. |
-| Settings and utilities | Expose the concrete settings model; use Craft 5's utility-registration event. Settings and utility templates render with Craft 5 forms. |
+| Settings and utilities | Expose the concrete settings model; use Craft 5's utility-registration event. Settings and utility templates render with Craft 5 forms. Shell- and filesystem-bound settings (`ffmpegPath`, `ffprobePath`, `ffprobeOptions`, encoder presets, default/auto-encode option arrays, output paths and URLs) are validated against shell metacharacters and can only be set in `config/transcoder.php`; a CP settings save restores them. |
 | Queue | Existing Craft queue APIs, serialized jobs, retries and concurrency pools remain. Upload requests enqueue inspection; source and output checks run there. |
 | GraphQL | Actual Craft AssetInterface fields and resolvers work. Encoding and diagnostics now require explicit schema permissions. Read-only responses exclude internal diagnostics, including in `rawJson`. |
 | Output naming | Neither naming strategy is changed. Source filenames remain source filenames; legacy candidate lookup is retained. |
 | Legacy helpers | Correct concatenation/null-fallback precedence for audio and legacy GIF output paths. Validate crop coordinates before arithmetic. |
-| Database | Runtime settings migration remains idempotent. Native install/uninstall work. Schema stays `1.2.0`; no new migration, manifest, or source-generation table. |
+| Database | Schema is `1.3.0` (upstream `1.2.0`). `m260519_100000_create_runtime_settings_table` creates `transcoder_runtime_settings` for the CP encoding utility and is idempotent; `m260813_100000_create_video_sources_table` is a no-op placeholder that only drops the superseded 4.4.41 table on rollback. Native install/uninstall work. No manifest or source-generation table. |
 | Tooling | Full PHPStan passes without an error baseline. Existing regression harnesses and a new database/FFmpeg integration suite run on Craft 5. |
 
 ## GraphQL Permissions
@@ -50,7 +50,7 @@ Validated locally using **Craft 5.11.1**, **Plugin Vite 5.0.3**, **PHP 8.2.33**,
 
 - All PHP source/test files pass syntax checks.
 - `composer phpstan`: passes across the complete plugin.
-- `composer test`: all five regression harnesses pass, including both naming strategies, output locations, resaving, and concurrency slots.
+- `composer test`: every regression harness listed in `composer.json` (`scripts.test`) passes, including both naming strategies, output locations, resaving, and concurrency slots.
 - `composer test:craft5`: real Asset upload/save events, duplicate inspection callbacks, video/GIF/poster job creation, real FFmpeg job execution with black-bar cropping and PNG watermarking, short-video poster timestamps, audio output, nested Matrix relations, overridden field handles, Entry/bulk saves, GraphQL reads/permissions, rendered settings/utility templates, bounded retries, and migration teardown/recreation pass.
 - Native `plugin/install transcoder` and `plugin/uninstall transcoder` commands pass.
 - Craft's Craft-5 Rector ruleset dry run reports no remaining changes.

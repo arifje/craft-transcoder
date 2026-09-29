@@ -1,9 +1,11 @@
-MAJOR_VERSION?=4
-PLUGINDEV_PROJECT_DIR?=/Users/andrew/webdev/sites/plugindev/cms_v${MAJOR_VERSION}/
+MAJOR_VERSION?=5
+# Craft project that has this plugin installed (path repository/symlink); override per machine:
+#   make release PLUGINDEV_PROJECT_DIR=/path/to/craft-project/
+PLUGINDEV_PROJECT_DIR?=../plugindev/cms_v${MAJOR_VERSION}/
 VENDOR?=nystudio107
 PROJECT_PATH?=${VENDOR}/$(shell basename $(CURDIR))
 
-.PHONY: dev docs release
+.PHONY: dev docs release test
 
 # Start up the buildchain dev server
 dev:
@@ -11,6 +13,9 @@ dev:
 # Start up the docs dev server
 docs:
 	${MAKE} -C docs/ dev
+# Run the regression harnesses in this repository (requires composer install)
+test:
+	composer test
 # Run code quality tools, tests, and build the buildchain & docs in preparation for a release
 release: --code-quality --code-tests --buildchain-clean-build --docs-clean-build
 # The internal targets used by the dev & release targets
@@ -22,6 +27,7 @@ release: --code-quality --code-tests --buildchain-clean-build --docs-clean-build
 	${MAKE} -C ${PLUGINDEV_PROJECT_DIR} -- ecs check vendor/${PROJECT_PATH}/src --fix
 	${MAKE} -C ${PLUGINDEV_PROJECT_DIR} -- phpstan analyze -c vendor/${PROJECT_PATH}/phpstan.neon
 --code-tests:
+	composer test
 --docs-clean-build:
 	${MAKE} -C docs/ clean
 	${MAKE} -C docs/ image-build

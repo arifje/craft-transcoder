@@ -13,6 +13,7 @@ namespace nystudio107\transcoder\jobs;
 use Craft;
 use craft\elements\Asset;
 use craft\queue\BaseJob;
+use nystudio107\transcoder\errors\RetryableEncodingException;
 use nystudio107\transcoder\Transcoder;
 use Throwable;
 
@@ -24,7 +25,6 @@ class EncodeGif extends BaseJob
     use CapacityWaitTrait;
 
     private const POLL_INTERVAL_SECONDS = 2;
-    private const TIMEOUT_SECONDS = 3600;
 
     /**
      * @var int|null
@@ -35,6 +35,11 @@ class EncodeGif extends BaseJob
      * @var array
      */
     public array $gifOptions = [];
+
+    /**
+     * @var int Seconds Craft should reserve for this queue job; ffmpeg is stopped before it expires.
+     */
+    public int $queueTtrSeconds = 3600;
 
     /**
      * @var int Current attempt number, starting at 1.
@@ -56,6 +61,7 @@ class EncodeGif extends BaseJob
      */
     public function execute($queue): void
     {
+        $this->startExecutionClock();
         $asset = Asset::find()->id($this->assetId)->one();
 
         if (!$asset instanceof Asset) {
@@ -69,21 +75,12 @@ class EncodeGif extends BaseJob
             return;
         }
 
-        if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
-            Transcoder::$plugin->transcode->writeGifStatus(
-                $asset,
-                $this->gifOptions,
-                [
-                    'status' => 'disabled',
-                    'url' => '',
-                    'progress' => 0,
-                ]
-            );
-            $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+        $settings = Transcoder::$plugin->getSettings();
+        if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled() || !$settings->enableGifEncoding) {
+            $this->markDisabled($queue, $asset);
             return;
         }
 
-        $settings = Transcoder::$plugin->getSettings();
         $slot = Transcoder::$plugin->encodingConcurrency->acquire(
             'gif',
             (int)$settings->gifMaxConcurrentJobs,
@@ -97,7 +94,7 @@ class EncodeGif extends BaseJob
 
         try {
             if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
-                throw new \RuntimeException(Craft::t('transcoder', 'Original GIF source is not reachable yet'));
+                throw new RetryableEncodingException(Craft::t('transcoder', 'Original GIF source is not reachable yet'));
             }
 
             $this->setProgress($queue, 0, Craft::t('transcoder', 'Starting GIF encode'));
@@ -112,7 +109,7 @@ class EncodeGif extends BaseJob
                 ]
             );
 
-            $response = Transcoder::$plugin->transcode->getGifUrl($asset, $this->gifOptions, true);
+            $response = Transcoder::$plugin->transcode->startQueuedGifEncode($asset, $this->gifOptions);
             $status = json_decode($response, true);
 
             if (is_array($status) && Transcoder::$plugin->transcode->isOriginalGifMissingStatus($status)) {
@@ -123,10 +120,17 @@ class EncodeGif extends BaseJob
                 Transcoder::$plugin->transcode->writeGifStatus($asset, $this->gifOptions, $status);
             }
 
-            $this->waitForGifEncode($queue, $asset, is_array($status) ? $status : []);
-            $this->setProgress($queue, 1, Craft::t('transcoder', 'GIF encode complete'));
+            if ($this->waitForGifEncode($queue, $asset, is_array($status) ? $status : [])) {
+                $this->setProgress($queue, 1, Craft::t('transcoder', 'GIF encode complete'));
+            }
         } catch (Throwable $e) {
             Craft::error($e->getMessage(), __METHOD__);
+            // Never leave ffmpeg running once this job gives up its slot.
+            try {
+                Transcoder::$plugin->transcode->terminateGifEncode($asset, $this->gifOptions);
+            } catch (Throwable $terminateError) {
+                Craft::warning('Transcoder could not stop ffmpeg for GIF asset #' . $asset->id . ': ' . $terminateError->getMessage(), __METHOD__);
+            }
             $status = [
                 'status' => 'error',
                 'url' => '',
@@ -165,14 +169,15 @@ class EncodeGif extends BaseJob
         $settings = Transcoder::$plugin->getSettings();
         $delay = max(1, (int)$settings->encodingConcurrencyRetryDelaySeconds);
         $status = Transcoder::$plugin->transcode->getGifStatusData($asset, $this->gifOptions);
-        $jobId = Craft::$app->getQueue()->delay($delay)->push(new self([
+        $jobId = $this->pushCapacityReplacement(new self([
             'assetId' => $asset->id,
             'gifOptions' => $this->gifOptions,
+            'queueTtrSeconds' => $this->queueTtrSeconds,
             'attempt' => $this->attempt,
             'maxRetries' => $this->maxRetries,
             'retryDelaySeconds' => $this->retryDelaySeconds,
             'capacityWaitStartedAt' => $this->capacityWaitStartedAt,
-        ]));
+        ]), $delay, $this->queueTtrSeconds);
         $message = Craft::t('transcoder', 'Waiting for an available GIF encoding slot; retrying in {seconds}s', [
             'seconds' => $delay,
         ]);
@@ -196,25 +201,60 @@ class EncodeGif extends BaseJob
     }
 
     /**
+     * @inheritdoc
+     */
+    protected function onCapacityWaitExpired(string $message): void
+    {
+        $asset = Asset::find()->id($this->assetId)->one();
+        if (!$asset instanceof Asset) {
+            return;
+        }
+
+        Transcoder::$plugin->transcode->writeGifStatus($asset, $this->gifOptions, [
+            'status' => 'error',
+            'url' => '',
+            'progress' => 0,
+            'error' => $message,
+        ]);
+    }
+
+    /**
+     * Record that encoding is switched off and finish without error.
+     */
+    private function markDisabled(mixed $queue, Asset $asset): void
+    {
+        Transcoder::$plugin->transcode->writeGifStatus(
+            $asset,
+            $this->gifOptions,
+            [
+                'status' => 'disabled',
+                'url' => '',
+                'progress' => 0,
+            ]
+        );
+        $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+    }
+
+    /**
      * Keep the queue job alive while the background ffmpeg process runs.
      *
      * @param mixed $queue
      * @param Asset $asset
      * @param array $initialStatus
-     * @return void
+     * @return bool true when the encode completed, false when encoding was disabled
      */
-    protected function waitForGifEncode(mixed $queue, Asset $asset, array $initialStatus): void
+    protected function waitForGifEncode(mixed $queue, Asset $asset, array $initialStatus): bool
     {
         if (($initialStatus['status'] ?? null) === 'ok') {
             $this->setProgress($queue, 1, Craft::t('transcoder', 'GIF encode complete'));
-            return;
+            return true;
         }
 
         if (($initialStatus['status'] ?? null) === 'error') {
             throw new \RuntimeException($this->formatErrorMessage($initialStatus));
         }
 
-        $deadline = time() + self::TIMEOUT_SECONDS;
+        $deadline = $this->getExecutionDeadline($this->queueTtrSeconds);
         while (time() < $deadline) {
             $status = Transcoder::$plugin->transcode->getGifStatusData($asset, $this->gifOptions);
             $state = $status['status'] ?? 'unknown';
@@ -223,11 +263,24 @@ class EncodeGif extends BaseJob
 
             if ($state === 'ok') {
                 $this->setProgress($queue, 1, Craft::t('transcoder', 'GIF encode complete'));
-                return;
+                return true;
             }
 
             if ($state === 'error') {
                 throw new \RuntimeException($this->formatErrorMessage($status));
+            }
+
+            if ($state === 'disabled') {
+                Transcoder::$plugin->transcode->terminateGifEncode($asset, $this->gifOptions);
+                $this->markDisabled($queue, $asset);
+                return false;
+            }
+
+            if (!in_array($state, ['encoding', 'queued'], true)) {
+                // `pending`/`unknown`: ffmpeg is no longer tracked for this output.
+                throw new RetryableEncodingException(Craft::t('transcoder', 'GIF encoding process crashed (status {status})', [
+                    'status' => $state,
+                ]));
             }
 
             Transcoder::$plugin->transcode->writeGifStatus($asset, $this->gifOptions, $status);
@@ -240,7 +293,10 @@ class EncodeGif extends BaseJob
             sleep(self::POLL_INTERVAL_SECONDS);
         }
 
-        throw new \RuntimeException(Craft::t('transcoder', 'GIF encoding timed out'));
+        // Stop ffmpeg before the worker's TTR hard-kills this job.
+        Transcoder::$plugin->transcode->terminateGifEncode($asset, $this->gifOptions);
+
+        throw new RetryableEncodingException(Craft::t('transcoder', 'GIF encoding timed out'));
     }
 
     /**
@@ -271,15 +327,16 @@ class EncodeGif extends BaseJob
         $queuedJob = new self([
             'assetId' => $asset->id,
             'gifOptions' => $this->gifOptions,
+            'queueTtrSeconds' => $this->queueTtrSeconds,
             'attempt' => $nextAttempt,
             'maxRetries' => $maxRetries,
             'retryDelaySeconds' => $delay,
         ]);
 
-        $craftQueue = Craft::$app->getQueue();
-        $jobId = method_exists($craftQueue, 'delay')
-            ? $craftQueue->delay($delay)->push($queuedJob)
-            : $craftQueue->push($queuedJob);
+        $jobId = Craft::$app->getQueue()
+            ->ttr(max(1, $this->queueTtrSeconds))
+            ->delay($delay)
+            ->push($queuedJob);
 
         Craft::warning($message . ': ' . $e->getMessage(), __METHOD__);
         Transcoder::$plugin->transcode->writeGifStatus(
@@ -312,6 +369,10 @@ class EncodeGif extends BaseJob
      */
     protected function shouldRetry(Throwable $e, array $status): bool
     {
+        if ($e instanceof RetryableEncodingException) {
+            return true;
+        }
+
         $message = strtolower($e->getMessage() . ' ' . $this->formatErrorMessage($status));
         $retryableNeedles = [
             'process crashed',

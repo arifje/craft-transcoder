@@ -20,7 +20,6 @@ use yii\web\BadRequestHttpException;
 use yii\web\Response;
 
 use function count;
-use function is_array;
 
 /**
  * @author    nystudio107
@@ -38,30 +37,14 @@ class DefaultController extends Controller
      * @access protected
      */
     protected array|bool|int $allowAnonymous = [
-        'download-file',
-        'progress',
-        'video-status',
-        'gif-status',
+        'download-file' => self::ALLOW_ANONYMOUS_LIVE,
+        'progress' => self::ALLOW_ANONYMOUS_LIVE,
+        'video-status' => self::ALLOW_ANONYMOUS_LIVE,
+        'gif-status' => self::ALLOW_ANONYMOUS_LIVE,
     ];
 
     // Public Methods
     // =========================================================================
-
-    /**
-     * @inheritDoc
-     */
-    public function beforeAction($action): bool
-    {
-        if (!Transcoder::$settings->enableDownloadFileEndpoint) {
-            $this->allowAnonymous = [
-                'progress',
-                'video-status',
-                'gif-status',
-            ];
-        }
-
-        return parent::beforeAction($action);
-    }
 
     /**
      * Force the download of a given $url.  We do it this way to prevent people
@@ -75,6 +58,11 @@ class DefaultController extends Controller
      */
     public function actionDownloadFile($url): void
     {
+        // Anonymous downloads are opt-in; logged-in users may always download.
+        if (!Transcoder::$plugin->getSettings()->enableDownloadFileEndpoint) {
+            $this->requireLogin();
+        }
+
         $filePath = parse_url($url, PHP_URL_PATH);
         // Remove any relative paths
         if (!PathHelper::ensurePathIsContained($filePath)) {
@@ -111,7 +99,11 @@ class DefaultController extends Controller
     public function actionProgress($filename): Response
     {
         $result = [];
-        $progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.progress';
+        $filename = basename((string)$filename);
+        if ($filename === '' || !preg_match('/^[A-Za-z0-9_.\-]+$/', $filename)) {
+            throw new BadRequestHttpException('Invalid filename');
+        }
+        $progressFile = Transcoder::$plugin->transcode->getWorkDirectory() . DIRECTORY_SEPARATOR . $filename . '.progress';
         if (file_exists($progressFile)) {
             $content = @file_get_contents($progressFile);
             if ($content) {
@@ -135,12 +127,9 @@ class DefaultController extends Controller
 
                 // Get the time in the file that is already encoded
                 preg_match_all('/time=(.*?) bitrate/', $content, $matches);
-                $rawTime = array_pop($matches);
-
-                // this is needed if there is more than one match
-                if (is_array($rawTime)) {
-                    $rawTime = array_pop($rawTime);
-                }
+                // Use the last reported time when there is more than one match
+                $timeMatches = $matches[1];
+                $rawTime = (string)(end($timeMatches) ?: '');
 
                 //rawTime is in 00:00:00.00 format. This converts it to seconds.
                 $ar = array_reverse(explode(':', $rawTime));
@@ -190,7 +179,9 @@ class DefaultController extends Controller
      */
     public function actionVideoStatus(string $key): Response
     {
-        return $this->asJson(Transcoder::$plugin->transcode->getVideoStatusByKey($key));
+        $transcode = Transcoder::$plugin->transcode;
+
+        return $this->asJson($transcode->getPublicStatus($transcode->getVideoStatusByKey($key), $this->canViewStatusDetails()));
     }
 
     /**
@@ -201,6 +192,21 @@ class DefaultController extends Controller
      */
     public function actionGifStatus(string $key): Response
     {
-        return $this->asJson(Transcoder::$plugin->transcode->getGifStatusByKey($key));
+        $transcode = Transcoder::$plugin->transcode;
+
+        return $this->asJson($transcode->getPublicStatus($transcode->getGifStatusByKey($key), $this->canViewStatusDetails()));
+    }
+
+    // Protected Methods
+    // =========================================================================
+
+    /**
+     * Only admins may see ffmpeg commands, logs and server paths in status output.
+     *
+     * @return bool
+     */
+    protected function canViewStatusDetails(): bool
+    {
+        return (bool)Craft::$app->getUser()->getIdentity()?->admin;
     }
 }

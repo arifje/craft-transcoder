@@ -64,6 +64,15 @@ class Transcode extends Component
 
 	protected const REMOTE_FILE_EXISTS_TIMEOUT_SECONDS = 1;
 
+	// Seconds without ffmpeg progress output before an encode is treated as stalled
+	protected const ENCODE_STALL_SECONDS = 120;
+
+	// Inactive, non-completed status files older than this are pruned
+	protected const STATUS_RETENTION_SECONDS = 30 * 86400;
+
+	// Roughly one in this many status writes triggers a prune pass
+	protected const STATUS_PRUNE_CHANCE = 500;
+
 	// Leave room for the atomic publish suffix: ".part-" plus 16 hex characters.
 	protected const GENERATED_FILENAME_MAX_BYTES = 233;
 
@@ -72,6 +81,15 @@ class Transcode extends Component
 
 	/** @var array<int, string> */
 	private array $videoSourcePathOverrides = [];
+
+	/**
+	 * @var bool Whether ffmpeg may be started directly for Asset sources. Only
+	 * queue jobs, which hold a concurrency slot, set this.
+	 */
+	private bool $directEncodeAllowed = false;
+
+	/** @var array<int, bool> */
+	private array $assetExistsCache = [];
 
 	// Suffixes to add to the generated filename params
 	protected const SUFFIX_MAP = [
@@ -95,6 +113,28 @@ class Transcode extends Component
 		'preVideoFilters',
 		'videoBitRate',
 		'videoCodecOptions',
+	];
+
+	// Allowed value formats for caller-supplied media options
+	protected const MEDIA_OPTION_PATTERNS = [
+		'width' => '/^-?\d{1,5}$/',
+		'height' => '/^-?\d{1,5}$/',
+		'videoFrameRate' => '/^\d{1,4}(\.\d{1,4})?(\/\d{1,4})?$/',
+		'videoBitRate' => '/^\d{1,9}(\.\d{1,3})?[kKmM]?$/',
+		'audioBitRate' => '/^\d{1,9}(\.\d{1,3})?[kKmM]?$/',
+		'audioSampleRate' => '/^\d{1,6}$/',
+		'audioChannels' => '/^\d{1,2}$/',
+		'timeInSecs' => '/^\d{1,6}(\.\d{1,3})?$/',
+		'seekInSecs' => '/^\d{1,6}(\.\d{1,3})?$/',
+		'aspectRatio' => '/^(none|crop|letterbox)$/',
+		'letterboxColor' => '/^[#A-Za-z0-9@.]{1,32}$/',
+		'fileSuffix' => '/^[A-Za-z0-9_.\-]{0,16}$/',
+	];
+
+	// Status fields that may be returned to anonymous clients and GraphQL tokens
+	public const PUBLIC_STATUS_FIELDS = [
+		'status', 'url', 'progress', 'filename', 'jobId', 'key', 'updatedAt',
+		'posterStatus', 'posterProgress', 'posterJobId', 'posterUrls',
 	];
 
 	protected const WATERMARK_POSITIONS = [
@@ -206,6 +246,11 @@ class Transcode extends Component
 				continue;
 			}
 
+			if (!$this->isTranscoderProcess((int)$pid)) {
+				$this->removeEncodeTempFiles($lockFile, $progressFile);
+				continue;
+			}
+
 			exec('kill -TERM ' . $pid . ' 2>&1', $output, $exitCode);
 			if ($exitCode === 0 || !$this->isProcessRunningFromLockFile($lockFile)) {
 				$stopped++;
@@ -245,6 +290,14 @@ class Transcode extends Component
 				'url' => '',
 				'progress' => 0,
 			]);
+		}
+
+		// Outside a queue job, Asset encodes go through the queue so ffmpeg only
+		// runs inside the configured concurrency slots.
+		if ($generate && $filePath instanceof Asset && !$this->directEncodeAllowed && $this->isVideoAsset($filePath)) {
+			return JsonHelper::encode($this->sanitizeVideoStatus(
+				$this->queueVideoEncode($filePath, $videoOptions, $encodingOptions)
+			));
 		}
 
 		$subfolder = $this->getSubfolderFromPath($filePath);
@@ -309,8 +362,8 @@ class Transcode extends Component
 		$encodedFile   = $destVideoPath . $destVideoFile;
 		$publicUrl     = $urlBase . '/' . $destVideoFile;
 
-		$lockFile     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock';
-		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
+		$lockFile     = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock';
+		$progressFile = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
 		$outputInfo = [
 			'source' => $filePathResolved,
 			'originalExists' => $originalExists,
@@ -388,10 +441,8 @@ class Transcode extends Component
 			$pid = trim((string) @file_get_contents($lockFile));
 
 			if ($pid !== '' && ctype_digit($pid)) {
-				exec("kill -0 $pid 2>&1", $processState);
-
 				// If process is dead → ffmpeg crashed
-				if (count($processState) > 0) {
+				if (!$this->isPidRunning((int)$pid)) {
 					// Double-check if encoded file exists → maybe finished
 					if (is_file($encodedFile) && filesize($encodedFile) > 0) {
 						@unlink($lockFile);
@@ -417,8 +468,8 @@ class Transcode extends Component
 				// Optional: detect stalled progress
 				if (file_exists($progressFile)) {
 					$lastUpdate = filemtime($progressFile);
-					if ($lastUpdate && (time() - $lastUpdate > 60)) {
-						$this->removeEncodeTempFiles($lockFile, $progressFile);
+					if ($lastUpdate && (time() - $lastUpdate > self::ENCODE_STALL_SECONDS)) {
+						$this->terminateEncodeProcess($lockFile, $progressFile);
 						Craft::error("Transcoder: ffmpeg stalled for $filePathResolved", __METHOD__);
 						return JsonHelper::encode([
 							'status' => 'error',
@@ -507,7 +558,7 @@ class Transcode extends Component
 		$watermarkConfig = $this->getVideoWatermarkConfig($encodingOptions);
 
 		$ffmpegCmd = $settings['ffmpegPath']
-			. ' -i ' . escapeshellarg($filePathResolved);
+			. $this->getFfmpegInputArgs($filePathResolved);
 
 		if ($watermarkConfig !== null) {
 			$ffmpegCmd .= ' -loop 1 -i ' . escapeshellarg($watermarkConfig['path']);
@@ -519,7 +570,7 @@ class Transcode extends Component
 			. ' -threads ' . $thisEncoder['threads'];
 
 		if (!empty($videoOptions['videoFrameRate'])) {
-			$ffmpegCmd .= ' -r ' . $videoOptions['videoFrameRate'];
+			$ffmpegCmd .= ' -r ' . escapeshellarg((string)$videoOptions['videoFrameRate']);
 		}
 
 		// Disabled bitrate setting (as in original)
@@ -543,13 +594,13 @@ class Transcode extends Component
 		} else {
 			$ffmpegCmd .= ' -acodec ' . $thisEncoder['audioCodec'];
 			if (!empty($videoOptions['audioBitRate'])) {
-				$ffmpegCmd .= ' -b:a ' . $videoOptions['audioBitRate'];
+				$ffmpegCmd .= ' -b:a ' . escapeshellarg((string)$videoOptions['audioBitRate']);
 			}
 			if (!empty($videoOptions['audioSampleRate'])) {
-				$ffmpegCmd .= ' -ar ' . $videoOptions['audioSampleRate'];
+				$ffmpegCmd .= ' -ar ' . escapeshellarg((string)$videoOptions['audioSampleRate']);
 			}
 			if (!empty($videoOptions['audioChannels'])) {
-				$ffmpegCmd .= ' -ac ' . $videoOptions['audioChannels'];
+				$ffmpegCmd .= ' -ac ' . escapeshellarg((string)$videoOptions['audioChannels']);
 			}
 			$ffmpegCmd .= ' ' . $thisEncoder['audioCodecOptions'];
 		}
@@ -558,20 +609,16 @@ class Transcode extends Component
 		$ffmpegCmd .= ' -f ' . $thisEncoder['fileFormat']
 			. ' -y ' . escapeshellarg($stagedEncodedFile);
 		$ffmpegCommand = $ffmpegCmd;
-		$ffmpegWorkerCommand = 'staged_file=' . escapeshellarg($stagedEncodedFile)
-			. '; ffmpeg_pid=; '
-			. 'trap \'trap - HUP INT TERM; if [ -n "$ffmpeg_pid" ]; then kill -TERM "$ffmpeg_pid" 2>/dev/null; wait "$ffmpeg_pid" 2>/dev/null; fi; rm -f "$staged_file"; exit 143\' HUP INT TERM; '
-			. $ffmpegCommand
-			. ' & ffmpeg_pid=$!; wait "$ffmpeg_pid"; result=$?; trap - HUP INT TERM; '
-			. 'if [ "$result" -eq 0 ]; then mv -f "$staged_file" ' . escapeshellarg($encodedFile)
-			. '; result=$?; fi; if [ "$result" -ne 0 ]; then rm -f "$staged_file"; fi; exit "$result"';
-		$ffmpegCmd = '( ' . $ffmpegWorkerCommand . ' ) 1> ' . escapeshellarg($progressFile) . ' 2>&1 & echo $!';
+		$ffmpegCmd = $this->buildStagedFfmpegWorkerCommand($ffmpegCommand, $stagedEncodedFile, $encodedFile, $progressFile);
 
 		if ($isDev) {
 			Craft::info("Final ffmpeg command: $ffmpegCmd", __METHOD__);
 		}
 
 		if ($generate) {
+			if ($filePath instanceof Asset) {
+				$this->claimVideoOutput($filePath, $encodedFile);
+			}
 			$pid = $this->executeShellCommand($ffmpegCmd);
 			file_put_contents($lockFile, $pid);
 
@@ -584,8 +631,11 @@ class Transcode extends Component
 				'status' => 'encoding',
 				'url' => '',
 				'info' => 'Encoding started',
-				'ffmpegCommand' => $ffmpegCommand,
 			];
+			if ($this->directEncodeAllowed) {
+				// Queue jobs keep the command for failure diagnostics in the status file.
+				$status['ffmpegCommand'] = $ffmpegCommand;
+			}
 			if ($watermarkConfig === null
 				&& !empty($watermarkDebug['enabled'])
 				&& !empty($watermarkDebug['requested'])
@@ -616,6 +666,45 @@ class Transcode extends Component
 			'url' => '',
 			'error' => 'Encoding disabled',
 		]);
+	}
+
+	/**
+	 * Start a video encode from a queue job that already holds a concurrency slot.
+	 *
+	 * @param Asset $asset
+	 * @param array $videoOptions
+	 * @param array $encodingOptions
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function startQueuedVideoEncode(Asset $asset, array $videoOptions, array $encodingOptions = []): string
+	{
+		$previous = $this->directEncodeAllowed;
+		$this->directEncodeAllowed = true;
+		try {
+			return $this->getVideoUrl($asset, $videoOptions, true, $encodingOptions);
+		} finally {
+			$this->directEncodeAllowed = $previous;
+		}
+	}
+
+	/**
+	 * Start a GIF encode from a queue job that already holds a concurrency slot.
+	 *
+	 * @param Asset $asset
+	 * @param array $gifOptions
+	 * @return string
+	 * @throws InvalidConfigException
+	 */
+	public function startQueuedGifEncode(Asset $asset, array $gifOptions): string
+	{
+		$previous = $this->directEncodeAllowed;
+		$this->directEncodeAllowed = true;
+		try {
+			return $this->getGifUrl($asset, $gifOptions, true);
+		} finally {
+			$this->directEncodeAllowed = $previous;
+		}
 	}
 
 	/**
@@ -722,6 +811,14 @@ class Transcode extends Component
 	 */
 	public function isTemporaryUploadAsset(Asset $asset): bool
 	{
+		// Craft keeps temporary uploads outside any volume.
+		try {
+			if ($asset->id && $asset->volumeId === null && $asset->getFolder()->volumeId === null) {
+				return true;
+			}
+		} catch (Throwable) {
+		}
+
 		foreach ($this->getAssetReferenceCandidates($asset) as $reference) {
 			if ($this->isTemporaryUploadReference($reference)) {
 				return true;
@@ -790,8 +887,9 @@ class Transcode extends Component
 			return false;
 		}
 
-		return preg_match('~(?:^|/)user_\d+(?:/|$)~i', $reference) === 1
-			|| preg_match('~(?:^|/)(?:storage/)?runtime/assets/tempuploads(?:/|$)~i', $reference) === 1;
+		// A `user_123` folder inside a real volume is ordinary content, so only
+		// Craft's local temp upload directory is matched by path.
+		return preg_match('~(?:^|/)(?:storage/)?runtime/assets/tempuploads(?:/|$)~i', $reference) === 1;
 	}
 
 	/**
@@ -1062,21 +1160,11 @@ class Transcode extends Component
 	 */
 	protected function prepareOwnerLookupQuery(ElementQueryInterface $query): void
 	{
-		if (method_exists($query, 'site')) {
-			$query->site('*');
-		}
-		if (method_exists($query, 'status')) {
-			$query->status(null);
-		}
-		if (method_exists($query, 'drafts')) {
-			$query->drafts(null);
-		}
-		if (method_exists($query, 'revisions')) {
-			$query->revisions(null);
-		}
-		if (method_exists($query, 'limit')) {
-			$query->limit(1);
-		}
+		$query->site('*')
+			->status(null)
+			->drafts(null)
+			->revisions(null)
+			->limit(1);
 	}
 
 	/**
@@ -1575,9 +1663,6 @@ class Transcode extends Component
 		if ($queueVideo || $queuePosters || !empty($cleanupFiles)) {
 			foreach ($metadata['pathsByKind'] as $kind => $paths) {
 				foreach ($paths as $path) {
-					if (!is_string($path)) {
-						continue;
-					}
 					if ($kind === 'output' && isset($canonicalOutputPaths[$path])) {
 						continue;
 					}
@@ -1741,14 +1826,24 @@ class Transcode extends Component
 			throw new RuntimeException('Transcoder can only refresh a persisted video Asset.');
 		}
 
-		if ($this->isAutomaticVideoAssetWorkActive($asset)) {
-			return ['removedFiles' => 0, 'queued' => false, 'jobId' => null, 'active' => true];
+		// Hold the same per-asset lock as queue decisions so no encode can be
+		// queued between the activity check and the file removal.
+		$queueLock = $this->acquireVideoQueueLock('video-asset-' . $asset->id);
+		if (!is_resource($queueLock)) {
+			throw new RuntimeException('Could not lock video refresh; no files were changed.');
 		}
-		if ($this->hasAutomaticVideoAssetStagingFiles($asset)) {
-			return ['removedFiles' => 0, 'queued' => false, 'jobId' => null, 'active' => true];
-		}
+		try {
+			if ($this->isAutomaticVideoAssetWorkActive($asset)) {
+				return ['removedFiles' => 0, 'queued' => false, 'jobId' => null, 'active' => true];
+			}
+			if ($this->hasAutomaticVideoAssetStagingFiles($asset)) {
+				return ['removedFiles' => 0, 'queued' => false, 'jobId' => null, 'active' => true];
+			}
 
-		$removedFiles = $this->invalidateAutomaticVideoAssetOutput($asset);
+			$removedFiles = $this->invalidateAutomaticVideoAssetOutput($asset);
+		} finally {
+			$this->releaseVideoQueueLock($queueLock);
+		}
 		$jobId = null;
 
 		if ($this->isVideoAutomaticQueueConfigured()) {
@@ -1837,11 +1932,15 @@ class Transcode extends Component
 		$paths = [];
 		foreach ($this->getAutomaticVideoAssetRefreshMetadata($asset)['pathsByKind'] as $kind => $candidatePaths) {
 			foreach ($candidatePaths as $path) {
-				if (!is_string($path) || (!is_file($path) && !is_link($path))) {
+				if (!is_file($path) && !is_link($path)) {
 					continue;
 				}
 				if (!$this->isSafeAutomaticRefreshPath($path, $kind)) {
 					throw new RuntimeException('Refusing to remove a Transcoder file outside its managed roots.');
+				}
+				if ($kind === 'output' && $this->isOutputOwnedByOtherAsset($asset, $path)) {
+					Craft::warning('Transcoder kept ' . $path . ' because it belongs to another Asset with the same source filename.', __METHOD__);
+					continue;
 				}
 				$paths[] = $path;
 			}
@@ -1874,8 +1973,8 @@ class Transcode extends Component
 		$statusPath = $this->getVideoStatusPath($statusKey);
 		$canonicalFilename = $outputInfo['canonicalFilename'] ?? $outputInfo['filename'];
 		$canonicalOutput = $outputInfo['canonicalEncodedFile'] ?? $outputInfo['encodedFile'];
-		$canonicalLock = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $canonicalFilename . '.lock';
-		$canonicalProgress = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $canonicalFilename . '.progress';
+		$canonicalLock = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $canonicalFilename . '.lock';
+		$canonicalProgress = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $canonicalFilename . '.progress';
 		$pathsByKind = [
 			'output' => [$canonicalOutput, $outputInfo['encodedFile']],
 			'temporary' => [$canonicalLock, $canonicalProgress, $outputInfo['lockFile'], $outputInfo['progressFile']],
@@ -1912,8 +2011,8 @@ class Transcode extends Component
 		if ($legacyFilename !== $canonicalFilename) {
 			$legacyIncluded = true;
 			$legacyOutput = dirname($canonicalOutput) . DIRECTORY_SEPARATOR . $legacyFilename;
-			$legacyLock = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $legacyFilename . '.lock';
-			$legacyProgress = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $legacyFilename . '.progress';
+			$legacyLock = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $legacyFilename . '.lock';
+			$legacyProgress = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $legacyFilename . '.progress';
 			$pathsByKind['output'][] = $legacyOutput;
 			$pathsByKind['temporary'][] = $legacyLock;
 			$pathsByKind['temporary'][] = $legacyProgress;
@@ -2002,7 +2101,7 @@ class Transcode extends Component
 		/** @var Settings $settings */
 		$settings = Transcoder::$plugin->getSettings();
 		if ($kind === 'temporary') {
-			$roots = [sys_get_temp_dir()];
+			$roots = [$this->getWorkDirectory(), sys_get_temp_dir()];
 		} elseif ($kind === 'status') {
 			$roots = [$this->getVideoStatusDirectory()];
 		} elseif ($kind === 'output') {
@@ -2190,38 +2289,75 @@ class Transcode extends Component
 			];
 		}
 
-		$outputInfo = $this->getGifOutputInfo($asset, $gifOptions);
-		$status = $this->getGifStatusData($asset, $gifOptions);
-		$originalMissing = !$this->isAssetOriginalAvailable($asset);
-		if ($originalMissing && !$deferIfOriginalMissing) {
+		// Serialize queue decisions per asset so concurrent requests cannot
+		// queue two jobs that write the same GIF output.
+		$queueLock = $this->acquireVideoQueueLock('gif-asset-' . $asset->id);
+		try {
+			$outputInfo = $this->getGifOutputInfo($asset, $gifOptions);
+			$status = $this->getGifStatusData($asset, $gifOptions);
+			$originalMissing = !$this->isAssetOriginalAvailable($asset);
+			if ($originalMissing && !$deferIfOriginalMissing) {
+				return $status;
+			}
+
+			if (($status['status'] ?? null) === 'ok' && is_file($outputInfo['encodedFile']) && filesize($outputInfo['encodedFile']) > 0) {
+				return $status;
+			}
+			if (in_array($status['status'] ?? null, ['queued', 'encoding'], true)) {
+				return $status;
+			}
+
+			$job = new EncodeGif([
+				'assetId' => $asset->id,
+				'gifOptions' => $gifOptions,
+			]);
+			$jobId = $this->pushQueueJob($job, $delay, $job->queueTtrSeconds);
+
+			$status = [
+				'status' => 'queued',
+				'url' => '',
+				'progress' => 0,
+				'jobId' => $jobId,
+				'delay' => $delay,
+			];
+			if ($originalMissing) {
+				$status['info'] = 'Original GIF source is not reachable yet; queued a delayed retry';
+			}
+			$this->writeGifStatus($asset, $gifOptions, $status);
+
 			return $status;
+		} finally {
+			$this->releaseVideoQueueLock($queueLock);
 		}
+	}
 
-		if (($status['status'] ?? null) === 'ok' && is_file($outputInfo['encodedFile']) && filesize($outputInfo['encodedFile']) > 0) {
-			return $status;
-		}
-		if (in_array($status['status'] ?? null, ['queued', 'encoding'], true)) {
-			return $status;
-		}
+	/**
+	 * Stop a running ffmpeg process for a video encode, if any.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $videoOptions
+	 * @return void
+	 * @throws InvalidConfigException
+	 */
+	public function terminateVideoEncode(Asset|string $filePath, array $videoOptions): void
+	{
+		$filePath = $this->resolveVideoAssetInput($filePath);
+		$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions, false);
+		$this->terminateEncodeProcess($outputInfo['lockFile'] ?? null, $outputInfo['progressFile'] ?? null);
+	}
 
-		$jobId = $this->pushQueueJob(new EncodeGif([
-			'assetId' => $asset->id,
-			'gifOptions' => $gifOptions,
-		]), $delay);
-
-		$status = [
-			'status' => 'queued',
-			'url' => '',
-			'progress' => 0,
-			'jobId' => $jobId,
-			'delay' => $delay,
-		];
-		if ($originalMissing) {
-			$status['info'] = 'Original GIF source is not reachable yet; queued a delayed retry';
-		}
-		$this->writeGifStatus($asset, $gifOptions, $status);
-
-		return $status;
+	/**
+	 * Stop a running ffmpeg process for a GIF encode, if any.
+	 *
+	 * @param Asset|string $filePath
+	 * @param array $gifOptions
+	 * @return void
+	 * @throws InvalidConfigException
+	 */
+	public function terminateGifEncode(Asset|string $filePath, array $gifOptions): void
+	{
+		$outputInfo = $this->getGifOutputInfo($filePath, $gifOptions);
+		$this->terminateEncodeProcess($outputInfo['lockFile'] ?? null, $outputInfo['progressFile'] ?? null);
 	}
 
 	/**
@@ -2342,22 +2478,9 @@ class Transcode extends Component
 			return $this->sanitizeVideoStatus($status);
 		}
 
-		$remoteOutputInfo = $this->findRemoteEncodedVideoOutputInfo($outputInfo);
-		if ($remoteOutputInfo !== null) {
-			@unlink($remoteOutputInfo['lockFile']);
-			@unlink($remoteOutputInfo['progressFile']);
-			$status = $this->buildCompletedVideoStatus($remoteOutputInfo, $storedStatus, true);
-			$this->writeVideoStatusByKey(
-				$statusKey,
-				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($remoteOutputInfo), $status))
-			);
-			Craft::info('Transcoder: encoded video found via public URL: ' . $remoteOutputInfo['publicUrl'], __METHOD__);
-			return $this->sanitizeVideoStatus($status);
-		}
-
 		if ($this->isEncodeLockStale($outputInfo['lockFile'], $outputInfo['progressFile'])) {
 			$failure = $this->getVideoProcessCrashedFailure($outputInfo, $storedStatus);
-			$this->removeEncodeTempFiles($outputInfo['lockFile'], $outputInfo['progressFile']);
+			$this->terminateEncodeProcess($outputInfo['lockFile'], $outputInfo['progressFile']);
 			$status = array_merge([
 				'status' => 'error',
 				'url' => '',
@@ -2391,6 +2514,20 @@ class Transcode extends Component
 				$statusKey,
 				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($outputInfo), $status))
 			);
+			return $this->sanitizeVideoStatus($status);
+		}
+
+		// Local lock checks above are cheap; only probe public URLs once no local encode is active.
+		$remoteOutputInfo = $this->findRemoteEncodedVideoOutputInfo($outputInfo);
+		if ($remoteOutputInfo !== null) {
+			@unlink($remoteOutputInfo['lockFile']);
+			@unlink($remoteOutputInfo['progressFile']);
+			$status = $this->buildCompletedVideoStatus($remoteOutputInfo, $storedStatus, true);
+			$this->writeVideoStatusByKey(
+				$statusKey,
+				$this->addAssetStatusInfo($filePath, array_merge($this->getVideoStatusStorageInfo($remoteOutputInfo), $status))
+			);
+			Craft::info('Transcoder: encoded video found via public URL: ' . $remoteOutputInfo['publicUrl'], __METHOD__);
 			return $this->sanitizeVideoStatus($status);
 		}
 
@@ -2491,7 +2628,10 @@ class Transcode extends Component
 		try {
 			$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
 			$storedStatus = $this->readVideoStatus($statusKey);
-			$status = array_merge($this->getVideoPosterStatusFields($storedStatus), $status);
+			// Poster fields are owned by poster jobs; the copy read under this lock
+			// is newer than any poster fields carried in a status read earlier.
+			$status = array_merge($status, $this->getVideoPosterStatusFields($storedStatus));
+			unset($status['statusOwner']);
 			$status = array_merge($this->getVideoStatusStorageInfo($outputInfo), $status);
 			$status = $this->addAssetStatusInfo($filePath, $status);
 
@@ -2518,6 +2658,20 @@ class Transcode extends Component
 		try {
 			$outputInfo = $this->getVideoOutputInfo($filePath, $videoOptions);
 			$storedStatus = $this->readVideoStatus($statusKey);
+
+			// Never let poster progress overwrite the state of a video encode that
+			// is queued, running or finished; only fill in the shared fields when
+			// no video work owns them.
+			$videoOwnsStatus = in_array($storedStatus['status'] ?? null, ['queued', 'encoding', 'ok'], true)
+				&& ($storedStatus['statusOwner'] ?? 'video') !== 'poster';
+			if ($videoOwnsStatus) {
+				$status = array_diff_key(
+					$status,
+					array_flip(['status', 'url', 'progress', 'error', 'info', 'jobId', 'warning'])
+				);
+			} elseif (array_key_exists('status', $status)) {
+				$status['statusOwner'] = 'poster';
+			}
 
 			$this->writeVideoStatusByKey(
 				$statusKey,
@@ -2551,8 +2705,22 @@ class Transcode extends Component
 
 		return 'video-' . sha1(
 			$this->getVideoEncodedFilename($filePath, $videoOptions)
-			. JsonHelper::encode($encodingOptions)
+			. JsonHelper::encode($this->normalizeEncodingOptions($encodingOptions))
 		);
+	}
+
+	/**
+	 * Keep only supported encoding options so arbitrary input cannot create
+	 * unbounded status keys.
+	 *
+	 * @param array $encodingOptions
+	 * @return array
+	 */
+	public function normalizeEncodingOptions(array $encodingOptions): array
+	{
+		return array_key_exists('watermark', $encodingOptions)
+			? ['watermark' => (bool)$encodingOptions['watermark']]
+			: [];
 	}
 
 	/**
@@ -2623,7 +2791,7 @@ class Transcode extends Component
 		$exactMatches = [];
 		$pathMatches = [];
 		foreach ($candidates as $candidate) {
-			if (!$candidate instanceof Asset || !$candidate->id) {
+			if (!$candidate->id) {
 				continue;
 			}
 
@@ -2877,10 +3045,7 @@ class Transcode extends Component
 			return false;
 		}
 
-		$statusLine = is_array($headers[0]) ? end($headers[0]) : $headers[0];
-		if (!is_string($statusLine)) {
-			return false;
-		}
+		$statusLine = (string)(is_array($headers[0]) ? end($headers[0]) : $headers[0]);
 
 		return preg_match('/\s(' . implode('|', $allowedStatusCodes) . ')\s/', $statusLine) === 1;
 	}
@@ -3008,7 +3173,7 @@ class Transcode extends Component
 
 			// Build the ffmpeg command
 			$ffmpegCmd = $settings['ffmpegPath']
-				. ' -i ' . escapeshellarg($filePathResolved)
+				. $this->getFfmpegInputArgs($filePathResolved)
 				. ' -vcodec mjpeg'
 				. ' -vframes 1';
 
@@ -3018,7 +3183,7 @@ class Transcode extends Component
 			// Set timecode
 			if (!empty($thumbnailOptions['timeInSecs'])) {
 				$seekTime = $this->getSafeVideoThumbnailSeekTime($filePathResolved, (float)$thumbnailOptions['timeInSecs']);
-				$ffmpegCmd .= ' -ss ' . $this->formatFfmpegTimecode($seekTime);
+				$ffmpegCmd .= ' -ss ' . escapeshellarg($this->formatFfmpegTimecode($seekTime));
 			}
 
 			// Ensure directory exists
@@ -3344,7 +3509,7 @@ class Transcode extends Component
 
 			// Build the basic command for ffmpeg
 			$ffmpegCmd = $settings['ffmpegPath']
-				. ' -i ' . escapeshellarg($filePath)
+				. $this->getFfmpegInputArgs($filePath)
 				. ' -acodec ' . $thisEncoder['audioCodec']
 				. ' ' . $thisEncoder['audioCodecOptions']
 				. ' -bufsize 1000k'
@@ -3353,24 +3518,24 @@ class Transcode extends Component
 
 			// Set the bitrate if desired
 			if (!empty($audioOptions['audioBitRate'])) {
-				$ffmpegCmd .= ' -b:a ' . $audioOptions['audioBitRate'];
+				$ffmpegCmd .= ' -b:a ' . escapeshellarg((string)$audioOptions['audioBitRate']);
 			}
 			// Set the sample rate if desired
 			if (!empty($audioOptions['audioSampleRate'])) {
-				$ffmpegCmd .= ' -ar ' . $audioOptions['audioSampleRate'];
+				$ffmpegCmd .= ' -ar ' . escapeshellarg((string)$audioOptions['audioSampleRate']);
 			}
 			// Set the audio channels if desired
 			if (!empty($audioOptions['audioChannels'])) {
-				$ffmpegCmd .= ' -ac ' . $audioOptions['audioChannels'];
+				$ffmpegCmd .= ' -ac ' . escapeshellarg((string)$audioOptions['audioChannels']);
 			}
 			$ffmpegCmd .= ' ' . $thisEncoder['audioCodecOptions'];
 
 			if (!empty($audioOptions['seekInSecs'])) {
-				$ffmpegCmd .= ' -ss ' . $audioOptions['seekInSecs'];
+				$ffmpegCmd .= ' -ss ' . escapeshellarg((string)$audioOptions['seekInSecs']);
 			}
 
 			if (!empty($audioOptions['timeInSecs'])) {
-				$ffmpegCmd .= ' -t ' . $audioOptions['timeInSecs'];
+				$ffmpegCmd .= ' -t ' . escapeshellarg((string)$audioOptions['timeInSecs']);
 			}
 
 			// Create the directory if it isn't there already
@@ -3385,7 +3550,7 @@ class Transcode extends Component
 			$destAudioFile = $this->getFilename($filePath, $audioOptions);
 
 			// File to store the audio encoding progress in
-			$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destAudioFile . '.progress';
+			$progressFile = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destAudioFile . '.progress';
 
 			// Assemble the destination path and final ffmpeg command
 			$destAudioPath .= $destAudioFile;
@@ -3407,15 +3572,13 @@ class Transcode extends Component
 				$synchronous = $audioOptions['synchronous'];
 			}
 			if (!$synchronous) {
-				$ffmpegCmd .= ' 1> ' . $progressFile . ' 2>&1 & echo $!';
+				$ffmpegCmd .= ' 1> ' . escapeshellarg($progressFile) . ' 2>&1 & echo $!';
 				// Make sure there isn't a lockfile for this audio file already
-				$lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destAudioFile . '.lock';
+				$lockFile = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destAudioFile . '.lock';
 				$oldPid = @file_get_contents($lockFile);
 				if ($oldPid !== false) {
-					// See if the process is running, and empty result means the process is still running
-					// ref: https://stackoverflow.com/questions/3043978/how-to-check-if-a-process-id-pid-exists
-					exec("kill -0 $oldPid 2>&1", $ProcessState);
-					if (count($ProcessState) === 0) {
+					$oldPid = trim($oldPid);
+					if (ctype_digit($oldPid) && $this->isPidRunning((int)$oldPid)) {
 						return $result;
 					}
 					// It's finished transcoding, so delete the lockfile and progress file
@@ -3467,6 +3630,7 @@ class Transcode extends Component
 			$ffprobeOptions = $settings['ffprobeOptions'];
 			$ffprobeCmd = $settings['ffprobePath']
 				. ' ' . $ffprobeOptions
+				. ' -protocol_whitelist ' . $this->getFfmpegInputProtocols($filePath)
 				. ' ' . escapeshellarg($filePath);
 
 			$shellOutput = $this->executeShellCommand($ffprobeCmd);
@@ -3771,7 +3935,7 @@ class Transcode extends Component
 
 		if ($this->isEncodeLockStale($outputInfo['lockFile'], $outputInfo['progressFile'])) {
 			$failure = $this->getGifEncodeFailure($outputInfo, $storedStatus);
-			$this->removeEncodeTempFiles($outputInfo['lockFile'], $outputInfo['progressFile']);
+			$this->terminateEncodeProcess($outputInfo['lockFile'], $outputInfo['progressFile']);
 			$status = array_merge([
 				'status' => 'error',
 				'url' => '',
@@ -3904,7 +4068,7 @@ class Transcode extends Component
 			&& $this->isEncodeLockStale($status['lockFile'], $status['progressFile'] ?? null)
 		) {
 			$failure = $this->getVideoProcessCrashedFailure($status, $status);
-			$this->removeEncodeTempFiles($status['lockFile'], $status['progressFile'] ?? null);
+			$this->terminateEncodeProcess($status['lockFile'], $status['progressFile'] ?? null);
 			$status = array_merge($status, [
 				'status' => 'error',
 				'url' => '',
@@ -3987,8 +4151,8 @@ class Transcode extends Component
 			'filename' => $destGifFile,
 			'encodedFile' => $destGifPath . $destGifFile,
 			'publicUrl' => $urlBase . '/' . $destGifFile,
-			'lockFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destGifFile . '.lock',
-			'progressFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destGifFile . '.progress',
+			'lockFile' => $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destGifFile . '.lock',
+			'progressFile' => $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destGifFile . '.progress',
 		];
 	}
 
@@ -4011,6 +4175,12 @@ class Transcode extends Component
 				'url' => '',
 				'progress' => 0,
 			]);
+		}
+
+		// Outside a queue job, Asset encodes go through the queue so ffmpeg only
+		// runs inside the configured concurrency slots.
+		if ($generate && $filePath instanceof Asset && !$this->directEncodeAllowed && $this->isGifAsset($filePath)) {
+			return JsonHelper::encode($this->sanitizeVideoStatus($this->queueGifEncode($filePath, $gifOptions)));
 		}
 
 		$subfolder = $this->getSubfolderFromPath($filePath);
@@ -4058,8 +4228,8 @@ class Transcode extends Component
 		$encodedFile = $destGifPath . $destGifFile;
 		$publicUrl   = $urlBase . '/' . $destGifFile;
 	
-		$lockFile     = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destGifFile . '.lock';
-		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destGifFile . '.progress';
+		$lockFile     = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destGifFile . '.lock';
+		$progressFile = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destGifFile . '.progress';
 	
 		// --- Case 1: encoded GIF already exists (lazy cleanup) ---
 		if (is_file($encodedFile) && filesize($encodedFile) > 0) {
@@ -4083,9 +4253,7 @@ class Transcode extends Component
 			$pid = trim((string) @file_get_contents($lockFile));
 	
 			if ($pid !== '' && ctype_digit($pid)) {
-				exec("kill -0 $pid 2>&1", $processState);
-	
-				if (count($processState) > 0) {
+				if (!$this->isPidRunning((int)$pid)) {
 					// process died
 					if (is_file($encodedFile) && filesize($encodedFile) > 0) {
 						@unlink($lockFile);
@@ -4118,8 +4286,8 @@ class Transcode extends Component
 					}
 	
 					$lastUpdate = filemtime($progressFile);
-					if ($lastUpdate && (time() - $lastUpdate > 60)) {
-						$this->removeEncodeTempFiles($lockFile, $progressFile);
+					if ($lastUpdate && (time() - $lastUpdate > self::ENCODE_STALL_SECONDS)) {
+						$this->terminateEncodeProcess($lockFile, $progressFile);
 						Craft::error("Transcoder: ffmpeg stalled for $filePathResolved", __METHOD__);
 						return JsonHelper::encode([
 							'status' => 'error',
@@ -4173,13 +4341,17 @@ class Transcode extends Component
 			}
 		}
 	
+		$gifWidth = (string)(($gifOptions['width'] ?? '') !== '' ? $gifOptions['width'] : -1);
+		$gifHeight = (string)(($gifOptions['height'] ?? '') !== '' ? $gifOptions['height'] : -1);
+		$stagedEncodedFile = $encodedFile . '.part-' . bin2hex(random_bytes(8));
 		$ffmpegCmd = $settings['ffmpegPath']
-			. ' -i ' . escapeshellarg($filePathResolved)
-			. ' -vf "fps=10,scale=' . ($gifOptions['width'] ?? -1) . ':' . ($gifOptions['height'] ?? -1) . ':flags=lanczos"'
+			. $this->getFfmpegInputArgs($filePathResolved)
+			. ' -vf ' . escapeshellarg('fps=10,scale=' . $gifWidth . ':' . $gifHeight . ':flags=lanczos')
 			. ' -c:v ' . $thisEncoder['videoCodec'] . ' ' . $thisEncoder['videoCodecOptions']
-			. ' -y ' . escapeshellarg($encodedFile);
+			. ' -f ' . ($thisEncoder['fileFormat'] ?? '' ?: ltrim((string)$thisEncoder['fileSuffix'], '.'))
+			. ' -y ' . escapeshellarg($stagedEncodedFile);
 		$ffmpegCommand = $ffmpegCmd;
-		$ffmpegCmd .= ' 1> ' . $progressFile . ' 2>&1 & echo $!';
+		$ffmpegCmd = $this->buildStagedFfmpegWorkerCommand($ffmpegCommand, $stagedEncodedFile, $encodedFile, $progressFile);
 	
 		if ($isDev) {
 			Craft::info("Final ffmpeg command: $ffmpegCmd", __METHOD__);
@@ -4188,13 +4360,18 @@ class Transcode extends Component
 		if ($generate) {
 			$pid = $this->executeShellCommand($ffmpegCmd);
 			file_put_contents($lockFile, $pid);
+			Craft::info("Started ffmpeg PID $pid: $ffmpegCmd", __METHOD__);
 	
-			return JsonHelper::encode([
+			$status = [
 				'status' => 'encoding',
 				'url' => '',
 				'info' => 'Encoding started',
-				'ffmpegCommand' => $ffmpegCommand,
-			]);
+			];
+			if ($this->directEncodeAllowed) {
+				$status['ffmpegCommand'] = $ffmpegCommand;
+			}
+
+			return JsonHelper::encode($status);
 		}
 	
 		return JsonHelper::encode([
@@ -4202,105 +4379,6 @@ class Transcode extends Component
 			'url' => '',
 			'error' => 'Encoding disabled',
 		]);
-	}
-
-
-
-	public function getGifUrlOld(Asset|string $filePath, array $gifOptions, bool $generate = true): string|false|null
-	{
-		$result = '';
-		$settings = Transcoder::$plugin->getSettings();
-		$subfolder = '';
-
-		// Subfolder check
-		$subfolder = $this->getSubfolderFromPath($filePath);
-		 
-		// Asset path
-		$filePath = $this->getAssetPath($filePath);
-
-		if (!empty($filePath)) {
-			// Dest path
-			$destVideoPath = ($settings['transcoderPaths']['gif'] ?? $settings['transcoderPaths']['default']) . $subfolder;
-			$destVideoPath = App::parseEnv($destVideoPath);
-
-			// Options
-			$gifOptions = $this->coalesceOptions('defaultGifOptions', $gifOptions);
-
-			// Build the URL
-			$destVideoFile = $this->getFilename($filePath, $gifOptions);
-			
-			// Convert to a public URL
-			$url = ($settings['transcoderUrls']['gif'] ?? $settings['transcoderUrls']['default']) . $subfolder;
-			$publicUrl = App::parseEnv($url) . $destVideoFile;
-			
-			// Check if the file exists via HTTP first when the url is passed as an argument instead of an asset object
-			if ($this->isUrl($filePath) && $this->doesRemoteFileExist($publicUrl)) {	
-				return $publicUrl;
-			}
-			
-			// Get the video encoder presets to use
-			$videoEncoders = $settings['videoEncoders'];
-			$thisEncoder = $videoEncoders[$gifOptions['videoEncoder']];
-			$gifOptions['fileSuffix'] = $thisEncoder['fileSuffix'];
-
-			// Create the directory if it isn't there already
-			if (!is_dir($destVideoPath)) {
-				try {
-					FileHelper::createDirectory($destVideoPath);
-				} catch (Exception $e) {
-					Craft::error($e->getMessage(), __METHOD__);
-				}
-			}
-			
-			// Build the basic command for ffmpeg
-			$destVideoPath .= $destVideoFile;
-
-			$ffmpegCmd = $settings['ffmpegPath']
-				. ' -f gif'
-				. ' -i ' . escapeshellarg($filePath)
-				. ' -vcodec ' . $thisEncoder['videoCodec']
-				. ' ' . $thisEncoder['videoCodecOptions'];
-
-			// File to store the video encoding progress in
-			$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress';
-
-			// Assemble the destination path and final ffmpeg command
-			$ffmpegCmd .= ' '
-				. ' -y ' . escapeshellarg($destVideoPath)
-				. ' 1> ' . $progressFile . ' 2>&1 & echo $!';
-
-			// Make sure there isn't a lockfile for this video already
-			$lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock';
-			$oldPid = @file_get_contents($lockFile);
-			if ($oldPid !== false) {
-				// See if the process is running, and empty result means the process is still running
-				// ref: https://stackoverflow.com/questions/3043978/how-to-check-if-a-process-id-pid-exists
-				exec("kill -0 $oldPid 2>&1", $ProcessState);
-				if (count($ProcessState) === 0) {
-					return $result;
-				}
-				// It's finished transcoding, so delete the lockfile and progress file
-				@unlink($lockFile);
-				@unlink($progressFile);
-			}
-
-			// If the video file already exists and hasn't been modified, return it.  Otherwise, start it transcoding
-			if (file_exists($destVideoPath) && (@filemtime($destVideoPath) >= @filemtime($filePath))) {
-				$url = ($settings['transcoderUrls']['gif'] ?? $settings['transcoderUrls']['default']) . $subfolder;
-				$result = App::parseEnv($url) . $destVideoFile;
-			} elseif (!$generate) {         
-				$result = '';
-			} else {							
-				// Kick off the transcoding
-				$pid = $this->executeShellCommand($ffmpegCmd);
-				Craft::info($ffmpegCmd . "\nffmpeg PID: " . $pid, __METHOD__);
-
-				// Create a lockfile in tmp
-				file_put_contents($lockFile, $pid);
-			}
-		}
-
-		return $result;
 	}
 
 	/**
@@ -4472,19 +4550,18 @@ class Transcode extends Component
 
 		if (!empty($options['width']) && !empty($options['height'])) {
 			$sharpen = '';
-			if (!empty($options['sharpen']) && ($options['sharpen'] !== false)) {
+			if (!empty($options['sharpen'])) {
 				$sharpen = ',unsharp=5:5:1.0:5:5:0.0';
 			}
 
 			if (!empty($options['preventBlackBars'])) {
-				$ffmpegCmd .= ' -vf "' . $this->joinVideoFilters(array_merge($preFilters, ['split=2[bg][fg]'])) . ';'
+				$ffmpegCmd .= ' -vf ' . escapeshellarg($this->joinVideoFilters(array_merge($preFilters, ['split=2[bg][fg]'])) . ';'
 					. '[bg]scale=' . $options['width'] . ':' . $options['height'] . ':force_original_aspect_ratio=increase'
 					. ',crop=' . $options['width'] . ':' . $options['height']
 					. ',boxblur=20:1[bg];'
 					. '[fg]scale=' . $options['width'] . ':' . $options['height'] . ':force_original_aspect_ratio=decrease[fg];'
 					. '[bg][fg]overlay=(W-w)/2:(H-h)/2'
-					. $sharpen
-					. '"';
+					. $sharpen);
 
 				return $ffmpegCmd;
 			}
@@ -4518,9 +4595,9 @@ class Transcode extends Component
 			$filters = array_merge($preFilters, [
 				'scale=' . $options['width'] . ':' . $options['height'] . $aspectRatio . $sharpen,
 			]);
-			$ffmpegCmd .= ' -vf "' . $this->joinVideoFilters($filters) . '"';
+			$ffmpegCmd .= ' -vf ' . escapeshellarg($this->joinVideoFilters($filters));
 		} elseif (!empty($preFilters)) {
-			$ffmpegCmd .= ' -vf "' . $this->joinVideoFilters($preFilters) . '"';
+			$ffmpegCmd .= ' -vf ' . escapeshellarg($this->joinVideoFilters($preFilters));
 		}
 
 		return $ffmpegCmd;
@@ -4672,7 +4749,7 @@ class Transcode extends Component
 
 		if (!empty($options['width']) && !empty($options['height']) && !empty($options['preventBlackBars'])) {
 			$sharpen = '';
-			if (!empty($options['sharpen']) && ($options['sharpen'] !== false)) {
+			if (!empty($options['sharpen'])) {
 				$sharpen = ',unsharp=5:5:1.0:5:5:0.0';
 			}
 
@@ -4711,7 +4788,7 @@ class Transcode extends Component
 
 		if (!empty($options['width']) && !empty($options['height'])) {
 			$sharpen = '';
-			if (!empty($options['sharpen']) && ($options['sharpen'] !== false)) {
+			if (!empty($options['sharpen'])) {
 				$sharpen = ',unsharp=5:5:1.0:5:5:0.0';
 			}
 
@@ -4982,7 +5059,7 @@ class Transcode extends Component
 		$sourceId = preg_replace('/[^A-Za-z0-9_-]+/', '-', (string)$sourceId) ?: 'source';
 		$sourceStamp = $this->isUrl($svgPath) ? sha1($svg) : (string)@filemtime($svgPath);
 		$cacheKey = sha1($svgPath . '|' . $sourceStamp . '|' . $rasterWidth . 'x' . $rasterHeight . '|' . $animation);
-		$pngPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $sourceId . '-' . $cacheKey . '.png';
+		$pngPath = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $sourceId . '-' . $cacheKey . '.png';
 
 		if (is_file($pngPath) && filesize($pngPath) > 0) {
 			return $pngPath;
@@ -4995,7 +5072,7 @@ class Transcode extends Component
 
 		$tempSvgPath = $svgPath;
 		if ($this->isUrl($svgPath)) {
-			$tempSvgPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $sourceId . '-' . $cacheKey . '.svg';
+			$tempSvgPath = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . 'transcoder-watermark-' . $sourceId . '-' . $cacheKey . '.svg';
 			file_put_contents($tempSvgPath, $svg);
 		}
 
@@ -5591,7 +5668,7 @@ class Transcode extends Component
 		$command = $settings['ffmpegPath']
 			. ' -hide_banner -nostdin'
 			. ' -ss ' . escapeshellarg((string)$sampleTime)
-			. ' -i ' . escapeshellarg($filePath)
+			. $this->getFfmpegInputArgs($filePath)
 			. ' -t 1 -vf cropdetect=24:16:0 -f null - 2>&1';
 
 		$output = $this->executeShellCommand($command);
@@ -5603,9 +5680,6 @@ class Transcode extends Component
 		}
 
 		$lastMatch = end($matches);
-		if (!is_array($lastMatch)) {
-			return null;
-		}
 
 		$rawCrop = [
 			(int)$lastMatch[1],
@@ -5733,8 +5807,76 @@ class Transcode extends Component
 		$settings = Transcoder::$plugin->getSettings();
 		$defaultOptions = $settings[$defaultName];
 
-		// Coalesce the passed in $options with the $defaultOptions
-		return array_merge($defaultOptions, $options);
+		// Coalesce the sanitized passed in $options with the $defaultOptions
+		return array_merge($defaultOptions, $this->sanitizeMediaOptions($options));
+	}
+
+	/**
+	 * Drop caller-supplied media options whose values are not valid for the
+	 * ffmpeg argument they end up in. Options reach shell commands and ffmpeg
+	 * filter graphs, so anything unexpected falls back to the configured default.
+	 *
+	 * @param array $options
+	 * @return array
+	 */
+	public function sanitizeMediaOptions(array $options): array
+	{
+		$settings = Transcoder::$plugin->getSettings();
+		$sanitized = [];
+
+		foreach ($options as $name => $value) {
+			if (!is_string($name)) {
+				continue;
+			}
+			if ($value === null || $value === '' || is_bool($value)) {
+				$sanitized[$name] = $value;
+				continue;
+			}
+			if ($name === 'preVideoFilters') {
+				$filters = is_string($value) ? [$value] : $value;
+				if (is_array($filters)) {
+					$sanitized[$name] = array_values(array_filter(
+						$filters,
+						static fn($filter) => is_string($filter) && self::isSafeFilterValue($filter)
+					));
+				}
+				continue;
+			}
+			if (!is_scalar($value)) {
+				Craft::warning("Transcoder: ignoring non-scalar media option `$name`.", __METHOD__);
+				continue;
+			}
+
+			$value = (string)$value;
+			$pattern = self::MEDIA_OPTION_PATTERNS[$name] ?? '/^[A-Za-z0-9_.:\-]{0,64}$/';
+			$valid = match ($name) {
+				'videoEncoder' => isset($settings['videoEncoders'][$value]),
+				'audioEncoder' => isset($settings['audioEncoders'][$value]),
+				default => (bool)preg_match($pattern, $value),
+			};
+			if (!$valid) {
+				Craft::warning("Transcoder: ignoring invalid value for media option `$name`.", __METHOD__);
+				continue;
+			}
+			$sanitized[$name] = $options[$name];
+		}
+
+		return $sanitized;
+	}
+
+	/**
+	 * Whether an ffmpeg filter string is free of characters that could escape
+	 * the filter graph or read local files through filter options.
+	 *
+	 * @param string $filter
+	 * @return bool
+	 */
+	protected static function isSafeFilterValue(string $filter): bool
+	{
+		return $filter !== ''
+			&& strlen($filter) <= 256
+			&& (bool)preg_match('/^[A-Za-z0-9_.:=,()\/*+\-\[\] ]+$/', $filter)
+			&& !preg_match('/\b(file|movie|amovie|drawtext|subtitles|ass|sendcmd|zmq)\b/i', $filter);
 	}
 
 	/**
@@ -5790,7 +5932,7 @@ class Transcode extends Component
 			&& $this->isEncodeLockStale($status['lockFile'], $status['progressFile'] ?? null)
 		) {
 			$failure = $this->getVideoEncodeFailure($status, $status);
-			$this->removeEncodeTempFiles($status['lockFile'], $status['progressFile'] ?? null);
+			$this->terminateEncodeProcess($status['lockFile'], $status['progressFile'] ?? null);
 			$status = array_merge($status, [
 				'status' => 'error',
 				'url' => '',
@@ -5871,8 +6013,8 @@ class Transcode extends Component
 			'canonicalFilename' => $canonicalVideoFile,
 			'canonicalEncodedFile' => $destVideoPath . $canonicalVideoFile,
 			'canonicalPublicUrl' => $urlBase . '/' . $canonicalVideoFile,
-			'lockFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock',
-			'progressFile' => sys_get_temp_dir() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress',
+			'lockFile' => $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destVideoFile . '.lock',
+			'progressFile' => $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $destVideoFile . '.progress',
 			'filenameCandidates' => $videoFilenameCandidates,
 		];
 	}
@@ -5904,7 +6046,7 @@ class Transcode extends Component
 		}
 
 		foreach ($candidates as $filename) {
-			$lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.lock';
+			$lockFile = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $filename . '.lock';
 			if (is_file($lockFile) && $this->isProcessRunningFromLockFile($lockFile)) {
 				return $filename;
 			}
@@ -5986,7 +6128,16 @@ class Transcode extends Component
 			}
 		}
 
-		return array_values(array_unique(array_filter($candidates)));
+		$candidates = array_values(array_unique(array_filter($candidates)));
+		if ($filePath instanceof Asset) {
+			// Never pick up an output that another Asset with the same source name owns.
+			$candidates = array_values(array_filter(
+				$candidates,
+				fn(string $candidate) => !$this->isVideoOutputOwnedByOtherAsset($filePath, $candidate)
+			));
+		}
+
+		return $candidates;
 	}
 
 	/**
@@ -6253,17 +6404,136 @@ class Transcode extends Component
 		?string $strategy = null,
 		?bool $useHashedNames = null
 	): string {
+		$isPrimary = $strategy === null && $useHashedNames === null;
 		$strategy ??= Transcoder::$plugin->getSettings()->videoFilenameStrategy ?: 'source';
 		if ($useHashedNames === null && $strategy === 'source') {
 			$useHashedNames = false;
 		}
 
-		return $this->getFilename(
+		$filename = $this->getFilename(
 			$filePath,
 			$videoOptions,
 			$this->getVideoFilenameExcludeParams($videoOptions, $strategy),
 			$useHashedNames
 		);
+
+		// Same-named sources in different volumes map to the same output path.
+		// When another Asset already owns it, fall back to the Asset-ID name.
+		if ($isPrimary && $filePath instanceof Asset && $this->isVideoOutputOwnedByOtherAsset($filePath, $filename)) {
+			return $this->getLegacyAssetIdVideoEncodedFilename($filePath, $videoOptions, $strategy, $useHashedNames);
+		}
+
+		return $filename;
+	}
+
+	/**
+	 * Return the ownership marker path for an encoded video output file.
+	 *
+	 * @param string $encodedFile
+	 * @return string
+	 */
+	protected function getVideoOutputOwnerPath(string $encodedFile): string
+	{
+		return Craft::$app->getPath()->getRuntimePath() . DIRECTORY_SEPARATOR . 'transcoder-owners'
+			. DIRECTORY_SEPARATOR . sha1(FileHelper::normalizePath($encodedFile)) . '.json';
+	}
+
+	/**
+	 * Record which Asset an encoded video output belongs to, unless another
+	 * existing Asset already owns it.
+	 *
+	 * @param Asset $asset
+	 * @param string $encodedFile
+	 * @return void
+	 */
+	protected function claimVideoOutput(Asset $asset, string $encodedFile): void
+	{
+		if (!$asset->id) {
+			return;
+		}
+
+		$ownerPath = $this->getVideoOutputOwnerPath($encodedFile);
+		$ownerId = $this->getVideoOutputOwnerId($encodedFile);
+		if ($ownerId === (int)$asset->id || ($ownerId !== null && $this->doesAssetExist($ownerId))) {
+			return;
+		}
+
+		try {
+			FileHelper::writeToFile($ownerPath, JsonHelper::encode([
+				'assetId' => (int)$asset->id,
+				'path' => $encodedFile,
+				'claimedAt' => time(),
+			]));
+		} catch (Throwable $e) {
+			Craft::warning('Transcoder could not record output ownership for asset #' . $asset->id . ': ' . $e->getMessage(), __METHOD__);
+		}
+	}
+
+	/**
+	 * Return the Asset ID recorded as owner of an encoded video output.
+	 *
+	 * @param string $encodedFile
+	 * @return int|null
+	 */
+	protected function getVideoOutputOwnerId(string $encodedFile): ?int
+	{
+		$ownerPath = $this->getVideoOutputOwnerPath($encodedFile);
+		if (!is_file($ownerPath)) {
+			return null;
+		}
+
+		$owner = JsonHelper::decodeIfJson((string)@file_get_contents($ownerPath), true);
+
+		return is_array($owner) && isset($owner['assetId']) && is_numeric($owner['assetId'])
+			? (int)$owner['assetId']
+			: null;
+	}
+
+	/**
+	 * Whether a canonical video output in this Asset's output folder belongs to
+	 * a different, still existing Asset.
+	 *
+	 * @param Asset $asset
+	 * @param string $filename
+	 * @return bool
+	 */
+	protected function isVideoOutputOwnedByOtherAsset(Asset $asset, string $filename): bool
+	{
+		if (!$asset->id) {
+			return false;
+		}
+
+		$encodedFile = $this->getMediaOutputLocation('video', $this->getSubfolderFromPath($asset))['path'] . $filename;
+		$ownerId = $this->getVideoOutputOwnerId($encodedFile);
+
+		return $ownerId !== null && $ownerId !== (int)$asset->id && $this->doesAssetExist($ownerId);
+	}
+
+	/**
+	 * Whether an absolute output path belongs to a different, still existing Asset.
+	 *
+	 * @param Asset $asset
+	 * @param string $path
+	 * @return bool
+	 */
+	protected function isOutputOwnedByOtherAsset(Asset $asset, string $path): bool
+	{
+		$ownerId = $this->getVideoOutputOwnerId($path);
+
+		return $ownerId !== null && $ownerId !== (int)$asset->id && $this->doesAssetExist($ownerId);
+	}
+
+	/**
+	 * @param int $assetId
+	 * @return bool
+	 */
+	protected function doesAssetExist(int $assetId): bool
+	{
+		if (!array_key_exists($assetId, $this->assetExistsCache)) {
+			$this->assetExistsCache[$assetId] = Asset::find()->id($assetId)->status(null)->exists();
+		}
+
+		return $this->assetExistsCache[$assetId];
 	}
 
 	/**
@@ -6295,7 +6565,7 @@ class Transcode extends Component
 	 */
 	protected function getAllowedEncodingServerNames(): array
 	{
-		$serverNames = Transcoder::$plugin->getSettings()->encodingServerNames ?? [];
+		$serverNames = Transcoder::$plugin->getSettings()->encodingServerNames;
 		if (!is_array($serverNames)) {
 			$serverNames = [$serverNames];
 		}
@@ -6496,8 +6766,8 @@ class Transcode extends Component
 			$candidate['filename'] = $filename;
 			$candidate['encodedFile'] = $encodedDir . DIRECTORY_SEPARATOR . $filename;
 			$candidate['publicUrl'] = $urlBase . '/' . $filename;
-			$candidate['lockFile'] = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.lock';
-			$candidate['progressFile'] = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.progress';
+			$candidate['lockFile'] = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $filename . '.lock';
+			$candidate['progressFile'] = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $filename . '.progress';
 			$candidates[] = $candidate;
 		}
 
@@ -6505,7 +6775,33 @@ class Transcode extends Component
 	}
 
 	/**
-	 * Remove internal filesystem paths from status responses.
+	 * Reduce status data to fields that are safe to return to untrusted
+	 * clients. ffmpeg commands, logs, paths and raw error messages are only
+	 * included when `$includeDetails` is true.
+	 *
+	 * @param array $status
+	 * @param bool $includeDetails
+	 * @return array
+	 */
+	public function getPublicStatus(array $status, bool $includeDetails = false): array
+	{
+		if ($includeDetails) {
+			return $status;
+		}
+
+		$public = array_intersect_key($status, array_flip(self::PUBLIC_STATUS_FIELDS));
+		if (!empty($status['error'])) {
+			$public['error'] = 'Transcoding failed. Contact an administrator for details.';
+		}
+		if (!empty($status['posterError'])) {
+			$public['posterError'] = 'Poster generation failed. Contact an administrator for details.';
+		}
+
+		return $public;
+	}
+
+	/**
+	 * Remove internal file locations from status data.
 	 *
 	 * @param array $status
 	 * @return array
@@ -6547,13 +6843,7 @@ class Transcode extends Component
 			return [];
 		}
 
-		$statusFiles = glob($this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . '*.json') ?: [];
-		foreach ($statusFiles as $statusFile) {
-			$status = JsonHelper::decodeIfJson((string)@file_get_contents($statusFile), true);
-			if (!is_array($status)) {
-				continue;
-			}
-
+		foreach ($this->getActiveVideoStatuses() as $status) {
 			if ($excludeKey !== null && ($status['key'] ?? null) === $excludeKey) {
 				continue;
 			}
@@ -6644,13 +6934,7 @@ class Transcode extends Component
 		$allowedFilenames = array_flip(array_filter(array_unique($filenameCandidates)));
 		$filterByFilename = !empty($allowedFilenames);
 
-		$statusFiles = glob($this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . '*.json') ?: [];
-		foreach ($statusFiles as $statusFile) {
-			$status = JsonHelper::decodeIfJson((string)@file_get_contents($statusFile), true);
-			if (!is_array($status)) {
-				continue;
-			}
-
+		foreach ($this->getActiveVideoStatuses() as $status) {
 			if ($excludeKey !== null && ($status['key'] ?? null) === $excludeKey) {
 				continue;
 			}
@@ -7191,7 +7475,7 @@ class Transcode extends Component
 			'filename' => $filename,
 			'progress' => 0,
 		];
-		$progressFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename . '.progress';
+		$progressFile = $this->getWorkDirectory() . DIRECTORY_SEPARATOR . $filename . '.progress';
 		if (!file_exists($progressFile)) {
 			return $result;
 		}
@@ -7210,11 +7494,8 @@ class Transcode extends Component
 
 		$duration = $this->durationToSeconds($matches[1]);
 		preg_match_all('/time=(.*?) bitrate/', $content, $matches);
-		$rawTime = array_pop($matches);
-		if (is_array($rawTime)) {
-			$rawTime = array_pop($rawTime);
-		}
-		$time = $this->durationToSeconds((string)$rawTime);
+		$timeMatches = $matches[1];
+		$time = $this->durationToSeconds((string)(end($timeMatches) ?: ''));
 
 		$result['duration'] = $duration;
 		$result['time'] = $time;
@@ -7232,7 +7513,7 @@ class Transcode extends Component
 	protected function durationToSeconds(string $duration): float
 	{
 		$parts = array_reverse(explode(':', $duration));
-		$seconds = (float)($parts[0] ?? 0);
+		$seconds = (float)$parts[0];
 		if (!empty($parts[1])) {
 			$seconds += (int)$parts[1] * 60;
 		}
@@ -7279,12 +7560,150 @@ class Transcode extends Component
 			if (file_put_contents($tempPath, JsonHelper::encode($status)) === false || !@rename($tempPath, $path)) {
 				throw new RuntimeException('Unable to atomically write Transcoder status file.');
 			}
+			$this->updateActiveVideoStatusIndex($key, $status);
+			if (random_int(1, self::STATUS_PRUNE_CHANCE) === 1) {
+				$this->pruneVideoStatusFiles();
+			}
 		} catch (Throwable $e) {
 			Craft::error($e->getMessage(), __METHOD__);
 		} finally {
 			if (is_file($tempPath)) {
 				@unlink($tempPath);
 			}
+		}
+	}
+
+	/**
+	 * Whether a status still represents queued or running video/poster work.
+	 *
+	 * @param array $status
+	 * @return bool
+	 */
+	protected function isActiveVideoStatus(array $status): bool
+	{
+		return in_array($status['status'] ?? null, ['queued', 'encoding'], true)
+			|| in_array($status['posterStatus'] ?? null, ['queued', 'generating'], true);
+	}
+
+	/**
+	 * Return the directory holding one marker per active status key.
+	 *
+	 * @return string
+	 */
+	protected function getActiveVideoStatusIndexDirectory(): string
+	{
+		return $this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . 'active';
+	}
+
+	/**
+	 * Keep the active-status index in step with a status write.
+	 *
+	 * @param string $key
+	 * @param array $status
+	 * @return void
+	 */
+	protected function updateActiveVideoStatusIndex(string $key, array $status): void
+	{
+		$key = preg_replace('/[^a-zA-Z0-9\\-]/', '', $key);
+		$directory = $this->getActiveVideoStatusIndexDirectory();
+		if (!is_dir($directory)) {
+			// Built from a full scan on first read.
+			return;
+		}
+
+		$marker = $directory . DIRECTORY_SEPARATOR . $key;
+		if ($this->isActiveVideoStatus($status)) {
+			@touch($marker);
+		} elseif (is_file($marker)) {
+			@unlink($marker);
+		}
+	}
+
+	/**
+	 * Return decoded statuses that may still be active, without scanning every
+	 * status file ever written.
+	 *
+	 * @return array[]
+	 */
+	protected function getActiveVideoStatuses(): array
+	{
+		$directory = $this->getActiveVideoStatusIndexDirectory();
+		if (!is_dir($directory)) {
+			$this->rebuildActiveVideoStatusIndex();
+		}
+
+		$statuses = [];
+		foreach (glob($directory . DIRECTORY_SEPARATOR . '*') ?: [] as $marker) {
+			$status = $this->readVideoStatus(basename($marker));
+			if (empty($status) || !$this->isActiveVideoStatus($status)) {
+				@unlink($marker);
+				continue;
+			}
+			$statuses[] = $status;
+		}
+
+		return $statuses;
+	}
+
+	/**
+	 * Build the active-status index from all status files (runs once after upgrade).
+	 *
+	 * @return void
+	 */
+	protected function rebuildActiveVideoStatusIndex(): void
+	{
+		$directory = $this->getActiveVideoStatusIndexDirectory();
+		try {
+			FileHelper::createDirectory($directory);
+		} catch (Throwable $e) {
+			Craft::warning('Transcoder could not create its active status index: ' . $e->getMessage(), __METHOD__);
+			return;
+		}
+
+		foreach (glob($this->getVideoStatusDirectory() . DIRECTORY_SEPARATOR . '*.json') ?: [] as $statusFile) {
+			$status = JsonHelper::decodeIfJson((string)@file_get_contents($statusFile), true);
+			if (is_array($status) && $this->isActiveVideoStatus($status)) {
+				@touch($directory . DIRECTORY_SEPARATOR . basename($statusFile, '.json'));
+			}
+		}
+	}
+
+	/**
+	 * Remove old inactive status files and unused queue lock files so the status
+	 * directory does not grow without bound. Completed (`ok`) statuses are kept.
+	 *
+	 * @return void
+	 */
+	protected function pruneVideoStatusFiles(): void
+	{
+		$cutoff = time() - self::STATUS_RETENTION_SECONDS;
+		$directory = $this->getVideoStatusDirectory();
+
+		foreach (glob($directory . DIRECTORY_SEPARATOR . '*.json') ?: [] as $statusFile) {
+			$modified = @filemtime($statusFile);
+			if ($modified === false || $modified >= $cutoff) {
+				continue;
+			}
+			$status = JsonHelper::decodeIfJson((string)@file_get_contents($statusFile), true);
+			if (!is_array($status) || (($status['status'] ?? null) !== 'ok' && !$this->isActiveVideoStatus($status))) {
+				@unlink($statusFile);
+			}
+		}
+
+		foreach (glob($directory . DIRECTORY_SEPARATOR . '*.queue.lock') ?: [] as $lockFile) {
+			$modified = @filemtime($lockFile);
+			if ($modified === false || $modified >= $cutoff) {
+				continue;
+			}
+			$handle = @fopen($lockFile, 'c');
+			if ($handle === false) {
+				continue;
+			}
+			if (flock($handle, LOCK_EX | LOCK_NB)) {
+				@unlink($lockFile);
+				flock($handle, LOCK_UN);
+			}
+			fclose($handle);
 		}
 	}
 
@@ -7371,9 +7790,85 @@ class Transcode extends Component
 			return false;
 		}
 
-		exec("kill -0 $pid 2>&1", $processState);
+		return $this->isPidRunning((int)$pid);
+	}
 
-		return count($processState) === 0;
+	/**
+	 * Return whether a process exists. A process owned by another user (for
+	 * example php-fpm vs. the queue worker) still counts as running.
+	 *
+	 * @phpstan-impure
+	 * @param int $pid
+	 * @return bool
+	 */
+	protected function isPidRunning(int $pid): bool
+	{
+		if ($pid <= 1) {
+			return false;
+		}
+
+		if (function_exists('posix_kill')) {
+			if (posix_kill($pid, 0)) {
+				return true;
+			}
+
+			// EPERM: the process exists but belongs to another user.
+			return function_exists('posix_get_last_error') && posix_get_last_error() === 1;
+		}
+
+		exec('kill -0 ' . $pid . ' 2>&1', $processState);
+		if (count($processState) === 0) {
+			return true;
+		}
+
+		return stripos(implode(' ', $processState), 'not permitted') !== false;
+	}
+
+	/**
+	 * Stop the ffmpeg worker recorded in a lock file and remove its temp files.
+	 *
+	 * The worker wrapper traps TERM, stops ffmpeg and removes its staged output.
+	 *
+	 * @param string|null $lockFile
+	 * @param string|null $progressFile
+	 * @return void
+	 */
+	public function terminateEncodeProcess(?string $lockFile, ?string $progressFile = null): void
+	{
+		if ($lockFile && is_file($lockFile)) {
+			$pid = trim((string)@file_get_contents($lockFile));
+			if ($pid !== '' && ctype_digit($pid) && $this->isPidRunning((int)$pid) && $this->isTranscoderProcess((int)$pid)) {
+				if (function_exists('posix_kill')) {
+					@posix_kill((int)$pid, 15);
+				} else {
+					exec('kill -TERM ' . (int)$pid . ' 2>&1');
+				}
+			}
+		}
+
+		$this->removeEncodeTempFiles($lockFile, $progressFile);
+	}
+
+	/**
+	 * Return the private working directory for ffmpeg lock and progress files.
+	 *
+	 * Kept under Craft's runtime path instead of the shared system temp
+	 * directory so other local users cannot pre-create or replace the files.
+	 *
+	 * @return string
+	 */
+	public function getWorkDirectory(): string
+	{
+		$directory = Craft::$app->getPath()->getRuntimePath() . DIRECTORY_SEPARATOR . 'transcoder-work';
+		if (!is_dir($directory)) {
+			try {
+				FileHelper::createDirectory($directory);
+			} catch (\Throwable $e) {
+				Craft::error('Transcoder: unable to create work directory ' . $directory . ': ' . $e->getMessage(), __METHOD__);
+			}
+		}
+
+		return $directory;
 	}
 
 	/**
@@ -7396,7 +7891,7 @@ class Transcode extends Component
 		$timestampFile = $progressFile && is_file($progressFile) ? $progressFile : $lockFile;
 		$lastUpdated = filemtime($timestampFile);
 
-		return $lastUpdated !== false && (time() - $lastUpdated) > 120;
+		return $lastUpdated !== false && (time() - $lastUpdated) > self::ENCODE_STALL_SECONDS;
 	}
 
 	/**
@@ -7420,7 +7915,10 @@ class Transcode extends Component
 			$logExcerpt
 		);
 
-		if ($fileSize >= self::MIN_VALID_VIDEO_FILE_SIZE && !$hasFailureLog) {
+		// Output is staged and only published after ffmpeg exits successfully, so
+		// the log is used for context only: benign warnings must not discard a
+		// completed encode.
+		if ($fileSize >= self::MIN_VALID_VIDEO_FILE_SIZE) {
 			return null;
 		}
 
@@ -7498,18 +7996,11 @@ class Transcode extends Component
 			$logExcerpt
 		);
 
-		if ($fileSize > 0 && !$hasFailureLog) {
+		if ($fileSize > 0) {
 			return null;
 		}
 
 		$message = Craft::t('transcoder', 'GIF encoding failed due to a server error (process crashed, ffmpeg error)');
-		if ($fileSize > 0) {
-			$message .= ' ' . Craft::t(
-				'transcoder',
-				'ffmpeg produced a suspicious output file ({size} bytes).',
-				['size' => $fileSize]
-			);
-		}
 		if ($hasFailureLog) {
 			$message .= ' ' . Craft::t('transcoder', 'The ffmpeg log contains errors.');
 		}
@@ -7566,14 +8057,83 @@ class Transcode extends Component
 	 * @param int $delay
 	 * @return mixed
 	 */
-	protected function pushQueueJob(object $job, int $delay = 0): mixed
+	protected function pushQueueJob(object $job, int $delay = 0, ?int $ttr = null): mixed
 	{
 		$queue = Craft::$app->getQueue();
-		if ($delay > 0 && method_exists($queue, 'delay')) {
-			return $queue->delay($delay)->push($job);
+		if ($ttr !== null && $ttr > 0) {
+			$queue->ttr($ttr);
+		}
+		if ($delay > 0) {
+			$queue->delay($delay);
 		}
 
 		return $queue->push($job);
+	}
+
+	/**
+	 * Return `-i` arguments for a source, restricting the protocols ffmpeg may
+	 * open while reading it. A crafted playlist or concat file uploaded as a
+	 * local asset can then not make ffmpeg fetch URLs or other local files.
+	 *
+	 * @param string $source
+	 * @return string
+	 */
+	protected function getFfmpegInputArgs(string $source): string
+	{
+		return ' -protocol_whitelist ' . $this->getFfmpegInputProtocols($source) . ' -i ' . escapeshellarg($source);
+	}
+
+	/**
+	 * @param string $source
+	 * @return string
+	 */
+	protected function getFfmpegInputProtocols(string $source): string
+	{
+		return $this->isUrl($source) ? 'http,https,tcp,tls,crypto' : 'file';
+	}
+
+	/**
+	 * Whether a PID still belongs to an ffmpeg worker started by Transcoder, so
+	 * a recycled PID of an unrelated process is never signalled.
+	 *
+	 * @param int $pid
+	 * @return bool
+	 */
+	protected function isTranscoderProcess(int $pid): bool
+	{
+		$output = [];
+		@exec('ps -o args= -p ' . $pid . ' 2>/dev/null', $output, $exitCode);
+		if ($exitCode !== 0 && empty($output)) {
+			// `ps` is unavailable or the process is gone; the caller already checked liveness.
+			return $exitCode === 127;
+		}
+
+		return str_contains(implode(' ', $output), 'ffmpeg');
+	}
+
+	/**
+	 * Wrap an ffmpeg command so it writes to a staged file that is only moved
+	 * to its final name after a successful encode, runs in the background and
+	 * echoes the worker PID. Terminating the worker also stops ffmpeg and
+	 * removes the staged file.
+	 *
+	 * @param string $ffmpegCommand
+	 * @param string $stagedFile
+	 * @param string $finalFile
+	 * @param string $progressFile
+	 * @return string
+	 */
+	protected function buildStagedFfmpegWorkerCommand(string $ffmpegCommand, string $stagedFile, string $finalFile, string $progressFile): string
+	{
+		$workerCommand = 'staged_file=' . escapeshellarg($stagedFile)
+			. '; ffmpeg_pid=; '
+			. 'trap \'trap - HUP INT TERM; if [ -n "$ffmpeg_pid" ]; then kill -TERM "$ffmpeg_pid" 2>/dev/null; wait "$ffmpeg_pid" 2>/dev/null; fi; rm -f "$staged_file"; exit 143\' HUP INT TERM; '
+			. $ffmpegCommand
+			. ' & ffmpeg_pid=$!; wait "$ffmpeg_pid"; result=$?; trap - HUP INT TERM; '
+			. 'if [ "$result" -eq 0 ]; then mv -f "$staged_file" ' . escapeshellarg($finalFile)
+			. '; result=$?; fi; if [ "$result" -ne 0 ]; then rm -f "$staged_file"; fi; exit "$result"';
+
+		return '( ' . $workerCommand . ' ) 1> ' . escapeshellarg($progressFile) . ' 2>&1 & echo $!';
 	}
 
 	/**

@@ -50,8 +50,10 @@
         warning: macros.configWarning('queueVideosOnSave', 'transcoder'),
         id: 'queueVideosOnSave',
         name: 'queueVideosOnSave',
-        on: settings.queueVideosOnSave or settings.queueVideosOnEntrySave,
+        on: settings.queueVideosOnSave,
     }) }}
+    {# Clear the deprecated queueVideosOnEntrySave alias (folded into queueVideosOnSave on load) so this toggle can switch it off #}
+    {{ hiddenInput('queueVideosOnEntrySave', '') }}
 
     {{ forms.textField({
         label: 'Upload inspection retries'|t('transcoder'),
@@ -457,8 +459,10 @@
         warning: macros.configWarning('queueGifsOnSave', 'transcoder'),
         id: 'queueGifsOnSave',
         name: 'queueGifsOnSave',
-        on: settings.queueGifsOnSave or settings.queueGifsOnEntrySave,
+        on: settings.queueGifsOnSave,
     }) }}
+    {# Clear the deprecated queueGifsOnEntrySave alias (folded into queueGifsOnSave on load) so this toggle can switch it off #}
+    {{ hiddenInput('queueGifsOnEntrySave', '') }}
 
     {{ forms.textField({
         label: 'GIF queue delay'|t('transcoder'),

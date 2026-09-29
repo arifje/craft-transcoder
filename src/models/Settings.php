@@ -10,8 +10,11 @@
 
 namespace nystudio107\transcoder\models;
 
+use Craft;
 use craft\base\Model;
 use craft\validators\ArrayValidator;
+use ReflectionNamedType;
+use ReflectionProperty;
 
 /**
  * Transcoder Settings model
@@ -22,6 +25,45 @@ use craft\validators\ArrayValidator;
  */
 class Settings extends Model
 {
+    // Const Properties
+    // =========================================================================
+
+    /**
+     * Characters that must never appear in values concatenated into shell
+     * commands: ; | & ` $ < > and line breaks.
+     */
+    public const SHELL_METACHARACTER_PATTERN = '/[;|&`$<>\r\n]/';
+
+    /**
+     * Allowed characters for the ffmpeg/ffprobe binary paths.
+     */
+    public const BINARY_PATH_PATTERN = '/^[A-Za-z0-9_.\/\-]+$/';
+
+    /**
+     * Keys every video encoder preset must define.
+     */
+    public const VIDEO_ENCODER_KEYS = ['fileSuffix', 'fileFormat', 'videoCodec', 'videoCodecOptions', 'threads'];
+
+    /**
+     * Keys every audio encoder preset must define.
+     */
+    public const AUDIO_ENCODER_KEYS = ['fileSuffix', 'fileFormat', 'audioCodec', 'audioCodecOptions', 'threads'];
+
+    /**
+     * Valid watermark positions (mirrors Transcode::WATERMARK_POSITIONS).
+     */
+    public const WATERMARK_POSITIONS = [
+        'top-left',
+        'top-center',
+        'top-right',
+        'center-left',
+        'center',
+        'center-right',
+        'bottom-left',
+        'bottom-center',
+        'bottom-right',
+    ];
+
     // Public Properties
     // =========================================================================
 
@@ -30,7 +72,6 @@ class Settings extends Model
      *
      * @var string
      */
-
     public string $ffmpegPath = '/usr/bin/ffmpeg';
 
     /**
@@ -216,14 +257,15 @@ class Settings extends Model
      * @var bool
      */
     public bool $createSubfolders = true;
-	
-	/**
-	 * get the subfolder from an url segment if a url is pased as argument instead of an asset object 
-	 * set to false if disabled
-	 * @var bool
-	 */
-	public int|bool $subfolderUrlSegment = false;
-	
+
+    /**
+     * 1-based URL path segment to use as the output subfolder when a URL
+     * (instead of an Asset) is passed in; false disables it
+     *
+     * @var int|bool
+     */
+    public int|bool $subfolderUrlSegment = false;
+
     /**
      * clear caches when somebody clears all caches from the CP?
      *
@@ -535,7 +577,7 @@ class Settings extends Model
         'audioSampleRate' => '44100',
         'audioChannels' => '2',
         'synchronous' => false,
-        'stripMetadata' => false
+        'stripMetadata' => false,
     ];
 
     /**
@@ -550,6 +592,9 @@ class Settings extends Model
         'videoCodec' => '',
         'videoCodecOptions' => '',
     ];
+
+    // Public Methods
+    // =========================================================================
 
     /**
      * @inheritdoc
@@ -571,42 +616,256 @@ class Settings extends Model
         parent::__construct($config);
     }
 
-    // Public Methods
+    /**
+     * Craft's checkboxSelect and editableTable inputs post an empty string when
+     * nothing is selected; map that to [] for array-typed settings so the
+     * assignment doesn't throw a TypeError. The deprecated
+     * queueVideosOnEntrySave/queueGifsOnEntrySave aliases are folded into
+     * their canonical settings so the CP toggles reflect effective behavior.
+     *
+     * @inheritdoc
+     */
+    public function setAttributes($values, $safeOnly = true): void
+    {
+        foreach ($values as $name => $value) {
+            if ($value === '' && is_string($name) && $this->_isArrayTypedProperty($name)) {
+                $values[$name] = [];
+            }
+        }
+
+        parent::setAttributes($values, $safeOnly);
+
+        if ($this->queueVideosOnEntrySave) {
+            $this->queueVideosOnSave = true;
+        }
+        if ($this->queueGifsOnEntrySave) {
+            $this->queueGifsOnSave = true;
+        }
+    }
+
+    /**
+     * Validate that a binary path contains only safe path characters.
+     *
+     * @param string $attribute
+     */
+    public function validateBinaryPath(string $attribute): void
+    {
+        $value = $this->$attribute;
+        if (!is_string($value) || !preg_match(self::BINARY_PATH_PATTERN, $value)) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} may only contain letters, numbers, and the characters _ . / -', ['attribute' => $attribute]));
+        }
+    }
+
+    /**
+     * Validate that a string (or every scalar in a nested array) contains no
+     * shell metacharacters.
+     *
+     * @param string $attribute
+     */
+    public function validateNoShellMetacharacters(string $attribute): void
+    {
+        $path = $this->_findShellMetacharacters($this->$attribute, $attribute);
+        if ($path !== null) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must not contain shell metacharacters (; | & ` $ < > or line breaks).', ['attribute' => $path]));
+        }
+    }
+
+    /**
+     * Validate a list of transcoder paths or URLs keyed by media type.
+     *
+     * @param string $attribute
+     */
+    public function validateMediaTypeLocations(string $attribute): void
+    {
+        $locations = $this->$attribute;
+        if (!is_array($locations) || !isset($locations['default']) || !is_string($locations['default']) || $locations['default'] === '') {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must be an array with a non-empty “default” entry.', ['attribute' => $attribute]));
+            return;
+        }
+
+        foreach ($locations as $key => $location) {
+            if (!is_string($location)) {
+                $this->addError($attribute, Craft::t('transcoder', '{attribute} must be a string.', ['attribute' => "$attribute.$key"]));
+            }
+        }
+    }
+
+    /**
+     * Validate a video or audio encoder preset map.
+     *
+     * @param string $attribute
+     */
+    public function validateEncoders(string $attribute): void
+    {
+        $encoders = $this->$attribute;
+        $requiredKeys = $attribute === 'audioEncoders' ? self::AUDIO_ENCODER_KEYS : self::VIDEO_ENCODER_KEYS;
+        if (!is_array($encoders) || empty($encoders)) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must be a non-empty array of encoder presets.', ['attribute' => $attribute]));
+            return;
+        }
+
+        foreach ($encoders as $handle => $encoder) {
+            if (!is_array($encoder)) {
+                $this->addError($attribute, Craft::t('transcoder', '{attribute} must be an array.', ['attribute' => "$attribute.$handle"]));
+                continue;
+            }
+            foreach ($requiredKeys as $key) {
+                if (!array_key_exists($key, $encoder) || !is_scalar($encoder[$key])) {
+                    $this->addError($attribute, Craft::t('transcoder', '{attribute} must be set.', ['attribute' => "$attribute.$handle.$key"]));
+                }
+            }
+        }
+    }
+
+    /**
+     * Validate a default options array, including that its encoder handle
+     * references a configured encoder preset.
+     *
+     * @param string $attribute
+     * @param array|null $params
+     */
+    public function validateDefaultOptions(string $attribute, ?array $params): void
+    {
+        $options = $this->$attribute;
+        if (!is_array($options)) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must be an array.', ['attribute' => $attribute]));
+            return;
+        }
+
+        $encoderKey = $params['encoderKey'] ?? null;
+        $encodersAttribute = $params['encoders'] ?? null;
+        if ($encoderKey === null || $encodersAttribute === null) {
+            return;
+        }
+
+        $encoder = $options[$encoderKey] ?? null;
+        $encoders = $this->$encodersAttribute;
+        if (!is_string($encoder) || !is_array($encoders) || !isset($encoders[$encoder])) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must name a preset defined in {encoders}.', ['attribute' => "$attribute.$encoderKey", 'encoders' => $encodersAttribute]));
+        }
+    }
+
+    /**
+     * Validate a value that must be an integer (>= 0) or empty.
+     *
+     * @param string $attribute
+     */
+    public function validateOptionalDimension(string $attribute): void
+    {
+        $value = $this->$attribute;
+        if ($value === '' || $value === null) {
+            return;
+        }
+
+        if (filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) === false) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must be a whole number of pixels, or empty.', ['attribute' => $attribute]));
+        }
+    }
+
+    /**
+     * Validate that every watermark reposition position is a known position.
+     *
+     * @param string $attribute
+     */
+    public function validateWatermarkPositions(string $attribute): void
+    {
+        $positions = $this->$attribute;
+
+        if (!is_array($positions)) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must be an array of positions.', ['attribute' => $attribute]));
+            return;
+        }
+
+        foreach ($positions as $position) {
+            if (!in_array($position, self::WATERMARK_POSITIONS, true)) {
+                $this->addError($attribute, Craft::t('transcoder', '{attribute} contains an invalid position.', ['attribute' => $attribute]));
+                return;
+            }
+        }
+    }
+
+    /**
+     * Validate the URL segment used as an output subfolder: false or an
+     * integer >= 1.
+     *
+     * @param string $attribute
+     */
+    public function validateSubfolderUrlSegment(string $attribute): void
+    {
+        $value = $this->$attribute;
+        if ($value === false || $value === '' || $value === null || $value === '0' || $value === 0) {
+            return;
+        }
+
+        if (filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) === false) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must be false or a URL segment number (1 or higher).', ['attribute' => $attribute]));
+        }
+    }
+
+    /**
+     * Validate the video poster format map editable in the CP.
+     *
+     * @param string $attribute
+     */
+    public function validateVideoPosterFormats(string $attribute): void
+    {
+        $formats = $this->$attribute;
+        if (!is_array($formats)) {
+            $this->addError($attribute, Craft::t('transcoder', '{attribute} must be an array.', ['attribute' => $attribute]));
+            return;
+        }
+
+        foreach ($formats as $handle => $format) {
+            if (!is_array($format)) {
+                $this->addError($attribute, Craft::t('transcoder', '{attribute} must be an array.', ['attribute' => "$attribute.$handle"]));
+                continue;
+            }
+            foreach (['width', 'height', 'timeInSecs'] as $key) {
+                $value = $format[$key] ?? '';
+                if ($value !== '' && !is_numeric($value)) {
+                    $this->addError($attribute, Craft::t('transcoder', '{attribute} must be a number or empty.', ['attribute' => "$attribute.$handle.$key"]));
+                }
+            }
+        }
+    }
+
+    // Protected Methods
     // =========================================================================
 
     /**
      * @inheritdoc
      */
-    public function rules(): array
+    protected function defineRules(): array
     {
-        return [
-            ['ffmpegPath', 'string'],
-            ['ffmpegPath', 'required'],
-            ['ffprobePath', 'string'],
-            ['ffprobePath', 'required'],
-            ['ffprobeOptions', 'string'],
-            ['ffprobeOptions', 'safe'],
-            ['transcoderPaths', ArrayValidator::class],
-            ['transcoderPaths', 'required'],
-            ['transcoderUrls', ArrayValidator::class],
+        $rules = parent::defineRules();
+
+        return array_merge($rules, [
+            [['ffmpegPath', 'ffprobePath'], 'required'],
+            [['ffmpegPath', 'ffprobePath', 'ffprobeOptions'], 'string'],
+            [['ffmpegPath', 'ffprobePath'], 'validateBinaryPath'],
+            [[
+                'ffprobeOptions',
+                'videoEncoders',
+                'audioEncoders',
+                'defaultVideoOptions',
+                'defaultThumbnailOptions',
+                'defaultAudioOptions',
+                'defaultGifOptions',
+                'autoEncodeVideoOptions',
+                'autoEncodeGifOptions',
+                'autoEncodeEncodingOptions',
+                'videoPosterFormats',
+            ], 'validateNoShellMetacharacters', 'skipOnEmpty' => true],
+            [['transcoderPaths', 'transcoderUrls'], 'required'],
+            [['transcoderPaths', 'transcoderUrls'], 'validateMediaTypeLocations'],
             ['enableDownloadFileEndpoint', 'boolean'],
             ['enableVideoEncoding', 'boolean'],
             ['autoCropVideoBlackBars', 'boolean'],
             ['enableVideoWatermark', 'boolean'],
             ['videoWatermarkAsset', 'safe'],
             [['videoWatermarkPath', 'videoWatermarkUrl'], 'safe'],
-            [['videoWatermarkWidth', 'videoWatermarkHeight'], 'safe'],
-            ['videoWatermarkPosition', 'in', 'range' => [
-                'top-left',
-                'top-center',
-                'top-right',
-                'center-left',
-                'center',
-                'center-right',
-                'bottom-left',
-                'bottom-center',
-                'bottom-right',
-            ]],
+            [['videoWatermarkWidth', 'videoWatermarkHeight'], 'validateOptionalDimension', 'skipOnEmpty' => false],
+            ['videoWatermarkPosition', 'in', 'range' => self::WATERMARK_POSITIONS],
             [[
                 'videoWatermarkPaddingTop',
                 'videoWatermarkPaddingRight',
@@ -632,7 +891,7 @@ class Settings extends Model
                 'pulse',
             ]],
             ['videoWatermarkReposition', 'boolean'],
-            ['videoWatermarkRepositionPositions', ArrayValidator::class],
+            ['videoWatermarkRepositionPositions', 'validateWatermarkPositions', 'skipOnEmpty' => false],
             ['enableVideoPosters', 'boolean'],
             ['preventVideoPosterBlackBars', 'boolean'],
             ['enableGifEncoding', 'boolean'],
@@ -640,6 +899,7 @@ class Settings extends Model
             ['useHashedNames', 'boolean'],
             ['videoFilenameStrategy', 'in', 'range' => ['source', 'options']],
             ['createSubfolders', 'boolean'],
+            ['subfolderUrlSegment', 'validateSubfolderUrlSegment', 'skipOnEmpty' => false],
             ['clearCaches', 'boolean'],
             [['queueVideosOnSave', 'queueVideosOnEntrySave'], 'boolean'],
             [['mediaInspectionMaxRetries', 'mediaInspectionRetryDelaySeconds'], 'integer'],
@@ -672,12 +932,62 @@ class Settings extends Model
             ['gifQueueDelaySeconds', 'number', 'min' => 0],
             [['videoPosterMaxRetries', 'videoPosterRetryDelaySeconds', 'videoPosterQueueDelaySeconds'], 'integer'],
             [['videoPosterMaxRetries', 'videoPosterRetryDelaySeconds', 'videoPosterQueueDelaySeconds'], 'number', 'min' => 0],
-            ['videoPosterFormats', ArrayValidator::class],
-            ['videoEncoders', 'required'],
-            ['audioEncoders', 'required'],
-            ['defaultVideoOptions', 'required'],
-            ['defaultThumbnailOptions', 'required'],
-            ['defaultAudioOptions', 'required'],
-        ];
+            ['videoPosterFormats', 'validateVideoPosterFormats'],
+            [['videoEncoders', 'audioEncoders'], 'required'],
+            [['videoEncoders', 'audioEncoders'], 'validateEncoders'],
+            [['defaultVideoOptions', 'defaultThumbnailOptions', 'defaultAudioOptions', 'defaultGifOptions'], 'required'],
+            ['defaultVideoOptions', 'validateDefaultOptions', 'params' => ['encoderKey' => 'videoEncoder', 'encoders' => 'videoEncoders']],
+            ['defaultThumbnailOptions', 'validateDefaultOptions'],
+            ['defaultAudioOptions', 'validateDefaultOptions', 'params' => ['encoderKey' => 'audioEncoder', 'encoders' => 'audioEncoders']],
+            ['defaultGifOptions', 'validateDefaultOptions', 'params' => ['encoderKey' => 'videoEncoder', 'encoders' => 'videoEncoders']],
+        ]);
+    }
+
+    // Private Methods
+    // =========================================================================
+
+    /**
+     * Return the dotted path of the first value containing a shell
+     * metacharacter, or null if the value is clean.
+     *
+     * @param mixed $value
+     * @param string $path
+     * @return string|null
+     */
+    private function _findShellMetacharacters(mixed $value, string $path): ?string
+    {
+        if (is_array($value)) {
+            foreach ($value as $key => $item) {
+                $found = $this->_findShellMetacharacters($item, "$path.$key");
+                if ($found !== null) {
+                    return $found;
+                }
+            }
+
+            return null;
+        }
+
+        if (is_string($value) && preg_match(self::SHELL_METACHARACTER_PATTERN, $value)) {
+            return $path;
+        }
+
+        return null;
+    }
+
+    /**
+     * Return whether a public property is declared with the `array` type.
+     *
+     * @param string $name
+     * @return bool
+     */
+    private function _isArrayTypedProperty(string $name): bool
+    {
+        if (!property_exists($this, $name)) {
+            return false;
+        }
+
+        $type = (new ReflectionProperty($this, $name))->getType();
+
+        return $type instanceof ReflectionNamedType && $type->getName() === 'array';
     }
 }

@@ -14,6 +14,7 @@ use Craft;
 use craft\elements\Asset;
 use craft\helpers\StringHelper;
 use craft\queue\BaseJob;
+use nystudio107\transcoder\errors\RetryableEncodingException;
 use nystudio107\transcoder\Transcoder;
 use Throwable;
 
@@ -25,7 +26,6 @@ class EncodeVideo extends BaseJob
     use CapacityWaitTrait;
 
     private const POLL_INTERVAL_SECONDS = 2;
-    private const QUEUE_TIMEOUT_GRACE_SECONDS = 5;
 
     /**
      * @var int|null
@@ -77,6 +77,7 @@ class EncodeVideo extends BaseJob
      */
     public function execute($queue): void
     {
+        $this->startExecutionClock();
         $asset = Asset::find()->id($this->assetId)->one();
 
         if (!$asset instanceof Asset) {
@@ -90,19 +91,22 @@ class EncodeVideo extends BaseJob
             return;
         }
 
-        $slot = null;
         $settings = Transcoder::$plugin->getSettings();
-        if (Transcoder::$plugin->transcode->isRuntimeEncodingEnabled() && $settings->enableVideoEncoding) {
-            $slot = Transcoder::$plugin->encodingConcurrency->acquire(
-                'video',
-                (int)$settings->videoMaxConcurrentJobs,
-                'video encode',
-                $asset->id
-            );
-            if ($slot === null) {
-                $this->deferForCapacity($queue, $asset);
-                return;
-            }
+        if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled() || !$settings->enableVideoEncoding) {
+            // Check before acquiring a slot or copying a remote source.
+            $this->markDisabled($queue, $asset);
+            return;
+        }
+
+        $slot = Transcoder::$plugin->encodingConcurrency->acquire(
+            'video',
+            (int)$settings->videoMaxConcurrentJobs,
+            'video encode',
+            $asset->id
+        );
+        if ($slot === null) {
+            $this->deferForCapacity($queue, $asset);
+            return;
         }
 
         try {
@@ -110,7 +114,7 @@ class EncodeVideo extends BaseJob
                 $this->executeWithSource($queue, $asset, $sourceError);
             });
         } finally {
-            $slot?->release();
+            $slot->release();
         }
     }
 
@@ -124,7 +128,7 @@ class EncodeVideo extends BaseJob
         $delay = max(1, (int)$settings->encodingConcurrencyRetryDelaySeconds);
         $queueTtrSeconds = max(1, $this->queueTtrSeconds);
         $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
-        $jobId = Craft::$app->getQueue()->ttr($queueTtrSeconds)->delay($delay)->push(new self([
+        $jobId = $this->pushCapacityReplacement(new self([
             'assetId' => $asset->id,
             'ownerTitle' => $this->ownerTitle,
             'videoOptions' => $this->videoOptions,
@@ -134,7 +138,7 @@ class EncodeVideo extends BaseJob
             'maxRetries' => $this->maxRetries,
             'retryDelaySeconds' => $this->retryDelaySeconds,
             'capacityWaitStartedAt' => $this->capacityWaitStartedAt,
-        ]));
+        ]), $delay, $queueTtrSeconds);
         $message = Craft::t('transcoder', 'Waiting for an available video encoding slot; retrying in {seconds}s', [
             'seconds' => $delay,
         ]);
@@ -161,28 +165,59 @@ class EncodeVideo extends BaseJob
     }
 
     /**
+     * @inheritdoc
+     */
+    protected function onCapacityWaitExpired(string $message): void
+    {
+        $asset = Asset::find()->id($this->assetId)->one();
+        if (!$asset instanceof Asset) {
+            return;
+        }
+
+        Transcoder::$plugin->transcode->writeVideoStatus(
+            $asset,
+            $this->videoOptions,
+            [
+                'status' => 'error',
+                'url' => '',
+                'progress' => 0,
+                'error' => $message,
+            ],
+            $this->encodingOptions
+        );
+    }
+
+    /**
+     * Record that encoding is switched off and finish without error.
+     */
+    private function markDisabled(mixed $queue, Asset $asset): void
+    {
+        Transcoder::$plugin->transcode->writeVideoStatus(
+            $asset,
+            $this->videoOptions,
+            [
+                'status' => 'disabled',
+                'url' => '',
+                'progress' => 0,
+            ],
+            $this->encodingOptions
+        );
+        $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+    }
+
+    /**
      * Execute with a directly reachable source or a temporary Craft-managed copy.
      */
     private function executeWithSource(mixed $queue, Asset $asset, ?Throwable $sourceError): void
     {
         if (!Transcoder::$plugin->transcode->isRuntimeEncodingEnabled()) {
-            Transcoder::$plugin->transcode->writeVideoStatus(
-                $asset,
-                $this->videoOptions,
-                [
-                    'status' => 'disabled',
-                    'url' => '',
-                    'progress' => 0,
-                ],
-                $this->encodingOptions
-            );
-            $this->setProgress($queue, 1, Craft::t('transcoder', 'Encoding disabled'));
+            $this->markDisabled($queue, $asset);
             return;
         }
 
         try {
             if ($sourceError !== null) {
-                throw new \RuntimeException(
+                throw new RetryableEncodingException(
                     Craft::t('transcoder', 'Original video source is not reachable yet'),
                     0,
                     $sourceError
@@ -193,7 +228,7 @@ class EncodeVideo extends BaseJob
 
             if ($settings->enableVideoEncoding) {
                 if (!Transcoder::$plugin->transcode->isAssetOriginalAvailable($asset)) {
-                    throw new \RuntimeException(Craft::t('transcoder', 'Original video source is not reachable yet'));
+                    throw new RetryableEncodingException(Craft::t('transcoder', 'Original video source is not reachable yet'));
                 }
 
                 $this->setProgress($queue, 0, Craft::t('transcoder', 'Starting video encode'));
@@ -210,7 +245,7 @@ class EncodeVideo extends BaseJob
                     $this->encodingOptions
                 );
 
-                $response = Transcoder::$plugin->transcode->getVideoUrl($asset, $this->videoOptions, true, $this->encodingOptions);
+                $response = Transcoder::$plugin->transcode->startQueuedVideoEncode($asset, $this->videoOptions, $this->encodingOptions);
                 $status = json_decode($response, true);
 
                 if (is_array($status) && Transcoder::$plugin->transcode->isOriginalVideoMissingStatus($status)) {
@@ -226,12 +261,20 @@ class EncodeVideo extends BaseJob
                     );
                 }
 
-                $this->waitForVideoEncode($queue, $asset, is_array($status) ? $status : []);
+                if (!$this->waitForVideoEncode($queue, $asset, is_array($status) ? $status : [])) {
+                    return;
+                }
             }
 
             $this->setProgress($queue, 1, Craft::t('transcoder', 'Video encode complete'));
         } catch (Throwable $e) {
             Craft::error($e->getMessage(), __METHOD__);
+            // Never leave ffmpeg running once this job gives up its slot.
+            try {
+                Transcoder::$plugin->transcode->terminateVideoEncode($asset, $this->videoOptions);
+            } catch (Throwable $terminateError) {
+                Craft::warning('Transcoder could not stop ffmpeg for asset #' . $asset->id . ': ' . $terminateError->getMessage(), __METHOD__);
+            }
             if (Transcoder::$plugin->getSettings()->enableVideoEncoding) {
                 $status = [
                     'status' => 'error',
@@ -271,24 +314,23 @@ class EncodeVideo extends BaseJob
      * @param mixed $queue
      * @param Asset $asset
      * @param array $initialStatus
-     * @return void
+     * @return bool true when the encode completed, false when encoding was disabled
      */
-    protected function waitForVideoEncode(mixed $queue, Asset $asset, array $initialStatus): void
+    protected function waitForVideoEncode(mixed $queue, Asset $asset, array $initialStatus): bool
     {
         if (($initialStatus['status'] ?? null) === 'ok') {
             if (!Transcoder::$plugin->transcode->isVideoStatusCurrentForAsset($asset, $this->videoOptions, $initialStatus)) {
-                throw new \RuntimeException(Craft::t('transcoder', 'Asset filename changed during encoding; retrying with the current source filename'));
+                throw new RetryableEncodingException(Craft::t('transcoder', 'Asset filename changed during encoding; retrying with the current source filename'));
             }
             $this->setProgress($queue, 1, Craft::t('transcoder', 'Video encode complete'));
-            return;
+            return true;
         }
 
         if (($initialStatus['status'] ?? null) === 'error') {
             throw new \RuntimeException($this->formatErrorMessage($initialStatus));
         }
 
-        $timeoutSeconds = max(1, $this->queueTtrSeconds - self::QUEUE_TIMEOUT_GRACE_SECONDS);
-        $deadline = time() + $timeoutSeconds;
+        $deadline = $this->getExecutionDeadline($this->queueTtrSeconds);
         while (time() < $deadline) {
             $status = Transcoder::$plugin->transcode->getVideoStatusData($asset, $this->videoOptions, $this->encodingOptions);
             $state = $status['status'] ?? 'unknown';
@@ -297,14 +339,27 @@ class EncodeVideo extends BaseJob
 
             if ($state === 'ok') {
                 if (!Transcoder::$plugin->transcode->isVideoStatusCurrentForAsset($asset, $this->videoOptions, $status)) {
-                    throw new \RuntimeException(Craft::t('transcoder', 'Asset filename changed during encoding; retrying with the current source filename'));
+                    throw new RetryableEncodingException(Craft::t('transcoder', 'Asset filename changed during encoding; retrying with the current source filename'));
                 }
                 $this->setProgress($queue, 1, Craft::t('transcoder', 'Video encode complete'));
-                return;
+                return true;
             }
 
             if ($state === 'error') {
                 throw new \RuntimeException($this->formatErrorMessage($status));
+            }
+
+            if ($state === 'disabled') {
+                Transcoder::$plugin->transcode->terminateVideoEncode($asset, $this->videoOptions);
+                $this->markDisabled($queue, $asset);
+                return false;
+            }
+
+            if (!in_array($state, ['encoding', 'queued'], true)) {
+                // `pending`/`unknown`: ffmpeg is no longer tracked for this output.
+                throw new RetryableEncodingException(Craft::t('transcoder', 'Video encoding process crashed (status {status})', [
+                    'status' => $state,
+                ]));
             }
 
             Transcoder::$plugin->transcode->writeVideoStatus($asset, $this->videoOptions, $status, $this->encodingOptions);
@@ -317,8 +372,11 @@ class EncodeVideo extends BaseJob
             sleep(self::POLL_INTERVAL_SECONDS);
         }
 
-        throw new \RuntimeException(Craft::t('transcoder', 'Video encoding timed out after {seconds} seconds', [
-            'seconds' => $timeoutSeconds,
+        // Stop ffmpeg before the worker's TTR hard-kills this job.
+        Transcoder::$plugin->transcode->terminateVideoEncode($asset, $this->videoOptions);
+
+        throw new RetryableEncodingException(Craft::t('transcoder', 'Video encoding timed out after {seconds} seconds', [
+            'seconds' => $this->queueTtrSeconds,
         ]));
     }
 
@@ -392,6 +450,10 @@ class EncodeVideo extends BaseJob
      */
     protected function shouldRetry(Throwable $e, array $status): bool
     {
+        if ($e instanceof RetryableEncodingException) {
+            return true;
+        }
+
         $message = strtolower($e->getMessage() . ' ' . $this->formatErrorMessage($status));
         $retryableNeedles = [
             'process crashed',

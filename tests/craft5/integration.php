@@ -84,6 +84,9 @@ $plugin = new Transcoder('transcoder', $app, array_merge(Transcoder::config(), [
         'videoPosterFormats' => [['handle' => 'wide', 'width' => 160, 'height' => 90, 'timeInSecs' => 3]],
         'transcoderPaths' => ['default' => $root . '/output/'],
         'transcoderUrls' => ['default' => 'https://transcoder.test/' . $run . '/output/'],
+        // Override for hosts where FFmpeg is not in /usr/bin (e.g. Homebrew).
+        'ffmpegPath' => getenv('TRANSCODER_FFMPEG_PATH') ?: '/usr/bin/ffmpeg',
+        'ffprobePath' => getenv('TRANSCODER_FFPROBE_PATH') ?: '/usr/bin/ffprobe',
     ],
 ]));
 check($plugin->getSettings()->validate(), 'Settings validate on Craft 5');
@@ -208,9 +211,14 @@ $consoleResponse = $app->getResponse();
 $app->set('request', new craft\web\Request(['cookieValidationKey' => 'test-only-key']));
 $app->set('response', new craft\web\Response());
 $app->getView()->setTemplateMode(craft\web\View::TEMPLATE_MODE_CP);
-$html = $app->getView()->renderTemplate('transcoder/settings', ['plugin' => $plugin, 'settings' => $plugin->getSettings()]);
+$html = $app->getView()->renderTemplate('transcoder/_settings', ['plugin' => $plugin, 'settings' => $plugin->getSettings()]);
 check(str_contains($html, 'videoWatermarkPath') && str_contains($html, 'tab-video-posters'), 'Craft 5 settings template renders');
 check(str_contains(EncodingUtility::contentHtml(), 'transcoder/runtime-settings/save'), 'Runtime utility template renders');
+$controller = new nystudio107\transcoder\controllers\DefaultController('default', $plugin);
+$anonymous = (new ReflectionProperty($controller, 'allowAnonymous'))->getValue($controller);
+foreach (['progress', 'video-status', 'gif-status', 'download-file'] as $actionId) {
+    check(isset($anonymous[$actionId]), "Controller action $actionId is registered for anonymous access checks");
+}
 $app->set('request', $consoleRequest);
 $app->set('response', $consoleResponse);
 

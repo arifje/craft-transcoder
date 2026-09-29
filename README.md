@@ -1,6 +1,6 @@
-[![Scrutinizer Code Quality](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/badges/quality-score.png?b=v4)](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/?branch=v4) [![Code Coverage](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/badges/coverage.png?b=v4)](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/?branch=v4) [![Build Status](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/badges/build.png?b=v4)](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/build-status/v4) [![Code Intelligence Status](https://scrutinizer-ci.com/g/nystudio107/craft-transcoder/badges/code-intelligence.svg?b=v4)](https://scrutinizer-ci.com/code-intelligence)
-
 # Transcoder plugin for Craft CMS 5
+
+> **Fork notice:** this is the [arifje/craft-transcoder](https://github.com/arifje/craft-transcoder) fork of [nystudio107/craft-transcoder](https://github.com/nystudio107/craft-transcoder), maintained on the `skoften-codex-v5` branch. The Composer package name stays `nystudio107/craft-transcoder` so existing installs keep resolving; report issues for this fork at [github.com/arifje/craft-transcoder/issues](https://github.com/arifje/craft-transcoder/issues), not upstream.
 
 Transcode video & audio files to various formats, convert GIFs to mp4, generate video posters, and optionally watermark encoded videos.
 
@@ -37,7 +37,7 @@ To install Transcoder, follow these steps:
 
 You can also install Transcoder via the **Plugin Store** in the Craft Control Panel.
 
-For the Craft 5 upgrade checklist, compatibility audit, and test instructions, see [Craft 5 compatibility](docs/craft5-compatibility.md). Version 5.0.1 includes the queue-recovery fixes; Craft 4 sites must use the 4.x release line instead.
+For the Craft 5 upgrade checklist, compatibility audit, and test instructions, see [Craft 5 compatibility](docs/craft5-compatibility.md). Version 5.0.3 is the current release of this line; Craft 4 sites must use the 4.x release line instead.
 
 To install `ffmpeg` on Centos 6/7, you can follow the guide [How to Install FFmpeg on CentOS](https://www.vultr.com/docs/how-to-install-ffmpeg-on-centos)
 
@@ -46,6 +46,8 @@ If you have managed hosting, contact your sysadmin to get `ffmpeg` installed.
 ## Features
 
 Settings are split into separate Control Panel tabs for video encoding, video posters, GIF encoding, and watermarks.
+
+Settings that end up in ffmpeg/ffprobe shell commands or control output locations can only be set in `config/transcoder.php` (copy `src/config.php` as a starting point): `ffmpegPath`, `ffprobePath`, `ffprobeOptions`, `videoEncoders`, `audioEncoders`, `defaultVideoOptions`, `defaultThumbnailOptions`, `defaultAudioOptions`, `defaultGifOptions`, `autoEncodeVideoOptions`, `autoEncodeGifOptions`, `autoEncodeEncodingOptions`, `transcoderPaths`, and `transcoderUrls`. A Control Panel settings save always keeps their configured values. Binary paths may only contain letters, numbers, `_`, `.`, `/`, and `-`; option strings must not contain `;`, `|`, `&`, `` ` ``, `$`, `<`, `>`, or line breaks.
 
 ### Video Encoding
 
@@ -133,7 +135,7 @@ $result = \nystudio107\transcoder\Transcoder::$plugin
 
 New video filenames are controlled only by **Video filename strategy**. `source` uses the source filename, while `options` derives the filename from the active encoding options. The short-lived `_asset{ID}` format from Transcoder 4.4.42-4.4.43 remains a lookup and cleanup candidate, but is never used for new video, poster, or GIF output. Unambiguous calls that pass either an Asset or `asset.url` resolve to the same canonical output.
 
-The refresh API does not create or read a source-generation database table. If 4.4.41 was installed, its now-unused table may remain harmlessly; 4.4.42 does not depend on it. Run the normal `php craft up` after updating so Craft records the published schema update; no replacement-state table is created by 4.4.42. Queue workers must share Transcoder's configured output and Craft runtime storage. Ad-hoc thumbnails outside the configured poster formats are not managed by this API.
+The refresh API does not create or read a source-generation database table. If 4.4.41 was installed, its now-unused table may remain harmlessly; nothing depends on it. Run the normal `php craft up` after updating: the plugin schema is `1.3.0`, so sites upgrading from an upstream `1.2.0` install run the migration that creates the `transcoder_runtime_settings` table used by the encoding utility. No replacement-state table is created. Queue workers must share Transcoder's configured output and Craft runtime storage. Ad-hoc thumbnails outside the configured poster formats are not managed by this API.
 
 ### Repairing Video Output
 
@@ -187,10 +189,12 @@ SVG watermarks are rasterized to a temporary transparent PNG before ffmpeg recei
 For production environments where admins cannot access plugin settings, configure the watermark source in `config/transcoder.php`:
 
 ```php
+use craft\helpers\App;
+
 return [
-    'videoWatermarkPath' => getenv('TRANSCODER_WATERMARK_PATH') ?: '',
+    'videoWatermarkPath' => App::env('TRANSCODER_WATERMARK_PATH') ?: '',
     // Remote fallback, used when TRANSCODER_WATERMARK_URL is not set:
-    'videoWatermarkUrl' => getenv('TRANSCODER_WATERMARK_URL') ?: 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/icons/play-circle.svg',
+    'videoWatermarkUrl' => App::env('TRANSCODER_WATERMARK_URL') ?: 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/icons/play-circle.svg',
 ];
 ```
 
@@ -344,7 +348,7 @@ For frontend progress polling, prefer `transcoderVideoStatusUrl` or `transcoderG
 
 ## Documentation
 
-Click here -> [Transcoder Documentation](https://nystudio107.com/plugins/transcoder/documentation)
+This README and [docs/](docs/) document this fork. The upstream [Transcoder documentation](https://nystudio107.com/plugins/transcoder/documentation) covers the original plugin and may not reflect fork-specific behavior.
 
 ## Transcoder Roadmap
 

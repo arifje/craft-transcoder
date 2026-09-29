@@ -116,7 +116,7 @@ class VideosController extends Controller
         $entryIds = [];
         $assets = [];
         foreach ($entries as $entry) {
-            if (!$entry instanceof Entry || !$entry->id) {
+            if (!$entry->id) {
                 continue;
             }
             $entryIds[(int)$entry->id] = true;

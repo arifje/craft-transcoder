@@ -2,7 +2,7 @@
   "name": "nystudio107/craft-transcoder",
   "description": "Transcode video & audio files to various formats, and provide video thumbnails",
   "type": "craft-plugin",
-  "version": "5.0.2",
+  "version": "5.0.3",
   "keywords": [
     "craft",
     "cms",
@@ -17,9 +17,9 @@
     "format"
   ],
   "support": {
-    "docs": "https://nystudio107.com/docs/transcoder",
-    "issues": "https://nystudio107.com/plugins/transcoder/support",
-    "source": "https://github.com/nystudio107/craft-transcoder"
+    "docs": "https://github.com/arifje/craft-transcoder#readme",
+    "issues": "https://github.com/arifje/craft-transcoder/issues",
+    "source": "https://github.com/arifje/craft-transcoder"
   },
   "license": "proprietary",
   "authors": [
@@ -37,7 +37,7 @@
   "require-dev": {
     "craftcms/ecs": "dev-main",
     "craftcms/phpstan": "dev-main",
-    "craftcms/rector": "dev-main"
+    "phpstan/phpstan": "^2.1"
   },
   "scripts": {
     "phpstan": "phpstan --ansi --memory-limit=1G",
@@ -51,7 +51,8 @@
       "@php tests/capacity-deferral-harness.php",
       "@php tests/local-source-callback-harness.php",
       "@php tests/media-filename-strategy-harness.php",
-      "@php tests/media-output-location-harness.php"
+      "@php tests/media-output-location-harness.php",
+      "@php tests/shell-escaping-harness.php"
     ],
     "test:craft5": "@php tests/craft5/integration.php"
   },

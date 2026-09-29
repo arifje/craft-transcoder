@@ -107,6 +107,21 @@ namespace {
             return $this->getLegacyAssetIdFilename($asset, $options, ['fileSuffix']);
         }
 
+        /** @var array<string, int> Output filename => owning Asset ID */
+        public array $owners = [];
+
+        public function primaryVideoFilename(Asset $asset, array $options): string
+        {
+            return $this->getVideoEncodedFilename($asset, $options);
+        }
+
+        protected function isVideoOutputOwnedByOtherAsset(Asset $asset, string $filename): bool
+        {
+            $ownerId = $this->owners[$filename] ?? null;
+
+            return $ownerId !== null && $ownerId !== $asset->id;
+        }
+
         /** @return string[] */
         public function videoCandidates(Asset $asset, array $options, string $primary): array
         {
@@ -191,6 +206,32 @@ namespace {
         'asset-4b1fafc4f47fcd1cc07f0e9245cf771a_asset4958326.mp4',
         $videoCandidates[1] ?? ''
     );
+
+    // A same-named source in another volume must not reuse this Asset's output.
+    $otherAsset = new Asset();
+    $otherAsset->id = 7000001;
+    $otherAsset->filename = $asset->filename;
+    $service->owners['asset-4b1fafc4f47fcd1cc07f0e9245cf771a.mp4'] = $asset->id;
+    assertSameFilename(
+        'owned canonical output keeps owner filename',
+        'asset-4b1fafc4f47fcd1cc07f0e9245cf771a.mp4',
+        $service->primaryVideoFilename($asset, $videoOptions)
+    );
+    assertSameFilename(
+        'colliding source falls back to Asset-ID filename',
+        'asset-4b1fafc4f47fcd1cc07f0e9245cf771a_asset7000001.mp4',
+        $service->primaryVideoFilename($otherAsset, $videoOptions)
+    );
+    $otherCandidates = $service->videoCandidates(
+        $otherAsset,
+        $videoOptions,
+        $service->primaryVideoFilename($otherAsset, $videoOptions)
+    );
+    if (in_array('asset-4b1fafc4f47fcd1cc07f0e9245cf771a.mp4', $otherCandidates, true)) {
+        fwrite(STDERR, 'colliding source candidates failed. Another Asset\'s output was offered' . PHP_EOL);
+        exit(1);
+    }
+    $service->owners = [];
 
     $posterOptions = [
         'width' => 800,
