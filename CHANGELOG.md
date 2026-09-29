@@ -1,5 +1,9 @@
 # Transcoder Changelog
 
+## 5.0.4 - 2026.09.29
+### Fixed
+* Read-only video poster/thumbnail lookups (`generate` false) no longer run ffprobe against the source or log the full candidate list; they return before building the ffmpeg command. This removes slow, failing ffprobe calls on every page view when a poster is missing and the source is remote or unavailable.
+
 ## 5.0.3 - 2026.09.29
 ### Security
 * Sanitize every caller-supplied media option (Twig, GraphQL, jobs) before it reaches ffmpeg: numeric options must be numeric, `aspectRatio`/`letterboxColor`/encoder handles are allowlisted, and unsafe `preVideoFilters` are dropped. GraphQL only accepts presentation options and never `preVideoFilters`; `encodingOptions` are reduced to `watermark`.

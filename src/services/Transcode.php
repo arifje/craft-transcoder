@@ -3171,6 +3171,14 @@ class Transcode extends Component
 				return false;
 			}
 
+			// Stop before building the ffmpeg command: clamping the seek time runs
+			// ffprobe against the source, which is wasted (and slow for remote or
+			// missing sources) on every read-only lookup.
+			if (!$generate) {
+				Craft::info('Thumbnail does not exist, but not asked to generate it: ' . $filePathResolved, __METHOD__);
+				return false;
+			}
+
 			// Build the ffmpeg command
 			$ffmpegCmd = $settings['ffmpegPath']
 				. $this->getFfmpegInputArgs($filePathResolved)
@@ -3214,24 +3222,20 @@ class Transcode extends Component
 					__METHOD__
 				);
 
-				if ($generate) {
-					if ($synchronous) {
-						$shellOutput = $this->executeShellCommand($thumbnailWorkerCommand . ' 2>&1');
-						Craft::info($ffmpegCmd, __METHOD__);
+				if ($synchronous) {
+					$shellOutput = $this->executeShellCommand($thumbnailWorkerCommand . ' 2>&1');
+					Craft::info($ffmpegCmd, __METHOD__);
 
-						if (!file_exists($destThumbnailPath) || filesize($destThumbnailPath) === 0) {
-							$message = 'Video poster generation failed for ' . $filePathResolved
-								. "\n\nFFmpeg command:\n" . $ffmpegCmd
-								. "\n\nFFmpeg log:\n" . trim($shellOutput);
-							Craft::error($message, __METHOD__);
-							throw new \RuntimeException($message);
-						}
-					} else {
-						$shellOutput = $this->executeShellCommand($thumbnailWorkerCommand . ' >/dev/null 2>/dev/null &');
-						Craft::info($ffmpegCmd, __METHOD__);
+					if (!file_exists($destThumbnailPath) || filesize($destThumbnailPath) === 0) {
+						$message = 'Video poster generation failed for ' . $filePathResolved
+							. "\n\nFFmpeg command:\n" . $ffmpegCmd
+							. "\n\nFFmpeg log:\n" . trim($shellOutput);
+						Craft::error($message, __METHOD__);
+						throw new \RuntimeException($message);
 					}
 				} else {
-					Craft::info('Thumbnail does not exist, but not asked to generate it: ' . $filePathResolved, __METHOD__);
+					$shellOutput = $this->executeShellCommand($thumbnailWorkerCommand . ' >/dev/null 2>/dev/null &');
+					Craft::info($ffmpegCmd, __METHOD__);
 				}
 
 				if (!file_exists($destThumbnailPath)) {

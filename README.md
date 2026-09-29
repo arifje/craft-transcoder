@@ -37,7 +37,7 @@ To install Transcoder, follow these steps:
 
 You can also install Transcoder via the **Plugin Store** in the Craft Control Panel.
 
-For the Craft 5 upgrade checklist, compatibility audit, and test instructions, see [Craft 5 compatibility](docs/craft5-compatibility.md). Version 5.0.3 is the current release of this line; Craft 4 sites must use the 4.x release line instead.
+For the Craft 5 upgrade checklist, compatibility audit, and test instructions, see [Craft 5 compatibility](docs/craft5-compatibility.md). Version 5.0.4 is the current release of this line; Craft 4 sites must use the 4.x release line instead.
 
 To install `ffmpeg` on Centos 6/7, you can follow the guide [How to Install FFmpeg on CentOS](https://www.vultr.com/docs/how-to-install-ffmpeg-on-centos)
 
